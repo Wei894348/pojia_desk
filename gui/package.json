@@ -4,7 +4,7 @@
   "private": true,
   "description": "破甲工作台 —— 四目标（Codex / DSH / WorkBuddy / ZCode）破甲的图形控制台：部署、验证、恢复",
   "main": "main.js",
-  "author": "AuuCoder",
+  "author": "Wei894348",
   "license": "MIT",
   "scripts": {
     "start": "electron .",
