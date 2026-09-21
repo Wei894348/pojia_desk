@@ -1,0 +1,18 @@
+# OS generated files
+Thumbs.db
+*.log
+node_modules/
+.env
+dist/
+build/
+
+# 项目私有状态 / 凭证 / 运行产物（不入库）
+状态/
+__pycache__/
+*.pyc
+workbuddy_accounts_*.json
+破甲日志.txt
+*.log
+product.json
+七项对齐实施报告.md
+.workbuddy/

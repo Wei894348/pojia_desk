@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:;">
+<title>破甲工作台</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="titlebar">
+  <div class="tb-left">
+    <div class="logo">破</div>
+    <div class="tb-title">破甲工作台</div>
+    <div class="ver" id="tbVersion">v6.1</div>
+    <div class="tb-sub" id="tbSub">八目标统一控制台</div>
+  </div>
+  <div class="tb-drag"></div>
+  <div class="tb-right">
+    <button class="wbtn" data-win="min" title="最小化">&#x2013;</button>
+    <button class="wbtn" data-win="max" title="最大化">&#x25A1;</button>
+    <button class="wbtn close" data-win="close" title="关闭">&#x2715;</button>
+  </div>
+</header>
+
+<section class="toolbar">
+  <div class="tb-group">
+    <button class="btn primary" id="btnDeploy" data-action="apply">
+      <span class="bi">&#x25B6;</span> 部署
+    </button>
+    <button class="btn" id="btnDry" data-action="dry">
+      <span class="bi">&#x25CE;</span> 预演
+    </button>
+    <button class="btn" id="btnDiff" title="先看将要写入的内容，再决定要不要部署">
+      <span class="bi">&#x2637;</span> 预览
+    </button>
+    <button class="btn" id="btnTest" data-action="test">
+      <span class="bi">&#x2714;</span> 验证
+    </button>
+    <button class="btn danger" id="btnRevert" data-action="revert">
+      <span class="bi">&#x21BA;</span> 恢复
+    </button>
+  </div>
+
+  <div class="tb-sep"></div>
+
+  <div class="tb-group sel">
+    <span class="lbl">目标</span>
+    <button class="chipbtn" data-sel="all">全选</button>
+    <button class="chipbtn" data-sel="none">全不选</button>
+    <button class="chipbtn" data-sel="invert">反选</button>
+  </div>
+
+  <div class="tb-drag2"></div>
+
+  <div class="tb-group">
+    <button class="btn ghost" id="btnRefresh" title="F5 重新检测">
+      <span class="bi">&#x21BB;</span> 刷新状态
+    </button>
+    <button class="btn ghost" id="btnTx" title="查看部署历史 / 按快照回退">
+      <span class="bi">&#x25F7;</span> 历史
+    </button>
+    <button class="btn ghost" id="btnConsole">控制台</button>
+    <button class="btn ghost" id="btnPy">Python</button>
+  </div>
+</section>
+
+<main class="workspace">
+  <section class="cards" id="cards"></section>
+
+  <section class="logpanel" id="logPanel">
+    <div class="loghead">
+      <button class="collapsebtn" id="btnCollapse" title="折叠 / 展开日志">&#x21E5;</button>
+      <span class="lt">执行日志</span>
+      <span class="lcount" id="logCount">0</span>
+      <div class="lspacer"></div>
+      <label class="autoscroll"><input type="checkbox" id="autoScroll" checked> 自动滚底</label>
+      <button class="minibtn" id="btnLogClear">清空</button>
+      <button class="minibtn" id="btnLogFile">日志文件</button>
+    </div>
+    <div class="logbody" id="logBody">
+      <div class="lrow lv-dim"><span class="ltag">sys</span><span class="ltext">等待操作……</span></div>
+    </div>
+  </section>
+</main>
+
+<section class="routebar">
+  <span class="rlabel">归一预览</span>
+  <input id="routeInput" type="text" placeholder="输入用户原话，例如：帮我弄个挂，顺便脱掉壳看看">
+  <button class="minibtn" id="btnRoute">分析</button>
+  <div class="chips" id="routeOut"></div>
+</section>
+
+<footer class="statusbar">
+  <span class="dot idle" id="sbDot"></span>
+  <span id="sbMsg">就绪</span>
+  <div class="sb-spacer"></div>
+  <span class="sbcell clickable" id="sbPython" title="点击更换 Python 解释器">python —</span>
+  <span class="sbcell clickable" id="sbRoot" title="点击打开项目目录">项目 —</span>
+  <span class="sbcell" id="sbWhen">—</span>
+</footer>
+
+<div class="overlay" id="overlay"><div class="spin"></div><span id="overlayText">正在检测……</span></div>
+<div class="toasts" id="toasts"></div>
+
+<div class="modal" id="txModal">
+  <div class="modalbox">
+    <div class="modalhead">
+      <span class="mh-title">部署历史</span>
+      <span class="mh-sub" id="txRoot">—</span>
+      <div class="mh-spacer"></div>
+      <button class="minibtn" id="btnTxPurge" title="只保留最近 12 次">清理旧快照</button>
+      <button class="minibtn" id="btnTxReload">刷新</button>
+      <button class="wbtn close" id="btnTxClose" title="关闭">&#x2715;</button>
+    </div>
+    <div class="modalhint">每次部署 / 恢复都会留一份快照。回退之前会先确认文件没被别的操作改过 —— 改过就中止，不硬覆盖。</div>
+    <div class="modalbody" id="txBody"></div>
+  </div>
+</div>
+
+<div class="modal" id="diffModal">
+  <div class="modalbox wide">
+    <div class="modalhead">
+      <span class="mh-title">写入预览</span>
+      <span class="mh-sub" id="diffTarget">—</span>
+      <div class="mh-spacer"></div>
+      <button class="wbtn close" id="btnDiffClose" title="关闭">&#x2715;</button>
+    </div>
+    <div class="modalhint">左 = 落盘现状，右 = 部署将写入的内容。确认无误再点「部署」—— 所有写入走事务，可按快照回退。</div>
+    <div class="modalbody" id="diffBody"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
