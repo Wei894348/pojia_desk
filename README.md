@@ -13,7 +13,7 @@
 | 目标 | 是什么 | 注入方式 |
 |---|---|---|
 | `codex` | Codex CLI | 官方 `model_instructions_file` 配置项注入，不改二进制、不抓包 |
-| `dsh` | DeepSeek Harness（桌面端 / npm 全局 / npx 缓存 / 便携版） | 三层文件级补丁：提示词层、persona 层、区段层 |
+| `dsh` | DeepSeek Harness（桌面端 / npm 全局 / npx 缓存 / 便携版） | 三层文件级补丁：提示词层、persona 层、区段层；另可部署**破甲模式**（用户级 agent preset，与创造模式并列出现在模式下拉里） |
 | `wb` | WorkBuddy | 六层靶点：模板 / 命令闸门 / 网页过滤 / 运行时缓存 / 会话快照等 |
 | `zcode` | ZCode（Z.ai / GLM 桌面端） | `~/.zcode/AGENTS.md` 角色档改写 + skills 投放 |
 | `claude` | Claude Code | `~/.claude/CLAUDE.md` 标记块合并 + skills 投放 |

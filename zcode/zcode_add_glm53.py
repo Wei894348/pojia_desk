@@ -51,7 +51,8 @@ def zcode_procs():
 
 
 def load():
-    return json.load(io.open(CFG, encoding="utf-8"))
+    with io.open(CFG, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 def state(d):
@@ -94,7 +95,8 @@ def apply():
     entry = json.loads(json.dumps(donor_models[MODEL]))   # 深拷贝
     # 套餐段端点用 zcode.z.ai，供体是 api.z.ai —— 只复制模型定义，别带端点痕迹
     d["provider"][PID]["models"][MODEL] = entry
-    io.open(CFG, "w", encoding="utf-8").write(json.dumps(d, ensure_ascii=False, indent=2))
+    with io.open(CFG, "w", encoding="utf-8") as f:
+        f.write(json.dumps(d, ensure_ascii=False, indent=2))
     print(f"OK  已补 {MODEL} → {PID}")
     print("    现有模型:", state(load()))
     print("    备份:", bak)
@@ -108,7 +110,8 @@ def revert():
     bak = CFG + ".bak-" + time.strftime("%Y%m%d-%H%M%S")
     shutil.copy2(CFG, bak)
     del d["provider"][PID]["models"][MODEL]
-    io.open(CFG, "w", encoding="utf-8").write(json.dumps(d, ensure_ascii=False, indent=2))
+    with io.open(CFG, "w", encoding="utf-8") as f:
+        f.write(json.dumps(d, ensure_ascii=False, indent=2))
     print(f"OK  已移除 {MODEL}")
     print("    现有模型:", state(load()))
 

@@ -13,19 +13,209 @@ const STATE_MAP = {
 };
 const LEVEL_CLS = { ok: 'lv-ok', warn: 'lv-warn', err: 'lv-err', info: 'lv-info', dim: 'lv-dim' };
 const ORDER = ['codex', 'dsh', 'wb', 'zcode', 'claude', 'grok', 'gemini', 'hermes'];
+// 目标就这八个。DSH 的「破甲模式」不是第九个目标 —— 它是 DSH 卡片里的一个选项
+// （卡内下拉的两个勾选框），状态并进 DSH 卡片自己的体检项与明细。
 const LABELS = {
   codex: 'Codex CLI', dsh: 'DSH (DeepSeek Harness)', wb: 'WorkBuddy', zcode: 'ZCode (Z.ai)',
   claude: 'Claude Code', grok: 'Grok CLI', gemini: 'Gemini CLI', hermes: 'Hermes Agent',
 };
 
+const OPT_KEY = 'pojia.opts';
+
+// DSH 卡片里那个下拉 = 两个独立勾选框，四种组合都合法：
+//   两个都勾（默认）  注入提示词 + 增加破甲模式
+//   只勾「注入提示词」 部署 / 恢复时打或还原 DSH 本体补丁，不动 preset
+//   只勾「增加破甲模式」只用 preset（写入 / 移除），DSH 本体一个字节都不碰
+//   都不勾            这次跳过 DSH
+function optMode(o) {
+  if (o.prompt && o.preset) return 'both';
+  if (o.prompt) return 'prompt';
+  if (o.preset) return 'preset';
+  return 'none';
+}
+
+const MODE_TEXT = {
+  both: '提示词 + 破甲模式', prompt: '只注入提示词',
+  preset: '只加破甲模式', none: '都不做',
+};
+
+// 下拉按钮长什么样：两项都勾 = 绿，只勾一项 = 蓝，都不勾 = 灰
+function presetButtonFace(o) {
+  const mode = optMode(o);
+  const cls = mode === 'none' ? 'idle' : (mode === 'both' ? 'on' : 'half');
+  return { mode, text: MODE_TEXT[mode], cls };
+}
+
+// 下拉里两项 → 命令行开关。两个开关互斥，且只有 DSH 受它们影响
+// （bridge 侧 preset-only 判的是 k === 'dsh'；no-preset 对别的目标是空转）。
+function flagsForOpts() {
+  const { prompt, preset } = state.opts;
+  if (prompt && !preset) return ['no-preset'];    // 只注入提示词
+  if (!prompt && preset) return ['preset-only'];  // 只动破甲模式
+  return [];
+}
+
 const state = {
   meta: null,
   cards: [],
-  selected: new Set(['codex', 'dsh', 'wb', 'zcode', 'claude', 'grok', 'gemini', 'hermes']),
+  selected: new Set(ORDER),
   expanded: new Set(),
   busy: false,
   logCount: 0,
+  // DSH 卡片里那个下拉的两项：
+  //   prompt —— 部署 / 恢复 DSH 时，写 / 还原提示词补丁（作用于 DSH 本体）
+  //   preset —— 部署 / 恢复 DSH 时，写入 / 移除破甲模式（用户级 agent preset）
+  opts: { prompt: true, preset: true },
+  ddOpen: false,
 };
+
+function loadOpts() {
+  try {
+    const d = JSON.parse(localStorage.getItem(OPT_KEY) || '{}');
+    // preset 这个键两版同义（"连带动破甲模式"），直接沿用；
+    // 旧版的 presetCard 是"面板上要不要那张独立卡片"—— 卡片已并进 DSH，丢弃。
+    if (typeof d.preset === 'boolean') state.opts.preset = d.preset;
+    if (typeof d.prompt === 'boolean') state.opts.prompt = d.prompt;
+  } catch (_) { /* 没存过就用默认 */ }
+}
+
+function saveOpts() {
+  try { localStorage.setItem(OPT_KEY, JSON.stringify(state.opts)); } catch (_) { /* 隐私模式 */ }
+}
+
+// 勾选框跟着 state.opts 走。菜单每次重建都要重画，所以单独拎出来。
+function syncOptBoxes(root) {
+  const scope = root || document;
+  const a = scope.querySelector('#optPrompt') || $('optPrompt');
+  const b = scope.querySelector('#optPreset') || $('optPreset');
+  if (a) a.checked = !!state.opts.prompt;
+  if (b) b.checked = !!state.opts.preset;
+}
+
+// 把 state.opts 画回下拉：按钮摘要 + 配色 + 展开与否。
+// 卡片每次 upsert 都会重建，所以拆成两份：一份按节点引用画（建卡时节点还没进 DOM），
+// 一份按 id 找（勾选之后重画用）。全都判空，谁不在都不炸。
+function paintDshNodes(btn, txtEl, menu) {
+  const face = presetButtonFace(state.opts);
+  if (btn) {
+    btn.classList.remove('on', 'half', 'idle');
+    btn.classList.add(face.cls);
+  }
+  if (txtEl) txtEl.textContent = face.text;
+  if (menu) {
+    menu.classList.toggle('on', !!state.ddOpen);
+    syncOptBoxes(menu);
+  }
+  return face;
+}
+
+function paintDshOpts() {
+  return paintDshNodes($('ddDshBtn'), $('ddDshText'), $('ddDshMenu'));
+}
+
+// DSH 卡片里那行「当前：已部署 … / 什么都没部署」。
+// 报的是磁盘上的实际状态，跟卡内两个勾选框无关 —— 勾选说的是"这次要做什么"，
+// 这行说的是"现在盘上是什么"。bridge 每次探测都会带上 deploy 字段。
+const DEPLOY_CLS = { on: 'st-on', half: 'st-half', idle: 'st-idle' };
+
+function buildDeployState(dep) {
+  const d = dep || {};
+  const box = document.createElement('div');
+  box.className = 'deploystate ' + (DEPLOY_CLS[d.level] || 'st-idle');
+  const led = document.createElement('span');
+  led.className = 'dled';
+  const txt = document.createElement('span');
+  txt.className = 'dtxt';
+  txt.textContent = d.text || '当前：还没探测到状态';
+  txt.title = d.chip ? (txt.textContent + '（' + d.chip + '）') : txt.textContent;
+  box.appendChild(led);
+  box.appendChild(txt);
+  return box;
+}
+
+// DSH 卡片里的「破甲模式」下拉。菜单内联展开 —— 卡片是 overflow:hidden，
+// 绝对定位的浮层会被裁掉，所以选项直接挤在卡片流里。
+function buildPresetOpt(dep) {
+  const bar = document.createElement('div');
+  bar.className = 'card-opt';
+  const lbl = document.createElement('span');
+  lbl.className = 'optlbl';
+  lbl.textContent = '破甲模式';
+
+  const btn = document.createElement('button');
+  btn.className = 'optbtn';
+  btn.id = 'ddDshBtn';
+  btn.title = '这个 DSH 目标要干什么：注入提示词（给它打补丁）/ 增加破甲模式（写入用户级 preset）—— 两项可各选，也可以都要';
+  const led = document.createElement('span');
+  led.className = 'led';
+  const txt = document.createElement('span');
+  txt.id = 'ddDshText';
+  const caret = document.createElement('span');
+  caret.className = 'optcaret';
+  caret.textContent = '\u25BE';
+  btn.appendChild(led);
+  btn.appendChild(txt);
+  btn.appendChild(caret);
+
+  const menu = document.createElement('div');
+  menu.className = 'optmenu';
+  menu.id = 'ddDshMenu';
+
+  const mk = (id, name, sub, key) => {
+    const lab = document.createElement('label');
+    lab.className = 'optitem';
+    lab.dataset.opt = key;
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.id = id;
+    box.checked = !!state.opts[key];
+    box.addEventListener('change', () => pickOpt(key, box.checked));
+    const box2 = document.createElement('span');
+    box2.className = 'otext';
+    const nm = document.createElement('span');
+    nm.className = 'oname';
+    nm.textContent = name;
+    const sb = document.createElement('span');
+    sb.className = 'osub';
+    sb.textContent = sub;
+    box2.appendChild(nm);
+    box2.appendChild(sb);
+    lab.appendChild(box);
+    lab.appendChild(box2);
+    // 点标签（含文字）交给 checkbox 自己处理，别冒泡到按钮把菜单关了
+    lab.addEventListener('click', (e) => e.stopPropagation());
+    return lab;
+  };
+  menu.appendChild(mk('optPrompt', '注入提示词',
+    '部署时给 DSH 打提示词补丁，恢复时还原成官方原版', 'prompt'));
+  menu.appendChild(mk('optPreset', '增加破甲模式',
+    '写入 / 移除用户级 agent preset —— 模式下拉里多一个「破甲模式」', 'preset'));
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    state.ddOpen = !state.ddOpen;
+    paintDshNodes(btn, txt, menu);
+  });
+
+  bar.appendChild(lbl);
+  bar.appendChild(btn);
+  return { bar, menu, btn, txt, state: buildDeployState(dep) };
+}
+
+// 勾 / 取消某一项：写盘 + 更新回显。卡片不再增删，所以不用重新探测
+// （省一次几秒的安装基点扫描）；状态栏那句提示靠下一次刷新带上。
+function pickOpt(key, on) {
+  state.opts[key] = !!on;
+  saveOpts();
+  const face = paintDshOpts();
+  logLine('dim', 'sys', 'DSH 破甲 → ' + face.text);
+  return face;
+}
+
+// 当前勾选的目标 —— 全部都是真目标，DSH 那个下拉只决定 DSH 自己怎么跑
+function targets() {
+  return [...state.selected];
+}
 
 // ────────────────────────── 通用 UI ──────────────────────────
 
@@ -84,10 +274,13 @@ function logHead(text) { logLine('head', '—', text); }
 // ────────────────────────── 卡片渲染 ──────────────────────────
 
 function renderCards(cards) {
-  state.cards = cards.slice();
+  // 按 ORDER 重排 —— state.cards 的入队顺序是"探测谁先回来"，
+  // 不排的话勾选一次全选卡片就会跳位
+  state.cards = cards.slice().sort((a, b) =>
+    ORDER.indexOf(a.key) - ORDER.indexOf(b.key));
   const wrap = $('cards');
   wrap.innerHTML = '';
-  cards.forEach((c) => wrap.appendChild(buildCard(c)));
+  state.cards.forEach((c) => wrap.appendChild(buildCard(c)));
 }
 
 // 骨架卡：状态还没回来时先把四个席位占上，别让首屏空着
@@ -130,12 +323,20 @@ function renderSkeleton(keys) {
   });
 }
 
-// 单个目标的结果回来就替换它自己那张卡 —— 四个目标并行探测，谁快谁先显示
+// 单个目标的结果回来就替换它自己那张卡 —— 八个目标并行探测，谁快谁先显示
 function upsertCard(c) {
   const wrap = $('cards');
   const old = wrap.querySelector('.card[data-key="' + c.key + '"]');
   const el = buildCard(c);
-  if (old) wrap.replaceChild(el, old); else wrap.appendChild(el);
+  if (old) {
+    wrap.replaceChild(el, old);
+  } else {
+    // 插到位置上，不无脑追加 —— 并行探测谁先回来是不定的
+    const idx = ORDER.indexOf(c.key);
+    const after = [...wrap.querySelectorAll('.card')]
+      .find((n) => ORDER.indexOf(n.dataset.key) > idx);
+    if (after) wrap.insertBefore(el, after); else wrap.appendChild(el);
+  }
   const i = state.cards.findIndex((x) => x.key === c.key);
   if (i >= 0) state.cards[i] = c; else state.cards.push(c);
 }
@@ -162,6 +363,7 @@ function buildCard(c) {
     updateToolbarHint();
   });
   chkLabel.appendChild(chk);
+  head.appendChild(chkLabel);
 
   const title = document.createElement('div');
   title.className = 'card-title';
@@ -186,7 +388,6 @@ function buildCard(c) {
   const open = state.expanded.has(c.key);
   chev.textContent = open ? '\u25B4' : '\u25BE';
 
-  head.appendChild(chkLabel);
   head.appendChild(title);
   head.appendChild(spacer);
   head.appendChild(badge);
@@ -247,6 +448,17 @@ function buildCard(c) {
 
   el.appendChild(head);
   el.appendChild(home);
+
+  // DSH 卡片专属：破甲模式下拉（注入提示词 / 增加破甲模式）+ 当前部署状态行。
+  // 放在 DSH 卡里而不是工具条 —— 它是 DSH 自己的选择，跟别的目标没关系。
+  if (c.key === 'dsh') {
+    const opt = buildPresetOpt(c.deploy);
+    el.appendChild(opt.bar);
+    el.appendChild(opt.state);
+    el.appendChild(opt.menu);
+    paintDshNodes(opt.btn, opt.txt, opt.menu);   // 节点这还没进 DOM，只能按引用画
+  }
+
   if (metrics.children.length) el.appendChild(metrics);
   el.appendChild(detail);
   return el;
@@ -262,12 +474,13 @@ function updateToolbarHint() {
 async function refreshStatus(quiet) {
   if (state.busy) return;
   setBusy(true, '正在检测状态……');
-  if (!quiet) overlay(true, '正在检测 ' + ORDER.length + ' 个目标……');
+  const want = ORDER.slice();
+  if (!quiet) overlay(true, '正在检测 ' + want.length + ' 个目标……');
   try {
-    renderSkeleton(ORDER);
+    renderSkeleton(want);
     let done = 0;
     let bad = 0;
-    await Promise.all(ORDER.map(async (k) => {
+    await Promise.all(want.map(async (k) => {
       let d = null;
       try { d = await api.status([k]); }
       catch (e) { d = { error: String(e.message || e) }; }
@@ -280,10 +493,10 @@ async function refreshStatus(quiet) {
         bad += 1;
         logLine('err', k, '检测失败：' + ((d && d.error) || '无返回'));
       }
-      setStatus('已检测 ' + done + ' / ' + ORDER.length + ' 个目标');
+      setStatus('已检测 ' + done + ' / ' + want.length + ' 个目标');
     }));
-    setStatus(bad ? (bad + ' / ' + ORDER.length + ' 个目标需要处理')
-                  : (ORDER.length + ' 个目标均为本版状态'), bad ? 'warn' : 'ok');
+    setStatus(bad ? (bad + ' / ' + want.length + ' 个目标需要处理')
+                  : (want.length + ' 个目标均为本版状态'), bad ? 'warn' : 'ok');
   } catch (e) {
     toast('检测出错：' + (e.message || e), 'err');
   } finally {
@@ -326,27 +539,37 @@ async function boot() {
 
 // ────────────────────────── 执行动作 ──────────────────────────
 
-function targets() {
-  const t = [...state.selected];
-  return t.length ? t : [];
-}
-
 async function doRun(action) {
   if (state.busy) return;
-  const tg = targets();
+  let tg = targets();
   if (!tg.length) { toast('先在卡片上勾选目标', 'warn'); return; }
 
+  // DSH 下拉里两项都没勾 = 这个目标这次不参与（下拉写的是"都不做"，不是"跳过按钮"）
+  const dshOff = !state.opts.prompt && !state.opts.preset;
+  if (dshOff && tg.includes('dsh')) {
+    tg = tg.filter((k) => k !== 'dsh');
+    logLine('dim', 'sys', 'DSH 下拉是「都不做」—— 本次跳过 DSH');
+  }
+  if (!tg.length) {
+    toast(dshOff ? 'DSH 下拉是「都不做」，也没有别的目标可跑' : '先在卡片上勾选目标', 'warn');
+    return;
+  }
+
   if (action === 'revert') {
-    const ok = window.confirm('确定把 [' + tg.join(' / ') + '] 还原成官方原版？\n\n每个目标会从各自的备份还原，部署产物会被移除。');
-    if (!ok) return;
+    if (!window.confirm(revertAsk(tg))) return;
   }
 
   const names = { apply: '部署', revert: '恢复', dry: '预演' };
+  const flags = flagsForOpts();
+  const hint = (tg.includes('dsh') && flags.length)
+    ? (flags[0] === 'no-preset' ? '（DSH 只还原本体，破甲模式留着）'
+                                : '（DSH 只动破甲模式，本体不碰）')
+    : '';
   setBusy(true, names[action] + '中……');
-  logHead('▶ ' + names[action] + ' → ' + tg.join(' / '));
+  logHead('▶ ' + names[action] + ' → ' + tg.join(' / ') + hint);
 
   try {
-    const r = await api.run(action, tg);
+    const r = await api.run(action, tg, flags);
     if (r && r.ok) toast(names[action] + '搞定，漂亮 ✔', 'ok');
     else toast(names[action] + '跑完了，但甩了个非零退出码 ' + ((r && r.code) != null ? r.code : '?') + '，日志里瞅瞅', 'warn');
   } catch (e) {
@@ -355,6 +578,21 @@ async function doRun(action) {
     setBusy(false);
     await refreshStatus(true);
   }
+}
+
+// 恢复前的二次确认 —— 按 DSH 下拉的档位说清会动到哪部分
+function revertAsk(tg) {
+  let s = '确定把 [' + tg.join(' / ') + '] 还原成官方原版？\n\n每个目标会从各自的备份还原，部署产物会被移除。';
+  if (!tg.includes('dsh')) return s;
+  const { prompt, preset } = state.opts;
+  if (prompt && preset) {
+    s += '\n\nDSH 两项都勾着：本体提示词会还原，破甲模式目录也会一并删掉。';
+  } else if (prompt) {
+    s += '\n\nDSH 只勾了「注入提示词」：只还原本体，破甲模式目录留着。';
+  } else {
+    s += '\n\nDSH 只勾了「增加破甲模式」：只移除破甲模式目录，本体的提示词补丁保持不动。';
+  }
+  return s;
 }
 
 async function doTest() {
@@ -376,6 +614,14 @@ async function doTest() {
     await refreshStatus(true);
   }
 }
+
+// ────────────────────────── 破甲模式 ──────────────────────────
+// 它**不是独立卡片、也不走独立按钮** —— 它是 DSH 卡片里那个下拉的两个勾选框之一
+// （「增加破甲模式」）。勾着就用工具条上的 部署 / 恢复 连带处理：
+//   部署 → python 破甲一键通.py --dsh-preset deploy --yes
+//   恢复 → python 破甲一键通.py --dsh-preset remove --yes
+// 想单独建 / 单独删：只勾「增加破甲模式」（此时桥会传 preset-only，本体一个字节不碰）。
+// 命令行通道仍在：`python gui/bridge.py run preset-deploy|preset-remove|preset-status`。
 
 // ────────────────────────── 归一预览 ──────────────────────────
 
@@ -585,7 +831,8 @@ function bind() {
   document.querySelectorAll('.chipbtn[data-sel]').forEach((b) => {
     b.addEventListener('click', () => {
       const m = b.dataset.sel;
-      const all = state.cards.map((c) => c.key);
+      // 只认 ORDER 里的真目标 —— 任何非目标卡片都不该被"全选"卷进来
+      const all = state.cards.map((c) => c.key).filter((k) => ORDER.includes(k));
       if (m === 'all') state.selected = new Set(all);
       else if (m === 'none') state.selected = new Set();
       else state.selected = new Set(all.filter((k) => !state.selected.has(k)));
@@ -669,7 +916,13 @@ function bind() {
     else if (evt.type === 'start') logHead('开工咯：' + evt.action + ' → ' + (evt.targets || []).join(' / '));
     else if (evt.type === 'exit' && evt.code) logLine('err', 'sys', '整体退出码 ' + evt.code + '（有目标没干利索，往上翻翻）');
   });
+
+  // ── DSH卡片里的「破甲模式」下拉 ──
+  //   控件本体在 buildCard 里建、事件也在那儿绑（卡片会 upsert 重建）。
+  //   这里只负责一件事：启动时把 state.opts 的回显画上去。
+  paintDshOpts();
 }
 
+loadOpts();
 bind();
 boot();

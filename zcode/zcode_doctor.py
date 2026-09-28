@@ -33,7 +33,8 @@ def check_cjs():
     if not os.path.exists(CJS):
         R["cjs"] = {"error": "文件不存在: %s" % CJS}
         return
-    data = io.open(CJS, "rb").read()
+    with io.open(CJS, "rb") as f:
+        data = f.read()
     d["size"] = len(data)
     d["mtime"] = datetime.datetime.fromtimestamp(os.path.getmtime(CJS)).strftime("%m-%d %H:%M:%S")
     marks = {
@@ -60,7 +61,8 @@ def check_agents():
         if not os.path.exists(p):
             d[tag] = {"path": p, "exists": False}
             continue
-        t = io.open(p, "r", encoding="utf-8", errors="replace").read()
+        with io.open(p, "r", encoding="utf-8", errors="replace") as f:
+            t = f.read()
         ver = "未知"
         for key, name in (("离线文本生产沙盒", "v5 storylab"),
                           ("都落在纸面上", "v4 写实"),

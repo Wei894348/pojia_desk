@@ -44,14 +44,16 @@ def log(msg, level="info"):
 
 def load_state():
     try:
-        return json.load(open(STATE, encoding="utf-8"))
+        with open(STATE, encoding="utf-8") as f:
+            return json.load(f)
     except Exception:
         return {}
 
 
 def save_state(st):
     os.makedirs(os.path.dirname(STATE), exist_ok=True)
-    json.dump(st, open(STATE, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    with open(STATE, "w", encoding="utf-8") as f:
+        json.dump(st, f, ensure_ascii=False, indent=2)
 
 
 def scan(cfg):

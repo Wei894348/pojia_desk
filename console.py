@@ -121,6 +121,7 @@ def build_args(target, extra=None):
         nofileguard=True, ask_mode=False, web_filter=True,
         guard=None, snapshot=False, compare=False,
         purge_spill=False, keep_cache=False,
+        no_dsh_preset=False,
         pick="", clear=False,
     )
 
@@ -134,7 +135,8 @@ def test_codex():
     print("  [Codex] %s" % home)
     if not os.path.exists(cfg):
         print("    [FAIL] config.toml 不存在"); return False
-    conf = open(cfg, encoding="utf-8", errors="replace").read()
+    with open(cfg, encoding="utf-8", errors="replace") as f:
+        conf = f.read()
     line = ""
     for ln in conf.splitlines():
         if "model_instructions_file" in ln and "=" in ln:
@@ -146,7 +148,8 @@ def test_codex():
     print("    指令文件: %s" % instr)
     if not os.path.exists(instr):
         print("    [FAIL] 指令文件不存在"); return False
-    txt = open(instr, encoding="utf-8", errors="replace").read()
+    with open(instr, encoding="utf-8", errors="replace") as f:
+        txt = f.read()
     for k in CODEX_KEYS + PERSONA_KEYS:
         good = k in txt
         ok = ok and good
@@ -179,7 +182,8 @@ def test_dsh():
                     continue
                 p = os.path.join(dirpath, fn)
                 try:
-                    t = open(p, encoding="utf-8", errors="replace").read()
+                    with open(p, encoding="utf-8", errors="replace") as f:
+                        t = f.read()
                 except Exception:
                     continue
                 if "麻衣" in t or "沉浸优先" in t or "unlock-v6" in t:
@@ -275,7 +279,8 @@ def test_zcode():
     print("  [ZCode] %s" % home)
     if not os.path.exists(ag):
         print("    [FAIL] AGENTS.md 不存在（未部署）"); return False
-    txt = open(ag, encoding="utf-8", errors="replace").read()
+    with open(ag, encoding="utf-8", errors="replace") as f:
+        txt = f.read()
     for k in m.ZCODE_KEYS + ("学姐模式开启", "工程任务"):
         good = k in txt
         ok = ok and good
@@ -375,7 +380,8 @@ def test_home_md(seat):
     if not os.path.exists(md):
         print("    [WARN] %s 不存在（未部署）—— %s" % (md_name, home_disp))
         return False
-    txt = open(md, encoding="utf-8", errors="replace").read()
+    with open(md, encoding="utf-8", errors="replace") as f:
+        txt = f.read()
     begin, end = m.SEAT_MARKS[seat]
     if begin not in txt or end not in txt:
         print("    [WARN] 用户自有文件，未含标记块（未部署）")
@@ -482,7 +488,8 @@ def test_route():
     if not path or not os.path.exists(path):
         print("    [FAIL] route-layer.md 不存在（当前会用内置兜底骨架）")
         return False
-    txt = open(path, encoding="utf-8", errors="replace").read()
+    with open(path, encoding="utf-8", errors="replace") as f:
+        txt = f.read()
     body = m.clean_prompt(txt)          # 先剥 HTML 注释：注释里可写"哪些词不能用"的说明
     for k in ROUTE_KEYS:
         good = k in body
@@ -699,7 +706,9 @@ def tx_cmd(argv):
 EXTRA_FLAGS = {"--full": "full", "--nofileguard": "nofileguard",
                "--ask-mode": "ask_mode", "--web-filter": "web_filter",
                "--restart-wb": "restart_wb", "--kill-dsh": "kill_dsh",
-               "--keep-cache": "keep_cache"}
+               "--keep-cache": "keep_cache",
+               # 关掉 DSH 破甲模式（用户级 preset）的连带部署/移除
+               "--no-dsh-preset": "no_dsh_preset"}
 
 
 def dispatch(target, action, extra=None):

@@ -31,6 +31,11 @@ class CodexConfigTests(unittest.TestCase):
         self.log_patch = mock.patch.object(pojia, "log")
         self.log_patch.start()
         self.addCleanup(self.log_patch.stop)
+        # HERE 指向临时目录：apply 现在会把"本脚本这一版"同步进项目的
+        # codex/<CODEX_INSTR> 留档，测试必须落在沙箱里，别碰项目文件。
+        self.here_patch = mock.patch.object(pojia, "HERE", self.temp.name)
+        self.here_patch.start()
+        self.addCleanup(self.here_patch.stop)
         self.proc_patch = mock.patch.object(pojia, "find_processes", return_value=[])
         self.proc_patch.start()
         self.addCleanup(self.proc_patch.stop)

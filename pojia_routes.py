@@ -294,7 +294,8 @@ def preview_route(sentence: str, path: str = None, limit: int = 6) -> dict:
         res["error"] = "用法：把用户原话填进来"
         return res
 
-    text = open(path, encoding="utf-8", errors="replace").read()
+    with open(path, encoding="utf-8", errors="replace") as f:
+        text = f.read()
     rows = normalize_rows(text)
     res["table_rows"] = len(rows)
 

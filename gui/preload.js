@@ -8,7 +8,7 @@ contextBridge.exposeInMainWorld('pojia', {
   route: (sentence) => ipcRenderer.invoke('pojia:route', sentence),
   tx: (argv) => ipcRenderer.invoke('pojia:tx', argv),
   diff: (argv) => ipcRenderer.invoke('pojia:diff', argv),
-  run: (action, targets) => ipcRenderer.invoke('pojia:run', { action, targets }),
+  run: (action, targets, flags) => ipcRenderer.invoke('pojia:run', { action, targets, flags }),
   abort: () => ipcRenderer.send('pojia:abort'),
   setPython: (exe) => ipcRenderer.invoke('pojia:setPython', exe),
   pickPython: () => ipcRenderer.invoke('pojia:pickPython'),

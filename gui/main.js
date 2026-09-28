@@ -122,11 +122,14 @@ function callBridge(args, timeout) {
   });
 }
 
-function runAction(action, targets, sender) {
+function runAction(action, targets, flags, sender) {
   return new Promise((resolve) => {
     const p = resolvePython();
     if (!p) return resolve({ ok: false, error: '未找到 Python 解释器' });
-    const child = spawn(p.exe, p.prefix.concat([BRIDGE, 'run', action, (targets || []).join(',')]),
+    // 位置参数：run <action> <targets> [flags]；flags 是逗号分隔的开关名
+    const argv = [BRIDGE, 'run', action, (targets || []).join(',')];
+    if (flags && flags.length) argv.push(flags.join(','));
+    const child = spawn(p.exe, p.prefix.concat(argv),
       { cwd: ROOT, env: cleanEnv(), windowsHide: true });
     running = child;
     let buf = '';
@@ -299,8 +302,8 @@ ipcMain.handle('pojia:route', async (_e, sentence) => {
 });
 
 ipcMain.handle('pojia:run', async (e, payload) => {
-  const { action, targets } = payload || {};
-  return runAction(action, targets, e.sender);
+  const { action, targets, flags } = payload || {};
+  return runAction(action, targets, flags, e.sender);
 });
 
 ipcMain.on('pojia:abort', () => { if (running) { try { running.kill(); } catch (_) {} } });

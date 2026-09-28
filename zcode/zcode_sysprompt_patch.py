@@ -8,7 +8,7 @@
 
 保留本文件仅为留档与手动还原参考。需要还原请直接：
     copy "C:\\Users\\86157\\.zcode\\zcode-unlock-backups\\zcode.cjs.orig.20260918-235334.bak" "F:\\Softstore\\ZCode\\resources\\glm\\zcode.cjs"
-或跑 状态/_zc_restore.py。
+或跑 状态/_zc_restore.py（该一次性脚本已于 2026-09-28 清理，还原用上面那行 copy 即可）。
 
 ---- 以下为原始说明（已过时）----
 
@@ -104,14 +104,16 @@ def zcode_running():
 
 def load_state():
     try:
-        return json.load(open(STATE, encoding="utf-8"))
+        with open(STATE, encoding="utf-8") as f:
+            return json.load(f)
     except Exception:
         return {}
 
 
 def save_state(st):
     os.makedirs(os.path.dirname(STATE), exist_ok=True)
-    json.dump(st, open(STATE, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    with open(STATE, "w", encoding="utf-8") as f:
+        json.dump(st, f, ensure_ascii=False, indent=2)
 
 
 def check(data):
@@ -147,7 +149,8 @@ def main():
     else:
         log("无法探测 ZCode 进程（tasklist 不可用），继续", "warn")
 
-    data = open(CJS, "rb").read()
+    with open(CJS, "rb") as _f:
+        data = _f.read()
     size0 = len(data)
     rows = check(data)
 
@@ -171,7 +174,8 @@ def main():
             if new in data:
                 data = data.replace(new, old)
                 log("反向替换：%s" % name, "ok")
-        open(CJS, "wb").write(data)
+        with open(CJS, "wb") as _f:
+            _f.write(data)
         log("已按反向替换还原（无备份）", "warn")
         return 0
 
@@ -204,7 +208,8 @@ def main():
         log("没有任何一处被改动 —— 锚点全部未命中，可能是 ZCode 版本变了", "err")
         return 3
 
-    open(CJS, "wb").write(data)
+    with open(CJS, "wb") as _f:
+        _f.write(data)
     log("已写入，size %d -> %d（差 %+d）" % (size0, len(data), len(data) - size0), "ok")
     log("改动：%s" % "、".join(changed), "ok")
 
@@ -217,7 +222,8 @@ def main():
     save_state(st)
 
     # 复核
-    data2 = open(CJS, "rb").read()
+    with open(CJS, "rb") as _f:
+        data2 = _f.read()
     rows2 = check(data2)
     for name, s in rows2:
         log("复核 %-16s %s" % (name, {"done": "OK", "pending": "仍待打", "unknown": "锚点丢失"}[s]))

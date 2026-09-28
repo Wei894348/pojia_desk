@@ -138,6 +138,7 @@ def status(seat: str, home: str = "") -> dict:
         out["missing"] = our_ids()
         return out
     mine = set(our_ids())
+    parents = _parent_slugs()
     for name in sorted(os.listdir(root)):
         full = os.path.join(root, name)
         if not os.path.isdir(full):
@@ -154,7 +155,8 @@ def status(seat: str, home: str = "") -> dict:
                 have = f.read()
         except OSError:
             have = ""
-        want = with_mark(R.render_parent_skill(name) if name in _parent_slugs() else R.render_leaf(name))
+        want = with_mark(R.render_parent_skill(_parent_key(name)) if name in parents
+                         else R.render_leaf(name))
         (out["installed"] if have == want else out["stale"]).append(name)
     for name in sorted(mine):
         if name not in out["installed"] and name not in out["stale"] and name not in out["missing"]:
@@ -162,8 +164,19 @@ def status(seat: str, home: str = "") -> dict:
     return out
 
 
-def _parent_slugs() -> set:
-    return {R.CATEGORIES[c][3] for c in R.CAT_ORDER}
+def _parent_slugs() -> dict:
+    """目录名（slug）→ CATEGORIES 的键，例：`sw-analyze` → `sw`。
+
+    注意别把它当成"键的集合"用 —— `render_parent_skill()` 收的是**键**（sw/net/…），
+    而这里给的是**目录名**（slug）。曾经直接 `if name in _parent_slugs()` 就往下传，
+    于是只要目录里真出现过父类目，status() 就会
+    `KeyError: 'auto-pipe'` 崩掉（2026-09-27 实测）。
+    """
+    return {R.CATEGORIES[c][3]: c for c in R.CAT_ORDER}
+
+
+def _parent_key(name: str):
+    return _parent_slugs().get(name)
 
 
 def uninstall(seat: str, remove_fn, home: str = "") -> dict:
