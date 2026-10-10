@@ -8,20 +8,21 @@ rem  wrong code page, and the whole script falls apart.  All Chinese
 rem  text lives in the .md docs and inside the Python file.
 rem  The target .py is located by wildcard because its name is
 rem  non-ASCII as well -- never write that name into this file.
+rem  The engine lives in engine\ (root only keeps entry points + data).
 rem ==================================================================
 
 cd /d "%~dp0"
 
 set "SCRIPT="
-for %%F in ("%~dp0*.py") do (
+for %%F in ("%~dp0engine\*.py") do (
     echo %%~nxF | findstr /i /c:"console" >nul 2>&1
     if errorlevel 1 if not defined SCRIPT set "SCRIPT=%%~fF"
 )
 
 if not defined SCRIPT (
     echo.
-    echo   [!] No .py file found next to this launcher.
-    echo       Keep the .bat and the .py in the same folder.
+    echo   [!] No engine .py found under engine\ next to this launcher.
+    echo       Keep the .bat, engine\ and the .py files together.
     echo.
     pause
     exit /b 1

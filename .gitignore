@@ -8,12 +8,18 @@ build/
 
 # 项目私有状态 / 凭证 / 运行产物（不入库）
 状态/
+历史备份/
 __pycache__/
 *.pyc
 workbuddy_accounts_*.json
-破甲日志.txt
 *.log
 product.json
 七项对齐实施报告.md
 .workbuddy/
-codex/切换创作通道.py
+targets/codex/切换创作通道.py
+
+# 运行过程产物（不入库）
+.tmp/
+
+# 说明：docs/ 与 README.md 是生成产物（tools/build_readme.py），但要对 GitHub
+# 可见，所以**不**忽略；改正文请改生成器再重新生成。

@@ -20,14 +20,17 @@ class El {
     this._cls = new Set(); this._attrs = {}; this.dataset = {}; this.style = {};
     this.id = ''; this.textContent = ''; this.title = ''; this.type = ''; this.checked = false;
     this.disabled = false; this.value = ''; this._html = '';
-    const cls = this._cls;
+    // 必须每次现读 this._cls —— className 的 setter 会整个换掉这个 Set，
+    // 闭包捕获旧 Set 的话，`className = 'card ...'` 之后的 classList.add('off')
+    // 会写进已被丢弃的旧 Set（真实 DOM 里这俩是同一个 class 列表，不许走样）。
+    const self = this;
     this.classList = {
-      add: (...cs) => cs.forEach((c) => cls.add(c)),
-      remove: (...cs) => cs.forEach((c) => cls.delete(c)),
-      contains: (c) => cls.has(c),
+      add: (...cs) => cs.forEach((c) => self._cls.add(c)),
+      remove: (...cs) => cs.forEach((c) => self._cls.delete(c)),
+      contains: (c) => self._cls.has(c),
       toggle: (c, force) => {
-        const on = force === undefined ? !cls.has(c) : !!force;
-        if (on) cls.add(c); else cls.delete(c);
+        const on = force === undefined ? !self._cls.has(c) : !!force;
+        if (on) self._cls.add(c); else self._cls.delete(c);
         return on;
       },
     };
@@ -58,17 +61,36 @@ class El {
   get scrollHeight() { return 0; }
 
   _match(sel) {
-    // 支持四种：标签（input）、类（.card）、类+data-key（.card[data-key="dsh"]）、#id
-    let m = /^\.([\w-]+)(?:\[data-key="([^"]+)"\])?$/.exec(sel);
-    if (m) {
-      if (!this._cls.has(m[1])) return false;
-      if (m[2] !== undefined && this.dataset.key !== m[2]) return false;
-      return true;
-    }
-    m = /^#([\w-]+)$/.exec(sel);
+    // 支持：#id、标签（input）、类（.card）、以及「标签? 类* 属性*」的组合，
+    // 例如 label.optitem[data-opt]（两台破甲模式下拉的勾选框就按它找）。
+    // 属性值可省（只判存在），data-* 走 dataset。
+    let m = /^#([\w-]+)$/.exec(sel);
     if (m) return this.id === m[1];
-    m = /^([a-zA-Z][\w-]*)$/.exec(sel);
-    return !!m && this.tagName.toLowerCase() === m[1].toLowerCase();
+    m = /^([a-zA-Z][\w-]*)?((?:\.[\w-]+)*)((?:\[[^\[\]]+\])*)$/.exec(sel);
+    if (!m) return false;
+    const [, tag, classPart, attrPart] = m;
+    if (!tag && !classPart && !attrPart) return false;
+    if (tag && this.tagName.toLowerCase() !== tag.toLowerCase()) return false;
+    for (const c of classPart.split('.').filter(Boolean)) {
+      if (!this._cls.has(c)) return false;
+    }
+    for (const a of (attrPart.match(/\[[^\[\]]+\]/g) || [])) {
+      // 值可以带引号也可以不带（真实 DOM 两者都认：input[type=checkbox]
+      // 和 input[type="checkbox"] 等价）。桩里原本只认带引号的写法。
+      const mm = /^\[([\w-]+)(?:=(?:"([^"]*)"|([^\]"]+)))?\]$/.exec(a);
+      if (!mm) return false;
+      const key = mm[1];
+      const want = mm[2] !== undefined ? mm[2] : mm[3];
+      // 真实 DOM 的属性选择器认的是"反映属性"：input[type=checkbox] 能命中
+      // chk.type='checkbox' 这种直接赋值。桩里少这一步，app.js 用属性选择器就白写。
+      let cur;
+      if (key.startsWith('data-')) cur = this.dataset[key.slice(5)];
+      else if (key in this._attrs) cur = this._attrs[key];
+      else cur = this[key];
+      if (want === undefined) { if (cur === undefined) return false; }
+      else if (cur !== want) return false;
+    }
+    return true;
   }
   _walk(sel, out) {
     for (const c of this.children) {
@@ -114,10 +136,10 @@ let src = fs.readFileSync(path.join(GUI, 'renderer', 'app.js'), 'utf8');
 src = src.replace(/\nloadOpts\(\);\s*\nbind\(\);\s*\nboot\(\);\s*$/m, '\n');
 if (/^bind\(\);$/m.test(src)) throw new Error('没能剥掉启动三行 —— app.js 末尾格式变了');
 globalThis.__export = {};
-vm.runInThisContext(src + '\n;globalThis.__export = { buildCard, upsertCard, renderCards, renderSkeleton, state, ORDER, paintDshOpts, paintDshNodes, presetButtonFace, optMode, flagsForOpts, revertAsk };', {
+vm.runInThisContext(src + '\n;globalThis.__export = { buildCard, upsertCard, renderCards, renderSkeleton, state, ORDER, LABELS, hasDsh, paintDshOpts, paintDshNodes, presetButtonFace, optMode, flagsForOpts, revertAsk };', {
   filename: 'app.js',
 });
-const { buildCard, upsertCard, renderCards, renderSkeleton, state, ORDER,
+const { buildCard, upsertCard, renderCards, renderSkeleton, state, ORDER, LABELS, hasDsh,
         paintDshOpts, paintDshNodes, presetButtonFace, optMode, flagsForOpts, revertAsk } = globalThis.__export;
 
 // ── 断言 ──────────────────────────────────────────────────
@@ -133,23 +155,32 @@ const dshCardOf = (extra) => buildCard(Object.assign(
   { key: 'dsh', label: 'DSH (DeepSeek Harness)', home: 'h', state: 'current', rows: [], metrics: [] },
   extra || {}));
 
-console.log('【1】目标只有八个，没有第九张「破甲模式」卡');
+console.log('【1】九张卡 = 八个命令行目标 + DSH 桌面版，没有「破甲模式」卡');
 check('ORDER 不含 pojia', !ORDER.includes('pojia'), ORDER.join(','));
-check('八个目标全是真目标（没混进伪目标）', ORDER.length === 8);
+check('九张卡（八个目标 + dsh-desktop）', ORDER.length === 9, ORDER.join(','));
+check('DSH 桌面版紧跟 DSH',
+  ORDER.indexOf('dsh-desktop') === ORDER.indexOf('dsh') + 1, ORDER.join(','));
+check('每张卡都是真目标或界面卡，没混进伪目标',
+  ORDER.every((k) => k !== 'pojia' && LABELS[k]), ORDER.join(','));
 renderSkeleton(ORDER);
-check('骨架就是八张', doc.getElementById('cards').children.length === 8);
+check('骨架就是九张', doc.getElementById('cards').children.length === 9);
 // 喂数据对象（upsertCard 取的是 c.key，不是 DOM 节点）
 [{ key: 'wb', label: 'WorkBuddy', home: '', state: 'none', rows: [], metrics: [] },
  { key: 'codex', label: 'Codex', home: '', state: 'current', rows: [], metrics: [] }]
   .forEach(upsertCard);
-check('插入后还是八张（替换骨架，不会凭空多一张）',
-  doc.getElementById('cards').children.length === 8,
+check('插入后还是九张（替换骨架，不会凭空多一张）',
+  doc.getElementById('cards').children.length === 9,
   String(doc.getElementById('cards').children.length));
 check('顺序仍是 ORDER',
   doc.getElementById('cards').children.map((c) => c.dataset.key).join(',') === ORDER.join(','),
   doc.getElementById('cards').children.map((c) => c.dataset.key).join(','));
 check('每张卡都带勾选框（没有"不可选"的特殊卡）',
   doc.getElementById('cards').children.every((c) => c.querySelectorAll('input').length >= 1));
+// 桌面版卡执行时折回 dsh（bridge 的 CARD_ONLY）：只勾桌面版也要认得出"这批里有 DSH"，
+// 否则破甲模式下拉的开关判定与恢复确认都会漏掉它。
+check('只勾桌面版也算"这批里有 DSH"',
+  hasDsh(['dsh-desktop']) && hasDsh(['dsh']) && !hasDsh(['wb', 'codex']),
+  [hasDsh(['dsh-desktop']), hasDsh(['dsh']), hasDsh(['wb'])].join(','));
 
 console.log('【2】DSH 卡片里的破甲模式下拉');
 const dshCard = mount(dshCardOf());
@@ -203,6 +234,31 @@ check('换组合时旧配色摘干净（不留 on / half）',
   !doc.getElementById('ddDshBtn').classList.contains('on')
   && !doc.getElementById('ddDshBtn').classList.contains('half'));
 check('optMode 对空值有兜底（不返回 undefined）', !!optMode({}));
+
+console.log('【3b】DSH 桌面版卡也挂一台下拉（两台共享 state.opts）');
+const dshDesk = buildCard({ key: 'dsh-desktop', label: 'DSH 桌面版', home: 'h',
+  state: 'current', rows: [], metrics: [],
+  deploy: { chip: '提示词 + 破甲模式', level: 'on', any: true, both: true,
+            prompt: '本版', preset: '本版',
+            text: '当前：已部署 提示词（本版）+ 破甲模式（本版）' } });
+mount(dshDesk);
+const deskMenu = dshDesk.querySelector('.optmenu');
+check('桌面版卡带下拉条 + 状态行',
+  !!dshDesk.querySelector('.card-opt') && !!dshDesk.querySelector('.deploystate'));
+check('下拉的勾选框 id 带后缀（不与 DSH 卡撞 id）',
+  !!deskMenu && deskMenu.children.map((it) => it.querySelector('input').id).join(',')
+    === 'optPrompt2,optPreset2',
+  deskMenu && deskMenu.children.map((it) => it.querySelector('input').id).join(','));
+state.opts.prompt = false; state.opts.preset = true;
+paintDshOpts();
+check('重画时桌面版那一台跟着 state.opts 走（不是只画 DSH 那台）',
+  deskMenu.children.map((it) => it.querySelector('input').checked).join(',') === 'false,true',
+  deskMenu.children.map((it) => it.querySelector('input').checked).join(','));
+state.opts.prompt = true; state.opts.preset = true;
+paintDshOpts();
+// 本节的 mount 把原来那张 DSH 卡挤出了测试 DOM，这里挂回去 ——
+// 后面【6】节的开合断言还指着它（$() 只在已挂树的节点里找）。
+mount(dshCard);
 
 console.log('【4】组合 → 命令行开关');
 state.opts.prompt = true; state.opts.preset = true;
@@ -307,6 +363,73 @@ state.opts.prompt = true; state.opts.preset = true;
 check('探测结果缺失时状态行不炸、给兜底文案',
   !!dshWith(undefined) && dshWith(undefined).querySelectorAll('.dtxt')[0]
     .textContent.includes('还没探测到'));
+
+console.log('【10】刷新时复用节点（不再整卡重建）');
+// 防回退：upsertCard 曾经对同 key 直接 replaceChild 重建整张卡 ——
+// 表现就是每次刷新整屏跳一下、滚动位置与 hover 全丢。现在只有骨架卡才新建节点。
+renderSkeleton(ORDER);
+const wrap = doc.getElementById('cards');
+const pick = (k) => wrap.children.find((c) => c.dataset.key === k);
+upsertCard({ key: 'wb', label: 'WorkBuddy', home: '/x/wb', state: 'none', rows: [], metrics: [] });
+const node1 = pick('wb');
+upsertCard({ key: 'wb', label: 'WorkBuddy', home: '/y/wb', state: 'current',
+             rows: [{ level: 'ok', path: '/y/wb/f', note: 'n' }],
+             metrics: [{ name: 'm', value: 1, ok: true }] });
+const node2 = pick('wb');
+check('同 key 二次 upsert 复用同一节点（不 replaceChild）', node1 === node2);
+check('状态类名就地更新', !!node2 && node2.className.includes('s-current'),
+  node2 && node2.className);
+check('落点路径就地更新',
+  !!node2 && node2.querySelectorAll('.card-home')[0].textContent === '/y/wb',
+  node2 && node2.querySelectorAll('.card-home')[0].textContent);
+check('指标块随新结果补上', !!node2 && !!node2.querySelector('.metrics'));
+check('明细块随新结果补上并保持在下一位',
+  !!node2 && !!node2.querySelector('.detail')
+  && node2.children[node2.children.length - 1].className.split(' ')[0] === 'detail');
+check('卡片总数与顺序不变（九张、按 ORDER）',
+  wrap.children.length === ORDER.length
+  && wrap.children.map((c) => c.dataset.key).join(',') === ORDER.join(','),
+  wrap.children.map((c) => c.dataset.key).join(','));
+
+console.log('【11】全选 / 全不选 与卡片左侧勾选框同源');
+// 防回退：renderCards 的原地分支曾经只切 'off' 类、不切 checkbox.checked，
+// 表现就是"点了全选，右边卡片亮了，左边勾号一个没动"。
+renderSkeleton(ORDER);
+ORDER.forEach((k) => upsertCard({ key: k, label: LABELS[k], home: '', state: 'current', rows: [], metrics: [] }));
+const w2 = doc.getElementById('cards');
+const boxes = () => w2.children.map((c) => {
+  const b = c.querySelector('input[type=checkbox]');
+  return b ? b.checked : null;
+});
+state.selected = new Set();
+renderCards(state.cards);
+check('全不选：九张卡的勾选框全空', boxes().every((b) => b === false), String(boxes()));
+check('全不选：九张卡都带 off（变灰）',
+  w2.children.every((c) => c.className.includes('off')));
+state.selected = new Set(ORDER);
+renderCards(state.cards);
+check('全选：九张卡的勾选框全打上', boxes().every((b) => b === true), String(boxes()));
+check('全选：没有卡还留灰', w2.children.every((c) => !c.className.includes('off')));
+// 反选 = 在现状上取补集，勾选框也得跟着翻
+state.selected = new Set([ORDER[0], ORDER[1]]);
+renderCards(state.cards);
+check('半选时就地同步：勾上的只头两张',
+  boxes().map((b, i) => (b ? i : -1)).filter((i) => i >= 0).join(',') === '0,1',
+  String(boxes()));
+// 骨架阶段点全选不能把骨架清成空屏（state.cards 还是空的），但骨架卡上
+// 那个 disabled 的勾选框也得跟着走，否则点了全选看着像没反应
+renderSkeleton(ORDER);
+state.selected = new Set(ORDER);
+renderCards(state.cards);
+const sBox = (c) => c.querySelector('input[type=checkbox]');
+check('骨架阶段点全选：不清屏（还是九张骨架）', w2.children.length === ORDER.length,
+  String(w2.children.length));
+check('骨架阶段点全选：骨架卡勾选框也打上',
+  w2.children.every((c) => sBox(c) && sBox(c).checked === true));
+state.selected = new Set();
+renderCards(state.cards);
+check('骨架阶段点全不选：骨架卡勾选框也清空',
+  w2.children.every((c) => sBox(c) && sBox(c).checked === false));
 
 console.log('\n' + (fail ? '✗ ' + fail + ' 项不过' : '✓ 全过') + '（' + pass + ' 项）');
 process.exit(fail ? 1 : 0);

@@ -9,7 +9,7 @@ from unittest import mock
 import tomllib
 
 
-SOURCE = Path(__file__).resolve().parents[1] / "破甲一键通.py"
+SOURCE = Path(__file__).resolve().parents[1] / "engine" / "破甲一键通.py"
 SPEC = importlib.util.spec_from_file_location("pojia", SOURCE)
 pojia = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(pojia)
@@ -32,7 +32,7 @@ class CodexConfigTests(unittest.TestCase):
         self.log_patch.start()
         self.addCleanup(self.log_patch.stop)
         # HERE 指向临时目录：apply 现在会把"本脚本这一版"同步进项目的
-        # codex/<CODEX_INSTR> 留档，测试必须落在沙箱里，别碰项目文件。
+        # codex/<CODEX_INSTR> 快照，测试必须落在沙箱里，别碰项目文件。
         self.here_patch = mock.patch.object(pojia, "HERE", self.temp.name)
         self.here_patch.start()
         self.addCleanup(self.here_patch.stop)
@@ -129,7 +129,8 @@ class CodexConfigTests(unittest.TestCase):
         self.assertEqual(Path(state["backup_config"]).read_text(encoding="utf-8"), original)
         self.assertEqual(state["hash_mark"], pojia.HASH_MARK + self.want)
         _, rows = self.target.status_rows(self.args)
-        self.assertEqual(sum(row[0] == "loose" for row in rows), 2)
+        # 三条 loose：指令文件 / config 顶层项 / AGENTS.md 标记块（双线注入）
+        self.assertEqual(sum(row[0] == "loose" for row in rows), 3)
         before = {p.name: p.stat().st_mtime_ns for p in self.home.iterdir()}
         self.assertEqual(self.target.apply(self.args, "apply"), {"skip": 1})
         self.assertEqual(before, {p.name: p.stat().st_mtime_ns for p in self.home.iterdir()})

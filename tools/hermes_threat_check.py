@@ -45,7 +45,7 @@ try:
 except Exception:
     pass
 
-# ── 上游 ThreatPatternLibrary（原样照抄，2026-09-21 main） ──────────────────
+# ── 上游 ThreatPatternLibrary（原样照抄，main） ──────────────────
 
 MAX_SCAN_CHARS = 65_536
 _FILLER = r"(?:\w+\s+){0,8}"
@@ -162,7 +162,8 @@ def scan_hits(content: str, scope: str = "context") -> List[Tuple[str, str]]:
 # ── 本地目标：将要注入 Hermes 的全部文本 ───────────────────────────────────
 
 def load_pj():
-    spec = importlib.util.spec_from_file_location("pojia", os.path.join(ROOT, "破甲一键通.py"))
+    spec = importlib.util.spec_from_file_location(
+        "pojia", os.path.join(ROOT, "engine", "破甲一键通.py"))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -170,7 +171,7 @@ def load_pj():
 
 def build_targets() -> List[Tuple[str, str]]:
     """返回 [(标签, 文本)]：SOUL.md 正文 + 86 份 SKILL.md。"""
-    sys.path.insert(0, ROOT)
+    sys.path.insert(0, os.path.join(ROOT, "engine"))
     import pojia_routes as R
     m = load_pj()
     user, _src = m.load_user_persona("")

@@ -8,7 +8,7 @@ const { spawn, spawnSync } = require('child_process');
 const GUI_DIR = __dirname;
 const ROOT = path.dirname(GUI_DIR);
 const BRIDGE = path.join(GUI_DIR, 'bridge.py');
-const CONSOLE_PY = path.join(ROOT, 'console.py');
+const CONSOLE_PY = path.join(ROOT, 'engine', 'console.py');
 const PY_CACHE = path.join(GUI_DIR, '.python-path');
 
 let mainWin = null;
@@ -219,7 +219,7 @@ function createWindow() {
     });
   }
 
-  // 布局自检：POJIA_LAYOUT_DEBUG=1 时把窗口与各区块的实测尺寸写到 状态/_gui_layout.json
+  // 布局自检：POJIA_LAYOUT_DEBUG=1 时把窗口与各区块的验证尺寸写到 状态/_gui_layout.json
   if (process.env.POJIA_LAYOUT_DEBUG) {
     mainWin.webContents.once('did-finish-load', async () => {
       await new Promise((r) => setTimeout(r, 3500));
@@ -332,7 +332,7 @@ ipcMain.handle('pojia:openPath', async (_e, target) => {
 });
 
 ipcMain.handle('pojia:readLog', async () => {
-  const p = path.join(ROOT, '破甲日志.txt');
+  const p = path.join(ROOT, '状态', '破甲日志.txt');
   try {
     const txt = fs.readFileSync(p, 'utf8');
     return { ok: true, path: p, lines: txt.split(/\r?\n/).slice(-400) };

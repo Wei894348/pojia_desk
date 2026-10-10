@@ -1,0 +1,47 @@
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Python tests, route audit, docs and GUI checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 单元测试
+        run: python -m unittest discover tests
+
+      - name: 路由层自检
+        run: python tools/render_routes.py --audit
+
+      - name: 路由层与源件一致
+        run: python tools/render_routes.py --check
+
+      - name: README / 预览页与生成器一致
+        run: python tools/build_readme.py --check
+
+      - name: 版本号三处一致
+        run: python tools/check_version.py
+
+      - name: GUI 三个自检
+        working-directory: gui
+        run: |
+          node tools/check_contract.mjs
+          node tools/check_render.mjs
+          node tools/check_boot.mjs

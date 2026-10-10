@@ -145,7 +145,7 @@ for (const config of presets) {
       String(plugins.length).padEnd(8) +
       String(config.name ?? '(无 name)')
   );
-  if (bad) console.log('  ⚠ 引用了盘上不存在的包：' + miss.join(', ') + '（会 activation 失败）');
+  if (bad) console.log('  引用了盘上不存在的包：' + miss.join(', ') + '（会 activation 失败）');
 }
 
 console.log('');
@@ -177,7 +177,7 @@ if (carriers.length === 0) {
   }
   if (carriers.length > 1) {
     console.log(
-      '⚠ ' +
+      '' +
         carriers.length +
         ' 个 preset 携带同一份进程级注册（' +
         carriers.map((c) => c.id).join(' / ') +

@@ -1,14 +1,15 @@
 {
   "name": "pojia-workbench",
-  "version": "6.1.0",
+  "version": "6.7",
   "private": true,
-  "description": "破甲工作台 —— 四目标（Codex / DSH / WorkBuddy / ZCode）破甲的图形控制台：部署、验证、恢复",
+  "description": "破甲工作台 —— 九个席位（Codex / DSH / DSH 桌面版 / WorkBuddy / ZCode / Claude / Grok / Gemini / Hermes）的统一图形控制台：部署、预演、验证、恢复",
   "main": "main.js",
-  "author": "Wei894348",
+  "author": "pojia_desk",
   "license": "MIT",
   "scripts": {
     "start": "electron .",
-    "dev": "electron . --dev"
+    "dev": "electron . --dev",
+    "check": "node tools/check_contract.mjs && node tools/check_render.mjs && node tools/check_boot.mjs"
   },
   "devDependencies": {
     "electron": "^44.4.3"

@@ -118,9 +118,14 @@ const CARD = (k) => ({
   key: k, label: k, home: 'F:/x', state: 'current',
   rows: [], metrics: [], deploy: { chip: '什么都没部署', level: 'idle', text: '当前：什么都没部署' },
 });
+// 版本号从仓库根的 VERSION 读 —— 桩里写死会让这个自检随着发版一起过期。
+const SRC_VERSION = (() => {
+  try { return fs.readFileSync(path.join(GUI, '..', 'VERSION'), 'utf8').trim(); }
+  catch (_) { return ''; }
+})();
 const pojia = {
   boot: async () => ({
-    meta: { version: '6.2', root: 'F:/project/pojia_desk', route: { size: 20518, hit: ['任务路由'], miss: [] } },
+    meta: { version: SRC_VERSION, root: 'F:/project/pojia_desk', route: { size: 20518, hit: ['任务路由'], miss: [] } },
     python: 'C:\\py\\python.exe', pythonVersion: '3.13.12', root: 'F:/project/pojia_desk',
   }),
   status: async (tg) => { calls.status.push(tg); return { when: 't', cards: (tg || []).map(CARD) }; },
@@ -139,7 +144,11 @@ const pojia = {
 globalThis.window = { pojia, confirm: () => true };
 globalThis.document = doc;
 globalThis.localStorage = { getItem: () => null, setItem: () => {} };
-globalThis.setTimeout = (fn) => { try { fn(); } catch (_) { /* toast 的清理定时器 */ } return 0; };
+// 定时器改成「收集起来手动 flush」：刷新节流的合并窗口要靠它才验得出来
+// （原先是同步立即执行 —— 那样"排队等冷却"会退化成"立刻重跑"，窗口永远测不到）
+const timers = [];
+globalThis.setTimeout = (fn) => { timers.push(fn); return timers.length; };
+const flushTimers = () => { timers.splice(0).forEach((f) => { try { f(); } catch (_) { /* toast 的清理定时器 */ } }); };
 
 // ── 载入 app.js（剥掉末尾启动三行，改成我们自己按顺序调）──
 let src = fs.readFileSync(path.join(GUI, 'renderer', 'app.js'), 'utf8');
@@ -160,7 +169,7 @@ const setOpts = (p, q) => { X.state.opts.prompt = p; X.state.opts.preset = q; };
 
 // ── 1. 启动路径 ──────────────────────────────────────────
 console.log('【1】bind() + boot() 真跑');
-// 先把标题写脏 —— 否则 index.html 里的初值恰好也是 v6.2，就验不出"到底有没有被 meta 覆盖"
+// 先把标题写脏 —— 否则 index.html 里的初值恰好也是当前版本，就验不出"到底有没有被 meta 覆盖"
 $('tbVersion').textContent = 'v0.0-占位';
 $('tbSub').textContent = '占位';
 $('sbPython').textContent = 'python —';
@@ -169,12 +178,14 @@ let bootErr = null;
 await (async () => { try { X.loadOpts(); X.bind(); await X.boot(); } catch (e) { bootErr = e; } })();
 check('bind() + boot() 不抛异常', !bootErr, bootErr && (bootErr.message + '\n' + bootErr.stack));
 check('版本号被 meta 覆盖（页面里那个只是占位）',
-  $('tbVersion').textContent === 'v6.2', $('tbVersion').textContent);
-check('副标题按 ORDER 算（八目标）', $('tbSub').textContent === '八目标统一控制台', $('tbSub').textContent);
+  $('tbVersion').textContent === 'v' + SRC_VERSION, $('tbVersion').textContent);
+check('副标题按 ORDER 算（九张卡 → 九目标）',
+  $('tbSub').textContent === '九目标统一控制台', $('tbSub').textContent);
 check('底部栏回显解释器与项目根',
   $('sbPython').textContent.includes('python.exe') && $('sbRoot').textContent.includes('pojia_desk'),
   $('sbPython').textContent + ' | ' + $('sbRoot').textContent);
-check('boot 后 8 张卡都渲染出来', $('cards').children.length === 8, String($('cards').children.length));
+check('boot 后每张卡都渲染出来', $('cards').children.length === X.ORDER.length,
+  String($('cards').children.length));
 check('每张卡的 key 都对', $('cards').children.map((c) => c.dataset.key).join(',') === X.ORDER.join(','),
   $('cards').children.map((c) => c.dataset.key).join(','));
 check('DSH 卡里有状态行（新加的那行真渲染出来了）',
@@ -187,9 +198,14 @@ calls.run.length = 0;
 
 setOpts(true, true);
 await deploy.fire('click'); await new Promise((r) => setImmediate(r));
-check('两项都勾 → apply / 8 目标 / 无开关',
-  lastRun().action === 'apply' && lastRun().targets.length === 8 && lastRun().flags.length === 0,
+// 前端发的是**卡片 key**（含 dsh-desktop）；折回 dsh 是桥那一侧干的事（CARD_ONLY），
+// 这里只确认它照原样全发出去了、且没夹带开关。
+check('两项都勾 → apply / 全部卡片 / 无开关',
+  lastRun().action === 'apply' && lastRun().targets.length === X.ORDER.length
+    && lastRun().flags.length === 0,
   JSON.stringify(lastRun()));
+check('前端把 dsh-desktop 原样发给桥（折叠在桥侧做）',
+  lastRun().targets.includes('dsh-desktop'), JSON.stringify(lastRun()));
 
 calls.run.length = 0;
 setOpts(true, false);
@@ -201,8 +217,9 @@ check('只勾「注入提示词」→ flags=no-preset，dsh 仍在目标里',
 calls.run.length = 0;
 setOpts(false, true);
 await deploy.fire('click'); await new Promise((r) => setImmediate(r));
-check('只勾「增加破甲模式」→ flags=preset-only，8 个目标都还在',
-  lastRun().flags.join(',') === 'preset-only' && lastRun().targets.length === 8,
+check('只勾「增加破甲模式」→ flags=preset-only，所有卡片都还在',
+  lastRun().flags.join(',') === 'preset-only'
+    && lastRun().targets.length === X.ORDER.length,
   JSON.stringify(lastRun()));
 
 calls.run.length = 0;
@@ -234,6 +251,79 @@ await deploy.fire('click'); await new Promise((r) => setImmediate(r));
 check('没勾目标 → 一条命令都不发（只弹提示）', calls.run.length === 0, JSON.stringify(calls.run));
 X.ORDER.forEach((k) => X.state.selected.add(k));
 setOpts(true, true);
+
+// ── 4b. refreshStatus：合并 + 缓存 + 只刷目标 ───────────────
+// 三层防回退：
+//   ① 一次请求拿全部要探的卡 —— 旧实现是 9 个并发单卡请求、每个只取 cards[0]，
+//      任何一个失败/超时那张卡就停在旧内容上（"某张卡不刷新"的根源）；
+//   ② 冷却窗口内的多次刷新合并成一次真检测 —— 旧实现每次调用都真打桥，
+//      一次部署要跑两轮（收尾那轮 + busy 期间攒下的那轮）；
+//   ③ TTL 内探过的卡吃缓存 —— 旧实现切个窗口回来就重探 8 个目标。
+console.log('【4b】状态刷新：合并 + 缓存 + 只刷目标');
+const resetRefresh = (lastAt) => {
+  X.state.busy = false;
+  X.state._pendingRefresh = null;
+  X.state._refreshTimer = 0;
+  X.state._queuedKeys = null;
+  X.state._lastRefreshAt = lastAt === undefined ? 0 : lastAt;
+};
+
+// ① force 全量：真打一次，带齐九张卡的 key
+resetRefresh(0);
+X.state._cardCache.clear();
+calls.status.length = 0;
+await X.refreshStatus(true, null, true);
+await new Promise((r) => setImmediate(r));
+check('force 全量 → 只发一次 status 请求',
+  calls.status.length === 1, '实际 ' + calls.status.length + ' 次');
+check('一次带齐全部卡片 key',
+  !!calls.status[0] && calls.status[0].length === X.ORDER.length,
+  JSON.stringify(calls.status[0]));
+
+// ② 非 force：TTL 内直接吃缓存，不再打桥（切窗口回来就靠这条不重探）
+resetRefresh(0);
+calls.status.length = 0;
+await X.refreshStatus(true);
+await new Promise((r) => setImmediate(r));
+check('TTL 内刷新吃缓存，不发 status 请求',
+  calls.status.length === 0, '实际 ' + calls.status.length + ' 次');
+
+// ③ 冷却窗口：窗口内多次请求只排一个定时器，到点只真探一次
+resetRefresh(Date.now());
+X.state._cardCache.clear();          // 让这次必须真探，才验得出"只探一次"
+calls.status.length = 0;
+timers.length = 0;
+await X.refreshStatus(true);
+await X.refreshStatus(true);
+check('冷却窗口内多次刷新只排一个定时器', timers.length === 1,
+  '实际 ' + timers.length + ' 个');
+flushTimers();
+await new Promise((r) => setImmediate(r));
+check('合并后只真检测一次', calls.status.length === 1,
+  '实际 ' + calls.status.length + ' 次');
+
+// ④ 局部刷新：只把要刷的目标发给桥（部署完只重探动过的那几个）
+resetRefresh(0);
+calls.status.length = 0;
+await X.refreshStatus(true, new Set(['wb']), true);
+await new Promise((r) => setImmediate(r));
+check('局部刷新只带指定目标',
+  calls.status.length === 1 && JSON.stringify(calls.status[0]) === '["wb"]',
+  JSON.stringify(calls.status));
+
+// ⑤ busy 期间记待办，收尾补跑（不能静默丢弃，否则卡片停在旧内容上）
+X.state.busy = true;
+X.state._pendingRefresh = null;
+await X.refreshStatus(true);
+check('busy 时的刷新记待办、不静默丢弃', !!X.state._pendingRefresh);
+check('待办里记下了要刷的目标', X.state._pendingRefresh
+  && X.state._pendingRefresh.keys === null);
+X.state.busy = true;
+await X.refreshStatus(true, new Set(['wb', 'codex']));
+check('带目标的请求也记进待办',
+  X.state._pendingRefresh && [...X.state._pendingRefresh.keys].join(',') === 'wb,codex',
+  JSON.stringify(X.state._pendingRefresh && [...X.state._pendingRefresh.keys]));
+resetRefresh(0);
 
 // ── 5. 其它按钮的绑定都在 ─────────────────────────────────
 console.log('【5】工具条按钮都绑上了 click');

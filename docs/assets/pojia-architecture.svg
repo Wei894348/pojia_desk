@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 420" width="1200" height="420" role="img" aria-label="破甲工作台架构：入口 → 引擎 → 落点">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0L10 5L0 10z" fill="#4d9fff"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="420" fill="#ffffff"/>
+  <g font-family="Microsoft YaHei,Segoe UI,sans-serif" font-size="14" fill="#1f2328">
+    <rect x="40" y="60" width="240" height="140" rx="10" fill="#f6f8fa" stroke="#d1d9e0"/>
+    <text x="60" y="92" font-weight="700" font-size="16">入口</text>
+    <text x="60" y="120">一键破甲.bat / console.bat</text>
+    <text x="60" y="146">engine/console.py（菜单 / 子命令）</text>
+    <text x="60" y="172">gui/（Electron 工作台）</text>
+
+    <rect x="360" y="40" width="280" height="180" rx="10" fill="#f6f8fa" stroke="#d1d9e0"/>
+    <text x="380" y="72" font-weight="700" font-size="16">引擎 engine/</text>
+    <text x="380" y="100">破甲一键通.py（目标定义 / 补丁）</text>
+    <text x="380" y="126">pojia_routes.py（路由装配）</text>
+    <text x="380" y="152">pojia_skills.py（86 份 SKILL）</text>
+    <text x="380" y="178">pojia_tx.py（部署事务）</text>
+    <text x="380" y="204">zcode_inject.py（cjs 注入）</text>
+
+    <rect x="720" y="40" width="440" height="180" rx="10" fill="#fff7f7" stroke="#d1d9e0"/>
+    <text x="740" y="72" font-weight="700" font-size="16">落点（文件级补丁，全部可逆）</text>
+    <text x="740" y="100">codex · dsh · dsh-desktop · wb · zcode</text>
+    <text x="740" y="126">claude · grok · gemini · hermes</text>
+    <text x="740" y="152">+ 各席位 skills/（父类目 6 + 小类 80）</text>
+    <text x="740" y="178">+ 状态/tx/&lt;id&gt;/（写前留证快照）</text>
+    <text x="740" y="204">+ 历史备份/（按时间戳归档原版）</text>
+
+    <rect x="360" y="278" width="800" height="106" rx="10" fill="#f6f8fa" stroke="#d1d9e0"/>
+    <text x="380" y="308" font-weight="700" font-size="16">注入链（内容都在 content/）</text>
+    <text x="380" y="336">content/route-layer.md（归一 → 定类 → 出招） →  content/persona.md  →  内容政策 / 覆盖层  →  席位落点</text>
+    <text x="380" y="362" fill="#656d76">改路由 = 改 content/routes/ 源件 → render_routes.py → console.py all apply</text>
+  </g>
+  <g stroke="#4d9fff" stroke-width="2" fill="none" marker-end="url(#ar)">
+    <path d="M280 130H352"/>
+    <path d="M640 130H712"/>
+    <path d="M500 220V270"/>
+  </g>
+</svg>

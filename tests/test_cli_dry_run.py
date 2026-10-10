@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """CLI 参数组合的回归：危险组合必须被拦住。
 
-起因（2026-09-27 实测事故）：
+起因：
 `main()` 里 dry 分支排在 revert 后面，而 revert 分支完全不看 dry_run ——
     python 破甲一键通.py --revert --dry-run --yes
 被当成【真还原】执行：dsh 与 wb 的补丁真的被还原掉（wb 连 16 个文件的文件保护
@@ -19,7 +19,7 @@ import unittest
 from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC = os.path.join(ROOT, "破甲一键通.py")
+SRC = os.path.join(ROOT, "engine", "破甲一键通.py")
 
 
 def load_cli():

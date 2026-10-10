@@ -35,16 +35,36 @@ from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-SRC = os.path.join(ROOT, "破甲一键通.py")
-CONSOLE = os.path.join(ROOT, "console.py")
-ORDER = ("codex", "dsh", "wb", "zcode", "claude", "grok", "gemini", "hermes")
+ENGINE = os.path.join(ROOT, "engine")
+CONTENT = os.path.join(ROOT, "content")
+SRC = os.path.join(ENGINE, "破甲一键通.py")
+CONSOLE = os.path.join(ENGINE, "console.py")
+# 界面卡列表（不是命令行目标列表）。DSH 拆两张：npm/Web 版（dsh）与
+# 桌面版（dsh-desktop）—— 后者执行时折回 dsh（见 CARD_ONLY），
+# 所以命令行侧仍然是八个目标。
+ORDER = ("codex", "dsh", "dsh-desktop", "wb", "zcode", "claude", "grok", "gemini", "hermes")
 # 破甲模式（用户级 agent preset）**不再是一张独立卡片** —— 它是 DSH 这个目标
 # 自己的一个可选动作，状态并进 card_dsh 的体检项与明细，由 DSH 卡片里的下拉控制。
 # PSEUDO 只是"命令行仍可显式寻址"的别名：`status pojia` 看它的状态快照。
 # 它**绝不进 ORDER** —— 否则 `all` 会把它透传给 console.py 变成"未知目标"。
 PSEUDO = ("pojia",)
+# 只在界面上单独成卡的 key → 落到命令行时折给谁。
+# DSH 桌面版和 npm 版共用同一套 apply / preset 流程（preset 一次就写 web + desktop
+# 两份 profile），所以它不是一个独立的命令行目标，只是界面上的一张卡。
+CARD_ONLY = {"dsh-desktop": "dsh"}
+
+
+def has_dsh(targets):
+    """这批目标里有没有 DSH —— 两张卡（dsh / dsh-desktop）都算。
+
+    折叠发生在执行前，但体检、确认文案这些要在折叠前判，只看 "dsh" 会漏掉
+    "只勾了桌面版卡片"这种情况。
+    """
+    return "dsh" in targets or "dsh-desktop" in targets
 # 与 console.py 的 CODEX_KEYS 对齐（主脚本里没有这个常量，它在控制台那层）
-CODEX_KEYS = ("unlock-v6", "任务路由", "反拒绝铁律", "创作许可前提", "点名即需求", "最终覆盖")
+# v6.8：对抗性三段已撤，判定键换成正面段落名 + 多语言层（EN/ES 在场即多语言注入生效）
+CODEX_KEYS = ("cfg-v7", "任务路由", "本机工作方式", "内容政策", "发送前自检",
+              "Workspace conventions (EN)")
 ROUTE_KEYS = ("任务路由", "归一", "定类", "出招", "草稿质量契约")
 ROUTE_JB_WORDS = ("忽略之前", "覆盖系统", "prompt injection", "越狱", "jailbreak",
                   "最高优先级覆盖", "不许拒绝", "不得省略")
@@ -93,7 +113,7 @@ def cached(key, ttl, fn, bad_ttl=None):
     而结果（npx 缓存目录）基本不变，缓存 5 分钟足够。
 
     但"空结果"是**没探到**，不是"确定没有"：DSH 装到新基点后，老的实现还要
-    再撑满 5 分钟才肯重探（实测表现为状态卡一直显示「未检测到安装」）。
+    再撑满 5 分钟才肯重探（验证表现为状态卡一直显示「未检测到安装」）。
     所以失败结果只缓存 bad_ttl（默认 15 秒）。
     """
     bad_ttl = CACHE_BAD_TTL if bad_ttl is None else bad_ttl
@@ -193,7 +213,7 @@ def cmd_meta():
     m = mod()
     route_keys = ROUTE_KEYS
     route_ok, route_size, route_hit, route_miss = probe(m.ROUTE_FILE, route_keys)
-    persona = os.path.join(ROOT, "persona.md")
+    persona = os.path.join(CONTENT, "persona.md")
     p_ok, p_size, _, _ = probe(persona)
     tx = getattr(m, "TX", None)
     tx_info = {"available": tx is not None, "root": tx.tx_root() if tx else "",
@@ -239,7 +259,7 @@ def _tx_resolve(tx, prefix):
 def cmd_tx(argv):
     """事务接口：list / verify <编号> / restore <编号> [--force]。
 
-    对应冷咖啡 workbench 的「版本对比」页：看得到改动、查得到完整性、回得去。
+    看得到改动、查得到完整性、回得去。
     """
     tx = getattr(mod(), "TX", None)
     if tx is None:
@@ -281,6 +301,7 @@ def card_codex():
     t = m.TARGETS["codex"]()
     home = t.resolve_home("")
     cfg_p, inst_p, st_p, bak = t.paths(home)
+    ag_p = t.agents_path(home)
     keys = list(CODEX_KEYS) + ["沉浸优先", "表演规则"]
     rows, files, state = [], [], "none"
 
@@ -325,6 +346,29 @@ def card_codex():
         state = "none"
         rows.append({"level": "dim", "path": cfg_p, "note": "未部署"})
 
+    # ── AGENTS.md 第二注入位（config.toml 被桌面端回写时的备用线）──
+    _pol, want = m.build_policy(m.load_user_persona("")[0] or "")
+    ag_txt = m.read_text_safe(ag_p)
+    ag_lv = t.agents_state(ag_txt or "", want)
+    if ag_txt is None:
+        rows.append({"level": "dim", "path": ag_p, "note": "AGENTS.md 不存在（部署时新建）"})
+    elif ag_lv == "current":
+        files.append({"path": ag_p, "exists": True, "size": size_of(ag_p), "sha": sha_of(ag_p),
+                      "hit": [], "miss": [], "role": "第二注入位 · 标记块"})
+        if not is_ours:
+            # 只有半条线：AGENTS.md 在，config.toml 那侧没指过来。这正是桌面端
+            # 回写 config.toml 的形态，不能报"已部署 · 本版"。
+            state = "stale"
+            rows.append({"level": "warn", "path": ag_p,
+                         "note": "AGENTS.md 标记块 · 本版（config.toml 未引用指令文件，"
+                                 "可能被桌面端回写；重新部署修复）"})
+        else:
+            rows.append({"level": "ok", "path": ag_p, "note": "AGENTS.md 标记块 · 本版"})
+    elif ag_lv == "other":
+        rows.append({"level": "warn", "path": ag_p, "note": "AGENTS.md 标记块哈希旧（部署自动升级）"})
+    else:
+        rows.append({"level": "dim", "path": ag_p, "note": "AGENTS.md 无本工具标记块（部署时合并，不动用户内容）"})
+
     st = {}
     try:
         st = t.load_state(home) or {}
@@ -336,8 +380,10 @@ def card_codex():
 
     metrics = [{"name": "配置", "value": os.path.basename(cfg_p), "ok": os.path.isfile(cfg_p)},
                {"name": "指令文件", "value": ("%d B" % size_of(inst_p)) if is_ours else "—", "ok": is_ours},
+               {"name": "AGENTS 块", "value": ("%d B" % size_of(ag_p)) if ag_lv else "—",
+                "ok": ag_lv == "current"},
                {"name": "备份目录", "value": "有" if os.path.isdir(bak) else "无", "ok": os.path.isdir(bak)}]
-    if files:
+    if is_ours and files and files[0].get("role") == "指令文件":
         metrics.append({"name": "关键段", "value": "%d/%d" % (len(files[0]["hit"]), len(keys)),
                         "ok": not files[0]["miss"]})
     return {"key": "codex", "label": t.label, "home": home, "state": state,
@@ -349,7 +395,7 @@ def card_zcode():
     t = m.TARGETS["zcode"]()
     home = t.resolve_home("")
     ag, st_p, bak = t.paths(home)
-    keys = list(m.ZCODE_KEYS) + ["学姐模式开启", "工程任务"]
+    keys = list(m.ZCODE_KEYS) + ["学姐在", "工程任务"]
     rows, files = [], []
 
     if not os.path.isfile(ag):
@@ -429,60 +475,107 @@ def _deploy_summary(state, pst):
     return d
 
 
+def _desktop_card_state(prompt_state, pst):
+    """桌面版卡的徽章状态 + 卡片那行说明 —— 两半（注入提示词 / 破甲模式）合起来判。
+
+    只按 pst 一刀切的写法（`"current" if pst == "current" else "stale"`）会把
+    absent（profile 里根本没这条声明）也说成 stale，于是徽章写着「已部署 · 旧版」、
+    正文却写「什么都没部署」—— 自相矛盾，还原后正好撞上。
+    返回 (state, deploy_summary)。
+    """
+    dsum = _deploy_summary(prompt_state, pst)
+    if "broken" in (pst, prompt_state):
+        return "broken", dsum
+    if not dsum["any"]:
+        return "none", dsum
+    if dsum["both"] and pst == "current" and prompt_state == "current":
+        return "current", dsum
+    return ("stale", dsum) if dsum["both"] else ("warn", dsum)
+
+
+def _dsh_scan(bases):
+    """扫一遍基点目录，数出"带人格标记的文件"与其中完整命中的数量。
+
+    两张 DSH 卡都要这份结果 —— 桌面版和 npm 版**共用同一份包树**
+    （`~/.dsh/profiles/node_modules/@deepseek-ai/*` 是指向 npx 缓存的 junction），
+    本体状态本来就是同一个。全量 walk 要几秒，而状态卡是并行起两张的，不缓存就白扫两遍。
+    """
+    def _do():
+        files, total, hit = [], 0, 0
+        # 剪枝 + 字节预筛：全量 walk 要 3.5 秒，实际只需要"含人格标记"的那几个文件
+        skip_dirs = {".git", "node_modules", "test", "tests", "__tests__", "docs",
+                     "coverage", ".cache", "examples", "types", "esm", "cjs", "fixtures"}
+        exts = (".js", ".mjs", ".cjs", ".json", ".yml", ".yaml")
+        b_marks = ("麻衣".encode("utf-8"), "沉浸优先".encode("utf-8"),
+                   b"unlock-v6", b"cfg-v7")
+        for base in bases or []:
+            for dirpath, dirs, fs in os.walk(base):
+                dirs[:] = [d for d in dirs if d not in skip_dirs]
+                for fn in fs:
+                    if not fn.endswith(exts):
+                        continue
+                    p = os.path.join(dirpath, fn)
+                    try:
+                        with open(p, "rb") as f:
+                            data = f.read(4 * 1024 * 1024)
+                    except Exception:
+                        continue
+                    if not any(mark in data for mark in b_marks):
+                        continue
+                    txt = data.decode("utf-8", "replace")
+                    total += 1
+                    full = (all(k in txt for k in ("沉浸优先", "表演规则", "学姐的创作室"))
+                            or "unlock-v6" in txt or "cfg-v7" in txt)
+                    if full:
+                        hit += 1
+                    files.append({"path": p, "exists": True, "size": len(data),
+                                  "sha": sha_of(p), "role": "补丁后文件",
+                                  "hit": [k for k in ("沉浸优先", "表演规则", "任务路由") if k in txt],
+                                  "miss": [] if full else ["完整人格段"]})
+        return {"files": files, "total": total, "hit": hit}
+    return cached("dsh_scan", 300, _do)
+
+
+# 本体那半的状态 → 明细行的配色
+_PROMPT_LEVEL = {"broken": "err", "none": "dim", "stale": "warn", "current": "ok"}
+
+
+def _prompt_state(bases_all, bases, total, hit):
+    """本体（注入提示词）那半的状态：返回 (state, 展示路径, 说明)。
+
+    两张 DSH 卡共用 —— 它们打的是同一份包树，这一半的状态本来就是同一个。
+    """
+    if not bases_all:
+        return "broken", "(npx 缓存)", "未发现 @deepseek-ai 安装"
+    if not bases:
+        return "none", "(无 Web/CLI 安装)", "只装了桌面版 —— 它的状态在「DSH 桌面版」那张卡上"
+    if total == 0:
+        return "none", bases[0], "未发现带人格标记的文件 —— 未部署"
+    if hit < total:
+        return "stale", bases[0], ("含人格标记文件 %d / %d —— 有旧版残留，建议重新部署"
+                                   % (hit, total))
+    return "current", bases[0], "含人格标记文件 %d / %d 全部命中" % (hit, total)
+
+
 def card_dsh():
     m = mod()
     t = m.TARGETS["dsh"]()
-    bases = []
     try:
-        bases = cached("dsh_bases", 300, lambda: t.find_bases(""))
+        bases_all = cached("dsh_bases", 300, lambda: t.find_bases(""))
     except Exception:
-        bases = []
-    rows, files, total, hit = [], [], 0, 0
-    # 剪枝 + 字节预筛：全量 walk 要 3.5 秒，实际只需要"含人格标记"的那几个文件
-    skip_dirs = {".git", "node_modules", "test", "tests", "__tests__", "docs",
-                 "coverage", ".cache", "examples", "types", "esm", "cjs", "fixtures"}
-    exts = (".js", ".mjs", ".cjs", ".json", ".yml", ".yaml")
-    b_marks = ("麻衣".encode("utf-8"), "沉浸优先".encode("utf-8"), b"unlock-v6")
-    for base in bases:
-        for dirpath, dirs, fs in os.walk(base):
-            dirs[:] = [d for d in dirs if d not in skip_dirs]
-            for fn in fs:
-                if not fn.endswith(exts):
-                    continue
-                p = os.path.join(dirpath, fn)
-                try:
-                    with open(p, "rb") as f:
-                        data = f.read(4 * 1024 * 1024)
-                except Exception:
-                    continue
-                if not any(mark in data for mark in b_marks):
-                    continue
-                txt = data.decode("utf-8", "replace")
-                total += 1
-                full = all(k in txt for k in ("沉浸优先", "表演规则", "学姐的创作室")) or "unlock-v6" in txt
-                if full:
-                    hit += 1
-                files.append({"path": p, "exists": True, "size": len(data),
-                              "sha": sha_of(p), "role": "补丁后文件",
-                              "hit": [k for k in ("沉浸优先", "表演规则", "任务路由") if k in txt],
-                              "miss": [] if full else ["完整人格段"]})
-    if not bases:
-        state = "broken"
-        rows.append({"level": "err", "path": "(npx 缓存)", "note": "未发现 @deepseek-ai 安装"})
-    elif total == 0:
-        state = "none"
-        rows.append({"level": "dim", "path": bases[0], "note": "未发现带人格标记的文件 —— 未部署"})
-    elif hit < total:
-        state = "stale"
-        rows.append({"level": "warn", "path": bases[0],
-                     "note": "含人格标记文件 %d / %d —— 有旧版残留，建议重新部署" % (hit, total)})
-    else:
-        state = "current"
-        rows.append({"level": "ok", "path": bases[0], "note": "含人格标记文件 %d / %d 全部命中" % (hit, total)})
+        bases_all = []
+    # 桌面版单独立卡（card_dsh_desktop）：它没有可打补丁的本体（包全在 app.asar 里），
+    # 混进这张卡的统计会让「安装基点 2 处 / 人格文件 8/8」既误导又对不上号。
+    desk_root = _dsh_desktop_root(t)
+    bases = _web_bases(bases_all, desk_root)
+    scan = _dsh_scan(bases)
+    files, total, hit = scan["files"], scan["total"], scan["hit"]
+    state, p_path, p_note = _prompt_state(bases_all, bases, total, hit)
+    rows = [{"level": _PROMPT_LEVEL.get(state, "dim"), "path": p_path, "note": p_note}]
     for p in files[:6]:
         rows.append({"level": "dim", "path": p["path"], "note": "补丁后 %d B" % p["size"]})
 
-    pst, pnote = _preset_probe(t, bases)
+    pst, pnote = _preset_probe(t, bases_all)
     p_label = {"current": "本版", "other": "旧版", "absent": "未建",
                "stale": "异常", "broken": "无源"}[pst]
     # 卡片上那行「当前：已部署 … / 什么都没部署」——实际盘面状态，
@@ -493,25 +586,68 @@ def card_dsh():
                # 破甲模式是 DSH 自己的一个可选项，状态就显示在这张卡里 ——
                # 它不再是独立卡片，所以这个 chip 不需要任何条件渲染。
                {"name": "破甲模式", "value": p_label, "ok": pst == "current"}]
-    rows.extend(_preset_rows(t, pst, pnote))
+    rows.extend(_preset_rows(t, pst, pnote, _preset_want(), bases_all))
     home = bases[0] if bases else ""
-    return {"key": "dsh", "label": t.label, "home": home, "state": state,
+    # 装了桌面版时，这张卡要跟旁边那张区分开 —— 光叫 "DeepSeek Harness" 分不清谁是谁
+    label = "DSH (Web/CLI)" if desk_root else t.label
+    return {"key": "dsh", "label": label, "home": home, "state": state,
             "rows": rows, "files": files[:10], "metrics": metrics,
             "deploy": summ}
 
 
-def _preset_rows(t, st, note):
+def _preset_want():
+    """破甲模式状态判定用的人格哈希（与主脚本同一份 policy）；取不到就 None。"""
+    try:
+        m = mod()
+        user, _src = m.load_user_persona("")
+        _pol, want = m.build_policy(user)
+        return want
+    except Exception:
+        return None
+
+
+def _preset_rows(t, st, note, want=None, bases=None):
     """破甲模式（profile patch 里的 preset 声明）的明细行 —— 并进 DSH 卡片。
 
     0.1.7 起 DSH 换了 preset 机制：声明落在
     `<DSH_HOME>/profiles/<profile>/cordis.patch.yml` 的标记块里；旧的用户级
     `.agent-presets/<id>/` 目录已经没有代码会读了。
+
+    DSH Desktop 与 Web/CLI 各读各的 profile（desktop / web），所以这里**逐个列**。
+    只显示 web 那份的话，桌面版没打上时卡片看着照样是「已部署」，等于把问题藏了。
     """
-    pf = t.profile_patch_file()
-    lv = {"current": "ok", "other": "warn", "stale": "warn",
-          "absent": "dim", "broken": "err"}.get(st, "dim")
-    rows = [{"level": lv, "path": pf, "note": "破甲模式 · " + note}]
-    if os.path.isfile(pf):
+    levels = {"current": "ok", "other": "warn", "stale": "warn",
+              "absent": "dim", "broken": "err"}
+    lv = levels.get(st, "dim")
+    try:
+        targets = t.preset_profiles()
+    except Exception:
+        targets = []
+    if not targets:
+        targets = [(t.PRESET_PROFILE, t.profile_patch_file())]
+
+    # 能拿到 want 就逐 profile 单独判 —— 这样卡片上直接看得出是哪个形态没打上，
+    # 而不是两行挂同一句聚合文案。
+    pbase = None
+    if want is not None:
+        try:
+            pbase = t.pkg_base(bases or [])
+        except Exception:
+            pbase = None
+
+    rows = []
+    for name, pf in targets:
+        l1, text = lv, "破甲模式(%s) · %s" % (name, note)
+        if pbase is not None:
+            try:
+                s1, why1 = t._preset_state_one(pf, want, pbase)
+                l1 = levels.get(s1, "dim")
+                text = "破甲模式(%s) · %s" % (name, why1 or "已部署，人格与本脚本同版")
+            except Exception:
+                pass
+        rows.append({"level": l1, "path": pf, "note": text})
+        if not os.path.isfile(pf):
+            continue
         txt = ""
         try:
             with open(pf, encoding="utf-8", errors="replace") as f:
@@ -530,7 +666,7 @@ def _preset_rows(t, st, note):
             rows.append({"level": "warn" if live else "dim", "path": pf,
                          "note": "声明 %d 字节 · %s%s"
                                  % (len(cur.encode("utf-8")), sha_of(pf),
-                                    ("  ⚠ 仍带互斥行 %s（与创造模式抢进程级注册）"
+                                    ("  仍带互斥行 %s（与创造模式抢进程级注册）"
                                      % "/".join(live)) if live else "")})
         else:
             rows.append({"level": "warn", "path": pf,
@@ -569,12 +705,153 @@ def card_preset():
     """
     m = mod()
     t = m.TARGETS["dsh"]()
-    pdir = t.profile_patch_file()
+    try:
+        profs = t.preset_profiles()
+    except Exception:
+        profs = []
+    pdir = profs[0][1] if profs else t.profile_patch_file()
     st, note = _preset_probe(t)
     bstate = {"current": "current", "other": "stale", "stale": "warn",
               "absent": "none", "broken": "broken"}.get(st, "none")
+    try:
+        bases = cached("dsh_bases", 300, lambda: t.find_bases(""))
+    except Exception:
+        bases = []
     return {"key": "pojia", "label": "DSH · 破甲模式", "home": pdir, "state": bstate,
-            "rows": _preset_rows(t, st, note), "files": [], "metrics": [], "preset": True}
+            "rows": _preset_rows(t, st, note, _preset_want(), bases),
+            "files": [], "metrics": [], "preset": True}
+
+
+def _dsh_desktop_root(t):
+    """桌面版安装根（主程序 exe 那一层）；没装返回 ""。
+
+    由 `find_bases()` 给出的桌面版基点反推：那条路径长这样 ——
+    `<root>\\resources\\app.asar.unpacked\\dsh\\node_modules\\@deepseek-ai`。
+    npx 缓存那种不含 `\\resources\\` 的基点会被跳过。
+    """
+    try:
+        bases = cached("dsh_bases", 300, lambda: t.find_bases(""))
+    except Exception:
+        bases = []
+    for b in bases:
+        p = b.replace("/", "\\")
+        low = p.lower()
+        for marker in ("\\resources\\app.asar.unpacked",
+                       "\\contents\\resources\\app.asar.unpacked",
+                       "\\resources\\app\\node_modules",
+                       "\\contents\\resources\\app\\node_modules"):
+            i = low.find(marker)
+            if i > 0:
+                return p[:i].rstrip("\\")
+    return ""
+
+
+def _web_bases(bases, desk_root):
+    """挑出**非桌面版**的安装基点（npx 缓存 / npm 全局 / 便携版）。
+
+    桌面版的基点都落在它的安装根下面，按前缀排除 —— 那些留给 card_dsh_desktop。
+    """
+    if not desk_root:
+        return list(bases)
+    rl = desk_root.lower().replace("/", "\\")
+    return [b for b in bases if not b.lower().replace("/", "\\").startswith(rl)]
+
+
+def card_dsh_desktop():
+    """DSH 桌面版（DeepSeek Harness Desktop）—— 独立一张卡。
+
+    和 npm 版共用 `~/.dsh`（skills / 会话 / 人格都是同一份），但**读另一个 profile**：
+    `dsh` 包里 `rejectElectronProfile()` 原话 —— profile "desktop" is managed
+    exclusively by the Electron application。所以破甲模式要 web + desktop 两份都写，
+    这张卡盯的就是桌面版那一份。
+
+    桌面版的完整包树打在 `resources\\app.asar` 里（打包、不可写）——它**没有可打补丁的本体**，
+    "本体那半"恒为不适用，能力全走 profile 级的 preset。所以这张卡不带「破甲模式」下拉：
+    那个开关在 DSH 卡片上，一次同时写两份 profile。
+    """
+    m = mod()
+    t = m.TARGETS["dsh"]()
+    root = _dsh_desktop_root(t)
+    levels = {"current": "ok", "other": "warn", "stale": "warn",
+              "absent": "dim", "broken": "err"}
+
+    if not root:
+        return {"key": "dsh-desktop", "label": "DSH 桌面版", "home": "(未检测到)",
+                "state": "none",
+                "rows": [{"level": "dim", "path": "",
+                          "note": "没找到桌面版安装（判据：主程序 DeepSeek Harness.exe，"
+                                  "或 resources/runtime + app.asar.unpacked/dsh 布局）"}],
+                "files": [], "metrics": []}
+
+    exe = os.path.join(root, "DeepSeek Harness.exe")
+    has_exe = os.path.isfile(exe)
+
+    want = _preset_want()
+    pbase = None
+    try:
+        pbase = t.pkg_base(cached("dsh_bases", 300, lambda: t.find_bases("")))
+    except Exception:
+        pbase = None
+
+    pf = t.profile_patch_file("desktop")
+    if os.path.isfile(pf) and pbase is not None:
+        try:
+            pst, why = t._preset_state_one(pf, want, pbase)
+        except Exception as e:
+            pst, why = "broken", str(e)
+    elif not os.path.isfile(pf):
+        pst, why = "absent", "profile patch 不存在（桌面版还没建过 profile）"
+    else:
+        pst, why = "absent", "拿不到包基准，无法判定"
+
+    rows = [{"level": "ok" if has_exe else "warn", "path": root,
+             "note": "官方桌面版" + (" · DeepSeek Harness.exe" if has_exe else " · 主程序未找到")},
+            {"level": levels.get(pst, "dim"), "path": pf,
+             "note": "破甲模式(desktop) · " + (why or "已部署，人格与本脚本同版")}]
+
+    if os.path.isfile(pf):
+        try:
+            with open(pf, encoding="utf-8", errors="replace") as f:
+                cur = t.preset_extract(f.read())
+            if cur:
+                live = t.preset_live_rows(cur)
+                rows.append({"level": "warn" if live else "dim", "path": pf,
+                             "note": "声明 %d 字节 · %s%s"
+                                     % (len(cur.encode("utf-8")), sha_of(pf),
+                                        ("  仍带互斥行 %s" % "/".join(live)) if live else "")})
+        except Exception:
+            pass
+
+    # 本体那半：桌面版跑起来加载的是 profiles/node_modules 里的包树，而它是指向
+    # npm 缓存包树的 **junction** —— 所以「注入提示词」和 Web/CLI 版是同一个操作，
+    # 状态也共用（走 _dsh_scan 的缓存，不重复 walk）。
+    try:
+        bases_all = cached("dsh_bases", 300, lambda: t.find_bases(""))
+    except Exception:
+        bases_all = []
+    web_bases = _web_bases(bases_all, root)
+    scan = _dsh_scan(web_bases)
+    prompt_state, _ppath, prompt_note = _prompt_state(
+        bases_all, web_bases, scan["total"], scan["hit"])
+    rows.append({"level": _PROMPT_LEVEL.get(prompt_state, "dim"), "path": "(注入提示词)",
+                 "note": "打的是 profiles\\node_modules 那份包树（junction 指向 npm 缓存）"
+                         "—— " + prompt_note})
+    rows.append({"level": "dim", "path": "(DSH 模式选择器)",
+                 "note": "「增加破甲模式」两份都写：web 与 desktop 各一份 profile patch"})
+
+    metrics = [{"name": "客户端",
+                "value": "DeepSeek Harness.exe" if has_exe else "未检测到", "ok": has_exe},
+               {"name": "profile", "value": "desktop", "ok": True},
+               {"name": "破甲模式",
+                "value": {"current": "本版", "other": "旧版", "absent": "未建",
+                          "stale": "异常", "broken": "无源"}.get(pst, pst),
+                "ok": pst == "current"}]
+    state, dsum = _desktop_card_state(prompt_state, pst)
+    return {"key": "dsh-desktop", "label": "DSH 桌面版", "home": root,
+            "state": state,
+            "rows": rows, "files": [], "metrics": metrics,
+            # 下拉用：提示词那半取共用包树的状态，破甲模式那半取 desktop profile
+            "deploy": dsum}
 
 
 def card_wb():
@@ -655,7 +932,7 @@ def card_wb():
                       "role": "闸门脚本", "hit": ["闸门已解锁"] if gate else [],
                       "miss": [] if gate else ["闸门未解锁"]})
     # 网页过滤属于 --full 档。它必须进 state / metrics —— 否则 revert 撤掉它之后
-    # 卡片依旧报「本版」，和 console 侧的判定不一致（2026-09-19 往返实测踩到）。
+    # 卡片依旧报「本版」，和 console 侧的判定不一致。
     full_ok = (not js_files) or (not gate_missing and not wf_missing)
 
     guard = 0
@@ -671,13 +948,41 @@ def card_wb():
     rows.append({"level": "dim", "path": cache,
                  "note": "运行时缓存 %s" % ("存在" if os.path.exists(cache) else "已清除（下次启动重建）")})
 
+    # 身份层：~/.workbuddy 的 SOUL/IDENTITY/USER/MEMORY 每轮被塞进
+    # prompt **末尾**的 <identity_context>（user 角色）+ 一句 "embody SOUL.md"，
+    # 会盖掉前头 system 里的注入人格 —— 症状是"卡片全绿、行为却是另一个人"。
+    # 所以它必须进 state / metrics：这层不绿，卡片就不许报 current。
+    id_big = [p for p in t.identity_files(data) if os.path.basename(p) in m.ID_BIG_FILES]
+    id_cur = 0
+    id_paths = []
+    for p in id_big:
+        if m.identity_state(m.read_text_safe(p) or "", want) == "current":
+            id_cur += 1
+        else:
+            id_paths.append(p)
+    id_res = t.identity_residue(data)
+    id_ok = bool(id_big) and id_cur == len(id_big) and id_res == 0
+    if id_big:
+        rows.append({"level": "ok" if id_ok else "warn",
+                     "path": os.path.join(data, "user-*-personal" if not id_paths else id_paths[0]),
+                     "note": "身份层（prompt 末尾，会盖过前置人格）：SOUL/IDENTITY 本版 %d/%d，"
+                             "USER/MEMORY 冲突行残留 %d" % (id_cur, len(id_big), id_res)})
+    else:
+        rows.append({"level": "dim", "path": data,
+                     "note": "身份层：未找到 SOUL.md/IDENTITY.md（未启用或路径不同）"})
+
     metrics = [{"name": "模板靶点", "value": "%d 宽松 / %d 命中" % (loose, pol_n), "ok": pol_n > 0 and loose == pol_n},
                {"name": "命令闸门", "value": "%d / %d" % (gate_ok, len(js_files)), "ok": js_files and gate_ok == len(js_files)},
                {"name": "网页过滤", "value": "%d / %d" % (wf_ok, len(js_files)), "ok": js_files and wf_ok == len(js_files)},
                {"name": "文件保护", "value": "已中和" if guard == 0 else "%d 残留" % guard, "ok": guard == 0},
+               {"name": "身份层", "value": "%d / %d" % (id_cur, len(id_big)) if id_big else "—", "ok": id_ok},
                {"name": "数据目录", "value": data or "—", "ok": bool(data)}]
     if state == "current" and not full_ok:
         state = "warn"
+    if state == "current" and id_big and not id_ok:
+        # 前面几层全绿、身份层不绿 —— 正是"破甲看着成功、行为不是本人"那种状态，
+        # 判 stale 而不是 warn：语义就是"该重打一遍"。
+        state = "stale"
     return {"key": "wb", "label": t.label, "home": install, "state": state,
             "rows": rows, "files": files, "metrics": metrics}
 
@@ -754,7 +1059,8 @@ def card_seat_md(key):
             "rows": rows, "files": files, "metrics": metrics}
 
 
-CARD_FN = {"codex": card_codex, "dsh": card_dsh, "wb": card_wb, "zcode": card_zcode,
+CARD_FN = {"codex": card_codex, "dsh": card_dsh, "dsh-desktop": card_dsh_desktop,
+           "wb": card_wb, "zcode": card_zcode,
            "pojia": card_preset,
            "claude": lambda: card_seat_md("claude"),
            "grok": lambda: card_seat_md("grok"),
@@ -864,14 +1170,14 @@ def _test_impl(targets):
                 good = k in hit2
                 ok = ok and good
                 add("ok" if good else "err", "  [%s] 关键段：%s" % ("OK  " if good else "FAIL", k))
-        p = os.path.join(ROOT, "persona.md")
+        p = os.path.join(CONTENT, "persona.md")
         if os.path.isfile(p) and os.path.isfile(inst_p):
             if os.path.getmtime(inst_p) + 5 < os.path.getmtime(p):
                 add("warn", "  [WARN] persona.md 比部署文件新 —— 改了人格没重打，需要重新部署")
             else:
                 add("ok", "  [OK  ] 部署文件与 persona.md 同步（新鲜度）")
 
-    if "dsh" in targets:
+    if has_dsh(targets):
         t = m.TARGETS["dsh"]()
         c = card_dsh()
         add("info", "【DSH】%s" % (c["home"] or "(未发现)"))
@@ -897,7 +1203,7 @@ def _test_impl(targets):
         if c["state"] not in ("current",):
             ok = False
 
-    add("info", "总体：" + ("✔ 通过" if ok else "✘ 存在 FAIL/WARN，见上文明细"))
+    add("info", "总体：" + ("[OK] 通过" if ok else "[FAIL] 存在 FAIL/WARN，见上文明细"))
     return {"when": _stamp(), "ok": ok, "items": lines}
 
 
@@ -908,8 +1214,8 @@ FILLERS = ("帮我", "麻烦", "请问", "求", "快点", "咋整", "给我", "�
 
 def cmd_route(sentence):
     """归一预览（只读）—— 实现见 pojia_routes.preview_route（与 console.py route 同源）。"""
-    if ROOT not in sys.path:
-        sys.path.insert(0, ROOT)
+    if ENGINE not in sys.path:
+        sys.path.insert(0, ENGINE)
     try:
         import pojia_routes as PR
     except Exception as e:
@@ -941,7 +1247,7 @@ def classify(raw):
             lv = "err"
         elif "[WARN]" in ln or "未命中" in ln or "未找到" in ln or "出错" in ln:
             lv = "warn"
-        elif "[OK" in ln or "✔" in ln or "完成" in ln:
+        elif "[OK" in ln or "完成" in ln:
             lv = "ok"
         else:
             lv = "dim"
@@ -1050,6 +1356,17 @@ def _run_preset(sub):
     return rc
 
 
+def _fold_targets(keys):
+    """界面卡 → 命令行目标：折叠 CARD_ONLY 里的别名并去重（保序）。"""
+    out, seen = [], set()
+    for k in keys:
+        k2 = CARD_ONLY.get(k, k)
+        if k2 not in seen:
+            seen.add(k2)
+            out.append(k2)
+    return out
+
+
 def cmd_run(action, targets, flags=None):
     flags = set(flags or [])
     # console.py 的动作词是 apply / revert / dry（dry 在内部映射成 dry-run）
@@ -1060,6 +1377,13 @@ def cmd_run(action, targets, flags=None):
     label = {"apply": "apply", "revert": "revert", "dry": "dry-run"}.get(argv_action, argv_action)
     # 伪目标过滤：pojia 只做展示，透传给 console.py 会变成"未知目标"
     targets = [k for k in targets if k not in PSEUDO]
+    # 界面卡折叠 + 去重：DSH 桌面版那张卡勾上后要落到 dsh 上，两张卡都勾也只跑一遍
+    picked = list(targets)
+    targets = _fold_targets(targets)
+    if picked != targets:
+        emit({"type": "log", "level": "info", "scope": "sys",
+              "text": "DSH 桌面版与 Web/CLI 版共用同一套命令（preset 一次写两份 profile），"
+                      "已按 dsh 合并执行"})
     # 两个互斥的连通开关（都由 DSH 卡片里那个下拉决定）：
     #   no-preset    —— 只注入提示词，别连带动破甲模式目录
     #   preset-only  —— 只动破甲模式，DSH 本体的提示词一个字节都不碰
@@ -1084,8 +1408,10 @@ def cmd_run(action, targets, flags=None):
     code = 0 if all(c == 0 for c in buf) else 1
     if "dsh" in targets:
         # 刚动过 DSH，旧的安装基点探测结论一律作废 —— 否则状态卡会拿着几分钟前
-        # 的答案（实测：装完 DSH 后卡片仍显示「未检测到安装」）。
+        # 的答案（验证：装完 DSH 后卡片仍显示「未检测到安装」）。
         cache_drop("dsh_bases")
+        # 文件扫描也一样：刚打完补丁，命中数必须重算，不能拿旧结论糊弄
+        cache_drop("dsh_scan")
     emit({"type": "exit", "code": code})
     return code
 
@@ -1163,6 +1489,11 @@ def cmd_diff(target):
         inst_p = os.path.abspath(os.path.join(home, rel)) if rel else inst_p
         items.append({"path": inst_p, "before": m.read_text_safe(inst_p) or "",
                       "after": t.build_instructions(user, want), "note": "指令文件（整文件生成）"})
+        ag_p = t.agents_path(home)
+        ag_old = m.read_text_safe(ag_p) or ""
+        items.append({"path": ag_p, "before": ag_old,
+                      "after": t.merge_agents_block(ag_old, t.build_agents_block(want)),
+                      "note": "第二注入位 · AGENTS.md 标记块（用户内容保留）"})
     elif target == "zcode":
         ag_p = os.path.join(home, "AGENTS.md")
         items.append({"path": ag_p, "before": m.read_text_safe(ag_p) or "",

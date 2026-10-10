@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """路由 skills 投放通道的回归测试（pojia_skills + 主脚本的 route_skills_apply）。
 
-起因（2026-09-27 体检实测，两个都藏了很久）：
+起因：
 
 1. **写口类型不匹配**：`route_skills_apply` 传的是 `tx_write_bytes`，而
    `pojia_skills.install` 交给写口的是 **str**。它之所以一直没炸，是因为
@@ -9,7 +9,7 @@
    **只有走在事务外**的调用才会 `TypeError: a bytes-like object is required,
    not 'str'`。这条旁路一旦有人用（直接调目标方法、调试、写新入口）就踩雷。
    修法：给 install 传文本写口 `write_text`，两边接口对齐。
-   配套：把 except 分支从黄字改成红字并注明"这是脚本 bug"，别再被当成
+   配套：把 except 分支从黄字改成红字并注明"这是脚本 bug"，避免被当成
    "这次没投上"糊过去。
 
 2. **父类目 slug 当成 key 用**：`_parent_slugs()` 返回 slug（`auto-pipe`），
@@ -39,9 +39,9 @@ def _load(name, path):
 class SkillsBase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.S = _load("pojia_skills_t", os.path.join(ROOT, "pojia_skills.py"))
+        cls.S = _load("pojia_skills_t", os.path.join(ROOT, "engine", "pojia_skills.py"))
         cls.R = cls.S.R
-        cls.m = _load("pojia_cli_sk", os.path.join(ROOT, "破甲一键通.py"))
+        cls.m = _load("pojia_cli_sk", os.path.join(ROOT, "engine", "破甲一键通.py"))
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -119,12 +119,33 @@ class WritePortTests(SkillsBase):
         self.assertIn("boom", msg)
 
     def test_route_skills_apply_skips_unsupported_seat(self):
-        """dsh 没有 skills 通道：一个字节都不写（返回空统计或 None 都算跳过）。"""
-        res = self.m.route_skills_apply("dsh", self.home, "dsh")
+        """没有 skills 通道的席位：一个字节都不写（返回空统计或 None 都算跳过）。
+
+        起 `dsh` **不再**是"无通道"席位 —— DSH 的 `skill-filesystem`
+        插件内置就扫 `<DSH_HOME>/skills`（依据 dsh-skill-filesystem/lib/index.js
+        → join(this.dshHome, "skills")），所以它跟别的席位一样要投。
+        这里改用**真正不存在**的键来测跳过分支，另加
+        test_dsh_has_skills_channel 守住新行为。
+        """
+        res = self.m.route_skills_apply("no-such-seat", self.home, "x")
         self.assertFalse(os.path.isdir(os.path.join(self.home, "skills")))
         if res is not None:
             self.assertEqual(res["written"], [])
             self.assertEqual(res["total"], 0)
+
+    def test_dsh_has_skills_channel(self):
+        """dsh 现在有 skills 通道：投到 <DSH_HOME>/skills（桌面版与网页版共用）。
+
+        原先 `SEATS["dsh"] = None` 的理由是"DSH 由 preset entries 驱动" —— 只对了一半：
+        preset 的 `customSkillDirs` 指向 `@deepseek-ai/dsh-agent-preset/skills`，
+        那是**包内置的 4 个**；路由的 86 份走的正是插件内置的 `<DSH_HOME>/skills`。
+        """
+        self.assertIn("dsh", self.S.SEATS)
+        self.assertIsNotNone(self.S.SEATS["dsh"])
+        res = self.m.route_skills_apply("dsh", self.home, "dsh")
+        self.assertTrue(os.path.isdir(os.path.join(self.home, "skills")))
+        self.assertEqual(res["total"], 86)
+        self.assertEqual(len(res["written"]), 86)
 
 
 class ParentSlugTests(SkillsBase):

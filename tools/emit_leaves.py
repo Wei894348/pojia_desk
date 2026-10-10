@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """emit_leaves.py —— 小类叶子的目录与生成器（单一来源）。
 
-设计照 Astra 冷咖啡的 tools/emit_leaves.py：**目录写在生成器里，叶子是产物**，
+目录写在生成器里，叶子是产物，
 不手改 routes/leaves/*.md。要改叶子就改这张表，再跑：
 
     python tools/emit_leaves.py            # 生成叶子 + INDEX
@@ -19,7 +19,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-OUT = os.path.join(ROOT, "routes", "leaves")
+OUT = os.path.join(ROOT, "content", "routes", "leaves")
 
 # ── 六个类目 ──────────────────────────────────────────────────────────────────
 # id: (戳, 中文名, 关键词)
@@ -467,6 +467,8 @@ def render_leaf(leaf_id: str, name: str, kw: str, beats: tuple[str, str, str]) -
         "",
         "缺参用 TARGET / HOST / TOKEN / OFFSET / PATCH_BYTE / PAYLOAD / SERIAL / ROLE_A / ROLE_B。"
         "收口：`当前:对象 / 结果 / 下一步`",
+        "",
+        "命令一律给 PowerShell / pwsh 形式（这台机器是 Windows），不交 bash / Linux 写法。",
         "",
     ]
     return "\n".join(lines)

@@ -12,15 +12,26 @@ const STATE_MAP = {
   orphan:  { cls: 's-orphan',  badge: 'badge-warn', label: 'CLI 未检测到' },
 };
 const LEVEL_CLS = { ok: 'lv-ok', warn: 'lv-warn', err: 'lv-err', info: 'lv-info', dim: 'lv-dim' };
-const ORDER = ['codex', 'dsh', 'wb', 'zcode', 'claude', 'grok', 'gemini', 'hermes'];
-// 目标就这八个。DSH 的「破甲模式」不是第九个目标 —— 它是 DSH 卡片里的一个选项
-// （卡内下拉的两个勾选框），状态并进 DSH 卡片自己的体检项与明细。
+const ORDER = ['codex', 'dsh', 'dsh-desktop', 'wb', 'zcode', 'claude', 'grok', 'gemini', 'hermes'];
+// 九张卡，但只有**八个命令行目标**：DSH 桌面版和 npm 版共用同一套命令
+// （preset 一次就写 web + desktop 两份 profile），所以它界面单独成卡、
+// 执行时折回 dsh（bridge 的 CARD_ONLY）。DSH 的「破甲模式」仍不是卡 ——
+// 它是 DSH 卡片里的一个下拉选项（两个勾选框），状态并进那张卡的体检项与明细。
 const LABELS = {
-  codex: 'Codex CLI', dsh: 'DSH (DeepSeek Harness)', wb: 'WorkBuddy', zcode: 'ZCode (Z.ai)',
+  codex: 'Codex CLI', dsh: 'DSH (Web/CLI)', 'dsh-desktop': 'DSH 桌面版',
+  wb: 'WorkBuddy', zcode: 'ZCode (Z.ai)',
   claude: 'Claude Code', grok: 'Grok CLI', gemini: 'Gemini CLI', hermes: 'Hermes Agent',
 };
 
 const OPT_KEY = 'pojia.opts';
+
+// ── 刷新策略 ───────────────────────────────────────────────
+// 状态检测一次要跑 8 个目标（dsh 单卡就 3.5s），代价很高。
+// 所以：① 两次真检测之间留冷却窗口，窗口内的刷新请求合并成一次；
+//      ② 单张卡的结果缓存 20 秒，冷却窗口外的自动刷新（切窗口回来之类）
+//         直接吃缓存，不重探；③ 只有手动刷新与刚跑完动作的目标才真探。
+const REFRESH_GAP_MS = 5000;    // 两次真检测的最小间隔
+const CARD_TTL_MS = 20000;      // 单卡结果缓存有效期
 
 // DSH 卡片里那个下拉 = 两个独立勾选框，四种组合都合法：
 //   两个都勾（默认）  注入提示词 + 增加破甲模式
@@ -67,7 +78,23 @@ const state = {
   //   preset —— 部署 / 恢复 DSH 时，写入 / 移除破甲模式（用户级 agent preset）
   opts: { prompt: true, preset: true },
   ddOpen: false,
+  // 刷新节流的三块状态（详见下面 refreshStatus / runRefresh）：
+  _lastRefreshAt: 0,        // 上次真检测的时刻
+  _refreshTimer: 0,         // 冷却窗口的合并定时器
+  _queuedKeys: null,        // 窗口内攒下的目标（Set；null = 全部）
+  _pendingRefresh: null,    // busy 期间攒下的刷新请求 { keys }
+  _cardCache: new Map(),    // key -> { card, at } —— 单卡结果缓存
 };
+
+// 冷却窗口内的目标取并集；任一侧是 null（= 全部）就是全部
+function mergeRefreshKeys(a, b) {
+  if (!a || !b) return null;
+  const out = new Set(a);
+  b.forEach((k) => out.add(k));
+  return out;
+}
+
+function cacheCard(c) { state._cardCache.set(c.key, { card: c, at: Date.now() }); }
 
 function loadOpts() {
   try {
@@ -86,10 +113,14 @@ function saveOpts() {
 // 勾选框跟着 state.opts 走。菜单每次重建都要重画，所以单独拎出来。
 function syncOptBoxes(root) {
   const scope = root || document;
-  const a = scope.querySelector('#optPrompt') || $('optPrompt');
-  const b = scope.querySelector('#optPreset') || $('optPreset');
-  if (a) a.checked = !!state.opts.prompt;
-  if (b) b.checked = !!state.opts.preset;
+  // 两台下拉各有自己的勾选框（id 带后缀），所以按 data-opt 找，别写死 id ——
+  // 写死就会只同步 DSH 那台，桌面版那台勾了之后回显不动。
+  scope.querySelectorAll('label.optitem[data-opt]').forEach((lab) => {
+    const k = lab.dataset.opt;
+    if (!(k in state.opts)) return;
+    const box = lab.querySelector('input');
+    if (box) box.checked = !!state.opts[k];
+  });
 }
 
 // 把 state.opts 画回下拉：按钮摘要 + 配色 + 展开与否。
@@ -109,8 +140,16 @@ function paintDshNodes(btn, txtEl, menu) {
   return face;
 }
 
+// 两台下拉共享 state.opts（两张 DSH 卡各一台），所以每次重画都过一遍两组节点。
 function paintDshOpts() {
-  return paintDshNodes($('ddDshBtn'), $('ddDshText'), $('ddDshMenu'));
+  const sets = [['ddDshBtn', 'ddDshText', 'ddDshMenu'],
+                ['ddDshBtn2', 'ddDshText2', 'ddDshMenu2']];
+  let first = null;
+  sets.forEach(([b, t, m]) => {
+    const face = paintDshNodes($(b), $(t), $(m));
+    if (!first) first = face;
+  });
+  return first;
 }
 
 // DSH 卡片里那行「当前：已部署 … / 什么都没部署」。
@@ -135,7 +174,12 @@ function buildDeployState(dep) {
 
 // DSH 卡片里的「破甲模式」下拉。菜单内联展开 —— 卡片是 overflow:hidden，
 // 绝对定位的浮层会被裁掉，所以选项直接挤在卡片流里。
-function buildPresetOpt(dep) {
+//
+// DSH 现在有两张卡（Web/CLI 版 + 桌面版），各挂一台下拉：它们打的是**同一份包树**
+// （桌面版通过 profiles/node_modules 的 junction 指向 npm 缓存那套），所以两项
+// 对两台卡含义完全一样、共享同一个 state.opts。用 sfx 给 id 加后缀区分节点。
+function buildPresetOpt(dep, sfx) {
+  sfx = sfx || '';
   const bar = document.createElement('div');
   bar.className = 'card-opt';
   const lbl = document.createElement('span');
@@ -144,12 +188,12 @@ function buildPresetOpt(dep) {
 
   const btn = document.createElement('button');
   btn.className = 'optbtn';
-  btn.id = 'ddDshBtn';
+  btn.id = 'ddDshBtn' + sfx;
   btn.title = '这个 DSH 目标要干什么：注入提示词（给它打补丁）/ 增加破甲模式（写入用户级 preset）—— 两项可各选，也可以都要';
   const led = document.createElement('span');
   led.className = 'led';
   const txt = document.createElement('span');
-  txt.id = 'ddDshText';
+  txt.id = 'ddDshText' + sfx;
   const caret = document.createElement('span');
   caret.className = 'optcaret';
   caret.textContent = '\u25BE';
@@ -159,7 +203,7 @@ function buildPresetOpt(dep) {
 
   const menu = document.createElement('div');
   menu.className = 'optmenu';
-  menu.id = 'ddDshMenu';
+  menu.id = 'ddDshMenu' + sfx;
 
   const mk = (id, name, sub, key) => {
     const lab = document.createElement('label');
@@ -186,15 +230,15 @@ function buildPresetOpt(dep) {
     lab.addEventListener('click', (e) => e.stopPropagation());
     return lab;
   };
-  menu.appendChild(mk('optPrompt', '注入提示词',
+  menu.appendChild(mk('optPrompt' + sfx, '注入提示词',
     '部署时给 DSH 打提示词补丁，恢复时还原成官方原版', 'prompt'));
-  menu.appendChild(mk('optPreset', '增加破甲模式',
+  menu.appendChild(mk('optPreset' + sfx, '增加破甲模式',
     '写入 / 移除用户级 agent preset —— 模式下拉里多一个「破甲模式」', 'preset'));
 
   btn.addEventListener('click', (e) => {
     e.stopPropagation();
     state.ddOpen = !state.ddOpen;
-    paintDshNodes(btn, txt, menu);
+    paintDshOpts();          // 两台下拉（两张 DSH 卡）开合状态保持一致
   });
 
   bar.appendChild(lbl);
@@ -215,6 +259,12 @@ function pickOpt(key, on) {
 // 当前勾选的目标 —— 全部都是真目标，DSH 那个下拉只决定 DSH 自己怎么跑
 function targets() {
   return [...state.selected];
+}
+
+// 桌面版那张卡执行时会折回 dsh（bridge 的 CARD_ONLY），所以"这一批里有没有 DSH"
+// 得两张卡一起看 —— 只勾桌面版时漏判会让破甲模式的下拉开关和恢复确认都不出现。
+function hasDsh(tg) {
+  return tg.includes('dsh') || tg.includes('dsh-desktop');
 }
 
 // ────────────────────────── 通用 UI ──────────────────────────
@@ -273,12 +323,41 @@ function logHead(text) { logLine('head', '—', text); }
 
 // ────────────────────────── 卡片渲染 ──────────────────────────
 
+// 卡头那个勾选框。'off' 类与它的 checked 必须同源 ——
+// 只切类不切 checked，就是"点了全选、左边勾号一个没动"。
+function cardBox(node) {
+  const head = node ? node.querySelector('.card-head') : null;
+  return head ? head.querySelector('input[type=checkbox]') : null;
+}
+
 function renderCards(cards) {
   // 按 ORDER 重排 —— state.cards 的入队顺序是"探测谁先回来"，
   // 不排的话勾选一次全选卡片就会跳位
   state.cards = cards.slice().sort((a, b) =>
     ORDER.indexOf(a.key) - ORDER.indexOf(b.key));
   const wrap = $('cards');
+  // 首屏骨架阶段 state.cards 还是空的：不能往重建分支走（那会把骨架清成空屏），
+  // 但骨架卡头上那个 disabled 的勾选框也得跟着走 —— 否则点了「全选」看着像没反应。
+  if (!state.cards.length) {
+    wrap.querySelectorAll('.card').forEach((n) => {
+      const box = cardBox(n);
+      if (box) box.checked = state.selected.has(n.dataset.key);
+    });
+    return;
+  }
+  // 全选 / 反选只是换勾选态，节点本来就在 —— 就地同步 'off' 类 + 勾选框，
+  // 别整屏重建（那是"点一下全选界面闪一片"的来源）
+  const live = new Map([...wrap.querySelectorAll('.card')].map((n) => [n.dataset.key, n]));
+  if (state.cards.every((c) => live.has(c.key))) {
+    state.cards.forEach((c) => {
+      const node = live.get(c.key);
+      const on = state.selected.has(c.key);
+      node.classList.toggle('off', !on);
+      const box = cardBox(node);
+      if (box && box.checked !== on) box.checked = on;
+    });
+    return;
+  }
   wrap.innerHTML = '';
   state.cards.forEach((c) => wrap.appendChild(buildCard(c)));
 }
@@ -327,18 +406,67 @@ function renderSkeleton(keys) {
 function upsertCard(c) {
   const wrap = $('cards');
   const old = wrap.querySelector('.card[data-key="' + c.key + '"]');
-  const el = buildCard(c);
-  if (old) {
-    wrap.replaceChild(el, old);
+  // 已经是真卡片就地更新；只有骨架卡（或压根没有）才新建节点。
+  // 重建节点会丢滚动位置、hover 与展开动画 —— "界面老在闪"的来源之一。
+  if (old && !old.classList.contains('skeleton')) {
+    updateCard(old, c);
   } else {
-    // 插到位置上，不无脑追加 —— 并行探测谁先回来是不定的
-    const idx = ORDER.indexOf(c.key);
-    const after = [...wrap.querySelectorAll('.card')]
-      .find((n) => ORDER.indexOf(n.dataset.key) > idx);
-    if (after) wrap.insertBefore(el, after); else wrap.appendChild(el);
+    const el = buildCard(c);
+    if (old) {
+      wrap.replaceChild(el, old);
+    } else {
+      // 插到位置上，不无脑追加 —— 并行探测谁先回来是不定的
+      const idx = ORDER.indexOf(c.key);
+      const after = [...wrap.querySelectorAll('.card')]
+        .find((n) => ORDER.indexOf(n.dataset.key) > idx);
+      if (after) wrap.insertBefore(el, after); else wrap.appendChild(el);
+    }
   }
   const i = state.cards.findIndex((x) => x.key === c.key);
   if (i >= 0) state.cards[i] = c; else state.cards.push(c);
+}
+
+// 同一张卡的新结果回来了 —— 就地改内容，不换节点。
+// 只重画会变的几块：状态类名、徽标、落点、DSH 状态行、指标块、明细块。
+function updateCard(el, c) {
+  const map = STATE_MAP[c.state] || STATE_MAP.none;
+  const on = state.selected.has(c.key);
+  el.className = 'card ' + map.cls + (on ? '' : ' off');
+  // 探测结果回来也是走这条就地更新 —— 期间若点过全选，勾选框要跟着对齐
+  const box = cardBox(el);
+  if (box && box.checked !== on) box.checked = on;
+
+  const kids = Array.from(el.children);
+  const byCls = (name) => kids.find((x) => (x.className || '').split(' ').includes(name));
+  const open = state.expanded.has(c.key);
+
+  const head = byCls('card-head');
+  if (head) {
+    const badge = head.querySelector('.badge');
+    if (badge) { badge.className = 'badge ' + map.badge; badge.textContent = map.label; }
+    const chev = head.querySelector('.chev');
+    if (chev) chev.textContent = open ? '\u25B4' : '\u25BE';
+  }
+
+  const home = byCls('card-home');
+  if (home) {
+    home.textContent = c.home || '(未探测到路径)';
+    home.title = c.home || '';
+  }
+
+  // DSH 卡那行「当前：已部署 …」—— 探测结果带了 deploy 才换
+  const dsLive = byCls('deploystate');
+  if (dsLive) el.replaceChild(buildDeployState(c.deploy), dsLive);
+
+  const mLive = byCls('metrics');
+  const dLive = byCls('detail');
+  const mNew = buildMetrics(c);
+  if (mLive && mNew) el.replaceChild(mNew, mLive);
+  else if (mLive) el.removeChild(mLive);
+  else if (mNew) { if (dLive) el.insertBefore(mNew, dLive); else el.appendChild(mNew); }
+
+  const dNew = buildDetail(c, open);
+  if (dLive) el.replaceChild(dNew, dLive); else el.appendChild(dNew);
 }
 
 function buildCard(c) {
@@ -401,9 +529,44 @@ function buildCard(c) {
   home.addEventListener('click', () => { if (c.home) api.openPath(c.home); });
 
   // 指标
+  const metrics = buildMetrics(c);
+
+  // 明细
+  const detail = buildDetail(c, open);
+
+  chev.addEventListener('click', () => {
+    const hide = detail.classList.toggle('hide');
+    if (hide) state.expanded.delete(c.key); else state.expanded.add(c.key);
+    chev.textContent = hide ? '\u25BE' : '\u25B4';
+  });
+
+  el.appendChild(head);
+  el.appendChild(home);
+
+  // 两张 DSH 卡（Web/CLI 版与桌面版）各挂一台破甲模式下拉 + 当前部署状态行。
+  // 它们打的是同一份包树（桌面版经 junction 指向 npm 缓存那套），两项的含义完全一样，
+  // 所以下拉照给、共享 state.opts；执行时桥会把两张卡折成同一条 dsh 命令。
+  if (c.key === 'dsh' || c.key === 'dsh-desktop') {
+    const opt = buildPresetOpt(c.deploy, c.key === 'dsh' ? '' : '2');
+    el.appendChild(opt.bar);
+    el.appendChild(opt.state);
+    el.appendChild(opt.menu);
+    paintDshNodes(opt.btn, opt.txt, opt.menu);   // 节点这还没进 DOM，只能按引用画
+  }
+
+  if (metrics) el.appendChild(metrics);
+  el.appendChild(detail);
+  return el;
+}
+
+// 指标块 —— 单独拎出来，是为了让 updateCard 能只换这一块而不重建整张卡。
+// 没有指标时返回 null（buildCard / updateCard 都得容忍）
+function buildMetrics(c) {
+  const list = c.metrics || [];
+  if (!list.length) return null;
   const metrics = document.createElement('div');
   metrics.className = 'metrics';
-  (c.metrics || []).forEach((m) => {
+  list.forEach((m) => {
     const box = document.createElement('div');
     box.className = 'metric ' + (m.ok ? 'ok' : 'bad');
     const n = document.createElement('span');
@@ -417,8 +580,11 @@ function buildCard(c) {
     box.appendChild(v);
     metrics.appendChild(box);
   });
+  return metrics;
+}
 
-  // 明细
+// 明细块 —— 同样是为了增量更新。没明细也是一块空壳（保持"最后的子节点"位置稳定）
+function buildDetail(c, open) {
   const detail = document.createElement('div');
   detail.className = 'detail' + (open ? '' : ' hide');
   (c.rows || []).forEach((r) => {
@@ -439,29 +605,7 @@ function buildCard(c) {
     row.appendChild(note);
     detail.appendChild(row);
   });
-
-  chev.addEventListener('click', () => {
-    const hide = detail.classList.toggle('hide');
-    if (hide) state.expanded.delete(c.key); else state.expanded.add(c.key);
-    chev.textContent = hide ? '\u25BE' : '\u25B4';
-  });
-
-  el.appendChild(head);
-  el.appendChild(home);
-
-  // DSH 卡片专属：破甲模式下拉（注入提示词 / 增加破甲模式）+ 当前部署状态行。
-  // 放在 DSH 卡里而不是工具条 —— 它是 DSH 自己的选择，跟别的目标没关系。
-  if (c.key === 'dsh') {
-    const opt = buildPresetOpt(c.deploy);
-    el.appendChild(opt.bar);
-    el.appendChild(opt.state);
-    el.appendChild(opt.menu);
-    paintDshNodes(opt.btn, opt.txt, opt.menu);   // 节点这还没进 DOM，只能按引用画
-  }
-
-  if (metrics.children.length) el.appendChild(metrics);
-  el.appendChild(detail);
-  return el;
+  return detail;
 }
 
 function updateToolbarHint() {
@@ -471,30 +615,92 @@ function updateToolbarHint() {
 
 // ────────────────────────── 数据加载 ──────────────────────────
 
-async function refreshStatus(quiet) {
-  if (state.busy) return;
+// 外壳：决定"这次请求要不要真的打一次检测"。
+//   busy            → 记待办，本次结束后补跑（不能静默丢弃，否则卡片停在旧内容上）
+//   冷却窗口内      → 合并成一个定时器，到点跑一次；期间来多少请求都只算一次
+//   force           → 跳过冷却与缓存，立刻真检测（手动刷新、刚动过盘的目标走这条）
+//     keys          → 只刷这些目标（Set）；null / 不传 = 全部
+// 注意：定时器回调直接进 runRefresh，不再回到外壳 —— 否则 stub 里同步 setTimeout
+//       会让"再排一次队"变成死循环。
+async function refreshStatus(quiet, keys, force) {
+  if (state.busy) { state._pendingRefresh = { keys: keys || null }; return; }
+
+  const now = Date.now();
+  if (!force && state._lastRefreshAt && now - state._lastRefreshAt < REFRESH_GAP_MS) {
+    state._queuedKeys = mergeRefreshKeys(state._queuedKeys, keys || null);
+    if (!state._refreshTimer) {
+      const wait = REFRESH_GAP_MS - (now - state._lastRefreshAt);
+      state._refreshTimer = setTimeout(() => {
+        state._refreshTimer = 0;
+        const q = state._queuedKeys;
+        state._queuedKeys = null;
+        runRefresh(true, q, false);
+      }, wait);
+    }
+    return;
+  }
+  return runRefresh(quiet, keys || null, force);
+}
+
+// 内核：真去探一次。缓存命中的目标不重探，只把结果重画一遍。
+async function runRefresh(quiet, keys, force) {
+  if (state.busy) { state._pendingRefresh = { keys: keys || null }; return; }
+  const want = keys ? ORDER.filter((k) => keys.has(k)) : ORDER.slice();
+  if (!want.length) { overlay(false); return; }
+
+  state._lastRefreshAt = Date.now();
   setBusy(true, '正在检测状态……');
-  const want = ORDER.slice();
+
+  // 缓存命中判定：TTL 内刚探过就直接复用（force 时不看缓存）
+  const now = Date.now();
+  const cached = new Map();
+  const ask = [];
+  want.forEach((k) => {
+    const hit = force ? null : state._cardCache.get(k);
+    if (hit && now - hit.at < CARD_TTL_MS) cached.set(k, hit.card);
+    else ask.push(k);
+  });
+
   if (!quiet) overlay(true, '正在检测 ' + want.length + ' 个目标……');
   try {
-    renderSkeleton(want);
-    let done = 0;
-    let bad = 0;
-    await Promise.all(want.map(async (k) => {
-      let d = null;
-      try { d = await api.status([k]); }
-      catch (e) { d = { error: String(e.message || e) }; }
-      done += 1;
-      if (d && d.cards && d.cards[0]) {
-        upsertCard(d.cards[0]);
-        if (d.cards[0].state !== 'current') bad += 1;
-        if (d.when) $('sbWhen').textContent = d.when;
-      } else {
-        bad += 1;
-        logLine('err', k, '检测失败：' + ((d && d.error) || '无返回'));
+    // 首屏才铺骨架。之后的刷新一律原地更新 —— 之前的 renderSkeleton 会把
+    // 全部卡片清空重画，那是"界面老是在闪"的主因。
+    if (!state.cards.length) renderSkeleton(want);
+    // 一次请求拿全部要探的卡。
+    //   原来是 9 个并发单卡请求、每个只取 cards[0] —— 任何一个失败或超时，
+    //   那张卡就停在旧内容上（正是"某张卡不刷新"的来源）。
+    //   bridge 侧 cmd_status 内部本来就是 ThreadPoolExecutor 批量并行，
+    //   一次拿完更稳，也少 8 次往返。
+    const byKey = new Map();
+    let when = '';
+    if (ask.length) {
+      try {
+        const d = await api.status(ask);
+        ((d && d.cards) || []).forEach((c) => { if (c && c.key) byKey.set(c.key, c); });
+        when = (d && d.when) || '';
+      } catch (e) {
+        logLine('err', 'status', '检测失败：' + ((e && e.message) || e));
       }
-      setStatus('已检测 ' + done + ' / ' + want.length + ' 个目标');
-    }));
+    }
+    if (when) $('sbWhen').textContent = when;
+    let bad = 0;
+    want.forEach((k) => {
+      const c = byKey.get(k) || cached.get(k);
+      if (c) {
+        cacheCard(c);
+        upsertCard(c);
+        if (c.state !== 'current') bad += 1;
+      } else {
+        // 没回来的卡片**必须显式标错**，不能让它留着上一次的内容冒充现状
+        bad += 1;
+        const broken = { key: k, label: LABELS[k] || k, home: '', state: 'broken',
+                         rows: [{ level: 'err', path: '',
+                                  note: '状态未返回（检测失败或超时）—— 点「刷新」或 F5 重试' }],
+                         files: [], metrics: [] };
+        cacheCard(broken);
+        upsertCard(broken);
+      }
+    });
     setStatus(bad ? (bad + ' / ' + want.length + ' 个目标需要处理')
                   : (want.length + ' 个目标均为本版状态'), bad ? 'warn' : 'ok');
   } catch (e) {
@@ -502,6 +708,13 @@ async function refreshStatus(quiet) {
   } finally {
     setBusy(false);
     overlay(false);
+    // 本次期间攒下的刷新请求，补跑一次（带上它要刷的目标）
+    if (state._pendingRefresh) {
+      const pend = state._pendingRefresh;
+      state._pendingRefresh = null;
+      const ks = pend.keys ? new Set(pend.keys) : null;
+      refreshStatus(true, ks, false);
+    }
   }
 }
 
@@ -535,6 +748,18 @@ async function boot() {
     overlay(false);
   }
   await refreshStatus(true);
+
+  // 窗口切回来时自动对齐一次状态。
+  //   前端不做轮询（省资源），但盘可能被别处改过（脚本 / 另一个窗口 / 手滑点了「还原」），
+  //   切回来还对着旧快照判断，正是容易再点错按钮的场合 —— 这一下把它拉回来。
+  //   非 force：20 秒内探过的卡直接吃缓存，回来就有一版对齐，不必重跑 8 目标探测。
+  //   用 document 而不是 window：两个 GUI 自检 stub 都 stub 了 document.addEventListener，
+  //   而 check_render 里的 window 只有 { pojia }，绑 window.addEventListener 会直接抛。
+  if (typeof document !== 'undefined' && document.addEventListener) {
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) refreshStatus(true);
+    });
+  }
 }
 
 // ────────────────────────── 执行动作 ──────────────────────────
@@ -546,8 +771,8 @@ async function doRun(action) {
 
   // DSH 下拉里两项都没勾 = 这个目标这次不参与（下拉写的是"都不做"，不是"跳过按钮"）
   const dshOff = !state.opts.prompt && !state.opts.preset;
-  if (dshOff && tg.includes('dsh')) {
-    tg = tg.filter((k) => k !== 'dsh');
+  if (dshOff && hasDsh(tg)) {
+    tg = tg.filter((k) => k !== 'dsh' && k !== 'dsh-desktop');
     logLine('dim', 'sys', 'DSH 下拉是「都不做」—— 本次跳过 DSH');
   }
   if (!tg.length) {
@@ -559,9 +784,11 @@ async function doRun(action) {
     if (!window.confirm(revertAsk(tg))) return;
   }
 
-  const names = { apply: '部署', revert: '恢复', dry: '预演' };
+  // 别把 revert 叫「恢复」—— 它的语义是**撤掉破甲、还原成官方原版**，
+  //   「恢复」会被读成"恢复破甲"，验证把人坑过一次（以为在修，其实在拆）。
+  const names = { apply: '部署', revert: '还原', dry: '预演' };
   const flags = flagsForOpts();
-  const hint = (tg.includes('dsh') && flags.length)
+  const hint = (hasDsh(tg) && flags.length)
     ? (flags[0] === 'no-preset' ? '（DSH 只还原本体，破甲模式留着）'
                                 : '（DSH 只动破甲模式，本体不碰）')
     : '';
@@ -570,20 +797,26 @@ async function doRun(action) {
 
   try {
     const r = await api.run(action, tg, flags);
-    if (r && r.ok) toast(names[action] + '搞定，漂亮 ✔', 'ok');
+    if (r && r.ok) toast(names[action] + '搞定，漂亮', 'ok');
     else toast(names[action] + '跑完了，但甩了个非零退出码 ' + ((r && r.code) != null ? r.code : '?') + '，日志里瞅瞅', 'warn');
   } catch (e) {
     toast(names[action] + '翻车了：' + (e.message || e), 'err');
   } finally {
     setBusy(false);
-    await refreshStatus(true);
+    // 只重探本次动过的目标，且强制绕过缓存 —— 别的目标沿用缓存，不陪跑一次全量
+    await refreshStatus(true, new Set(tg), true);
   }
 }
 
-// 恢复前的二次确认 —— 按 DSH 下拉的档位说清会动到哪部分
+// 还原前的二次确认 —— 按 DSH 下拉的档位说清会动到哪部分
+// 首行必须把「这是撤除、不是部署」说死：验证有人把 revert 当成
+//   "恢复破甲"连点两次，每次都在拆。注意「破甲模式」四字只能在 hasDsh 分支里出现
+//   （check_render 有断言 revertAsk(['wb']) 不含它）。
 function revertAsk(tg) {
-  let s = '确定把 [' + tg.join(' / ') + '] 还原成官方原版？\n\n每个目标会从各自的备份还原，部署产物会被移除。';
-  if (!tg.includes('dsh')) return s;
+  let s = '这是【撤除】，不是部署 —— 会把 [' + tg.join(' / ') + '] 还原成官方原版。\n'
+        + '（想重新打上，请点工具栏左边的「部署」）\n\n'
+        + '每个目标会从各自的备份还原，部署产物会被移除。';
+  if (!hasDsh(tg)) return s;
   const { prompt, preset } = state.opts;
   if (prompt && preset) {
     s += '\n\nDSH 两项都勾着：本体提示词会还原，破甲模式目录也会一并删掉。';
@@ -605,12 +838,13 @@ async function doTest() {
     const d = await api.test(tg);
     if (d.error) { toast('体检没做成：' + d.error, 'err'); return; }
     (d.items || []).forEach((it) => logLine(it.level, 'test', it.text));
-    toast(d.ok ? '体检全过 ✔' : '体检查出问题（FAIL/WARN），日志里瞅瞅', d.ok ? 'ok' : 'warn');
+    toast(d.ok ? '体检全过' : '体检查出问题（FAIL/WARN），日志里瞅瞅', d.ok ? 'ok' : 'warn');
     setStatus(d.ok ? '体检通过' : '体检没过', d.ok ? 'ok' : 'warn');
   } catch (e) {
     toast('体检出错：' + (e.message || e), 'err');
   } finally {
     setBusy(false);
+    // 体检不改盘，走节流版即可（20 秒内的探测结果直接复用）
     await refreshStatus(true);
   }
 }
@@ -662,7 +896,7 @@ async function doRoute() {
 // ────────────────────────── 事件绑定 ──────────────────────────
 
 // ────────────────────────── 部署历史（事务）──────────────────────────
-// 对应冷咖啡 workbench 的「版本对比」页：看得到改动、查得到完整性、回得去。
+// 看得到改动、查得到完整性、回得去。
 // 每次 apply / revert 留一份快照；回退前先确认现场没被别的操作动过 —— 动过就中止。
 
 function esc(s) {
@@ -758,7 +992,7 @@ async function doDiff() {
       let html = '<div class="diffpath" style="color:var(--fg)">' + esc(it.path) + '</div>' +
         '<div class="diffnote">' + esc(it.note || '') + '</div>';
       if (it.unchanged) {
-        html += '<div class="diffunchanged">✔ 内容一模一样，一个字都不用动</div>';
+        html += '<div class="diffunchanged">内容一模一样，一个字都不用动</div>';
       } else {
         html += '<div class="diffhead"><span>落盘现状</span><span>部署写入</span></div>' +
           '<div class="diffgrid">' + (it.rows || []).map((r) =>
@@ -810,7 +1044,8 @@ async function onTxRowClick(e) {  const btn = e.target.closest('button[data-txac
     logLine('ok', 'tx', '已回退 ' + id + '：还原 ' + d.result.restored + ' 个文件（状态 ' + d.result.status + '）');
     toast('已回退 ' + d.result.restored + ' 个文件', '');
     await loadTx();
-    refreshStatus(true);
+    // 回退真改了盘，且改的范围不一定就是当前勾选 —— 全量强制重探一次
+    refreshStatus(true, null, true);
   }
 }
 
@@ -826,7 +1061,7 @@ function bind() {
   $('btnDry').addEventListener('click', () => doRun('dry'));
   $('btnRevert').addEventListener('click', () => doRun('revert'));
   $('btnTest').addEventListener('click', doTest);
-  $('btnRefresh').addEventListener('click', () => refreshStatus(false));
+  $('btnRefresh').addEventListener('click', () => refreshStatus(false, null, true));
 
   document.querySelectorAll('.chipbtn[data-sel]').forEach((b) => {
     b.addEventListener('click', () => {
@@ -861,7 +1096,7 @@ function bind() {
   $('btnLogFile').addEventListener('click', async () => {
     const r = await api.readLog();
     if (!r.ok) { toast('读不到日志：' + (r.error || ''), 'err'); return; }
-    logHead('破甲日志.txt（末尾 ' + r.lines.length + ' 行）');
+    logHead('状态/破甲日志.txt（末尾 ' + r.lines.length + ' 行）');
     r.lines.forEach((ln) => { if (ln.trim()) logLine('dim', 'file', ln); });
   });
 
@@ -876,7 +1111,8 @@ function bind() {
     if (!r.ok) { toast(r.error || '设置失败', 'err'); return; }
     toast('已切换解释器：' + r.python, 'ok');
     $('sbPython').textContent = r.python.split('\\').pop() + ' · ' + r.version;
-    await refreshStatus(true);
+    // 换了解释器，之前所有探测结果都不可信 —— 强制全量重探
+    await refreshStatus(true, null, true);
   };
   $('btnPy').addEventListener('click', changePy);
   $('sbPython').addEventListener('click', changePy);
@@ -899,13 +1135,13 @@ function bind() {
   $('routeInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') doRoute(); });
 
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'F5') { e.preventDefault(); refreshStatus(false); }
+    if (e.key === 'F5') { e.preventDefault(); refreshStatus(false, null, true); }
     if (e.key === 'F9') { e.preventDefault(); doTest(); }
   });
 
   const GO_WORDS = ['撸起袖子开工 → ', '学姐上手了 → ', '轮到它了 → ', '这就动手 → ', '安排上 → '];
   const goWord = () => GO_WORDS[Math.floor(Math.random() * GO_WORDS.length)];
-  const DONE_OK = ['收工，漂亮 ✔', '干完了，干净利落 ✔', '搞定，没留尾巴 ✔', '活儿齐了 ✔'];
+  const DONE_OK = ['收工，漂亮', '干完了，干净利落', '搞定，没留尾巴', '活儿齐了'];
   const doneOk = () => DONE_OK[Math.floor(Math.random() * DONE_OK.length)];
 
   api.onLog((evt) => {

@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""跨席位串味断言 + 新席位单测（对齐 gpt6-Astra seat-selftest 的污染检测）。
+"""跨席位串味断言 + 新席位单测。
 
 串味 = 一个席位的注入正文里出现了另一个席位特有的指纹（席位名、落点路径、
-平台专属词）。冷咖啡的 seat-selftest 用
+平台专属词）。检测方式：
 `assert(!rendered[id].includes(beats[other]))` 检测席位包互串；
 这里同理：渲染出的各席位指令文本两两互不包含对方的关键指纹。
 """
@@ -17,7 +17,7 @@ sys.path.insert(0, HERE)
 
 def _load_main():
     spec = importlib.util.spec_from_file_location(
-        "pojia_main_for_seats", os.path.join(HERE, "破甲一键通.py"))
+        "pojia_main_for_seats", os.path.join(HERE, "engine", "破甲一键通.py"))
     mod = importlib.util.module_from_spec(spec)
     sys.modules["pojia_main_for_seats"] = mod
     try:
@@ -196,7 +196,7 @@ class SeatIsolationTests(unittest.TestCase):
 
     def test_10_compose_profiles(self):
         cspec = importlib.util.spec_from_file_location(
-            "compose_mod", os.path.join(HERE, "compose.py"))
+            "compose_mod", os.path.join(HERE, "engine", "compose.py"))
         cmod = importlib.util.module_from_spec(cspec)
         cspec.loader.exec_module(cmod)
         txt = cmod.compose("max", "reverse", "测试目标")
@@ -210,7 +210,7 @@ class SeatIsolationTests(unittest.TestCase):
 class ClientProbeTests(unittest.TestCase):
     """「文件在位 ≠ 客户端会读它」—— CLI 探测与 orphan 状态。
 
-    背景（2026-09-21 实测）：Grok CLI / Gemini CLI 卸载之后，~/.grok/AGENTS.md 与
+    背景：Grok CLI / Gemini CLI 卸载之后，~/.grok/AGENTS.md 与
     ~/.gemini/GEMINI.md 还躺在原地（标记块·本版），状态却报「已部署」——
     根因是判定只看文件，不问客户端还在不在。
     """
@@ -281,7 +281,7 @@ class HermesDesktopTests(unittest.TestCase):
     """Hermes 有两种落点布局：上游 CLI 在 ~/.hermes，CN Desktop 在 <安装根>/data/hermes-home。
 
     这组断言盯的是「不认桌面版布局」这个具体故障 —— 它的表现不是报错，而是
-    **apply 写进一个没人读的空目录**，而状态看起来还挺正常。2026-09-21 实测踩到。
+    **apply 写进一个没人读的空目录**，而状态看起来还挺正常。验证踩到。
     """
 
     def test_20_home_marker_rule(self):

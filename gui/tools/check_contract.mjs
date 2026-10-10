@@ -106,10 +106,13 @@ check('index.html 里没有引用已删掉的脚本',
 // 桥的 meta.version 来自主脚本的 VERSION，页面首屏那个只是占位 —— 两边对不上时
 // 用户会看到"标题写 v6.1、boot 完变 v6.2"的闪烁，或者干脆一直显示错的。
 console.log('【6】页脚版本号与主脚本一致');
-const srcVer = (/^VERSION\s*=\s*"([^"]+)"/m.exec(read(path.join(GUI, '..', '破甲一键通.py'))) || [])[1];
+// 版本号单一来源是仓库根的 VERSION 文件（主脚本启动时读它，字面只是兜底）。
+const srcVer = (() => {
+  try { return read(path.join(GUI, '..', 'VERSION')).trim(); } catch (_) { return ''; }
+})();
 const htmlVer = (/id="tbVersion"[^>]*>v([^<]+)</.exec(htmlSrc) || [])[1];
-check('主脚本 VERSION 读到了', !!srcVer, String(srcVer));
-check('index.html 的占位版本 = 主脚本 VERSION（' + srcVer + '）', htmlVer === srcVer,
+check('VERSION 文件读到了', !!srcVer, String(srcVer));
+check('index.html 的占位版本 = VERSION（' + srcVer + '）', htmlVer === srcVer,
   'html=' + htmlVer);
 
 console.log('\n' + (fail ? '✗ ' + fail + ' 项不过' : '✓ 全过') + '（' + pass + ' 项）'

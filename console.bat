@@ -37,15 +37,12 @@ if not defined PYEXE (
 
 chcp 65001 >nul
 
-rem locate the main script by wildcard (name is non-ASCII), excluding console.py itself
-set "SCRIPT="
-for %%F in ("%~dp0*.py") do (
-    echo %%~nxF | findstr /i /c:"console" >nul 2>&1
-    if errorlevel 1 if not defined SCRIPT set "SCRIPT=%%~fF"
-)
+rem this launcher drives console.py (it is the one that takes <target> <action>;
+rem 破甲一键通.py -- the engine -- takes --flags, use 一键破甲.bat for that)
+set "SCRIPT=%~dp0engine\console.py"
 
-if not defined SCRIPT (
-    echo   [!] main script not found next to this launcher.
+if not exist "%SCRIPT%" (
+    echo   [!] engine\console.py not found next to this launcher.
     pause
     exit /b 1
 )

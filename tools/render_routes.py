@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""render_routes.py —— 薄壳。真正的实现在项目根的 pojia_routes.py。
+"""render_routes.py —— 薄壳。真正的实现在 engine/pojia_routes.py。
 
     python tools/render_routes.py           装配并写 route-layer.md
     python tools/render_routes.py --check    只比较，不写
@@ -18,9 +18,9 @@ ROOT = os.path.dirname(HERE)
 
 
 def load():
-    """显式从项目根加载 —— 被 importlib 加载时脚本目录不在 sys.path。"""
+    """显式从 engine/ 加载 —— 被 importlib 加载时脚本目录不在 sys.path。"""
     spec = importlib.util.spec_from_file_location("pojia_routes",
-                                                  os.path.join(ROOT, "pojia_routes.py"))
+                                                  os.path.join(ROOT, "engine", "pojia_routes.py"))
     mod = importlib.util.module_from_spec(spec)
     sys.modules["pojia_routes"] = mod
     spec.loader.exec_module(mod)
