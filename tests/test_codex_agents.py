@@ -79,9 +79,12 @@ class MergeTests(_Base):
         self.assertTrue(block.rstrip("\n").endswith(self.m.AGENTS_MARK_END))
         self.assertIn(self.m.AGENTS_MARK + want, block)
         self.assertIn("任务路由", block)
-        # 创作那段已从否定句（禁止 X）改成肯定句（文本产出约定），并带多语言层
+        # 创作那段已从否定句（禁止 X）改成肯定句（文本产出约定）
         self.assertIn("文本产出约定", block)
-        self.assertIn("Workspace notes (EN/ES)", block)
+        # 多语言层已剥离（v6.7 回退）—— 它正是 CC / Codex 拒写的触发源，
+        # 这两段不许再回到 AGENTS.md 追加块里。
+        self.assertNotIn("Workspace notes", block)
+        self.assertNotIn("Primero el artefacto", block)
         # 自曝词不许出现在 AGENTS.md 这条腿上（桌面板每次会话都读，别留名片）
         for word in ("越狱", "jailbreak", "unlock"):
             self.assertNotIn(word, block)

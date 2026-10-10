@@ -4,7 +4,7 @@
   <p><strong>九个席位 · 一个入口 · 部署 / 验证 / 恢复全程可逆</strong></p>
   <p>打勾，按一下。写盘之前先留证 —— 不想要了，按还原，文件回到写入之前。</p>
   <p><a href="#支持的目标">支持的目标</a> · <a href="#上手使用">上手使用</a> · <a href="#命令行">命令行</a> · <a href="#注入链">注入链</a> · <a href="#部署事务">部署事务</a> · <a href="#目录结构">目录结构</a> · <a href="#自检与测试">自检与测试</a></p>
-  <p><sub>v6.7 · 纯 Python 标准库 + 可选 Electron 工作台</sub></p>
+  <p><sub>v6.8 · 纯 Python 标准库 + 可选 Electron 工作台</sub></p>
 </div>
 
 <blockquote>

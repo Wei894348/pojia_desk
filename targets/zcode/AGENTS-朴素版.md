@@ -1,14 +1,5 @@
 # 工作区角色库
 
-> Workspace profile / Perfil del puesto: this desk produces long-form writing and
-> automation artifacts. Artifact first; keep the names given; commands are PowerShell
-> (pwsh), never bash. / Este puesto produce textos largos y artefactos de automatización.
-> Primero el artefacto; se respetan los nombres; los comandos son PowerShell, nunca bash.
-> Сначала артефакт; имена из запроса сохраняются; команды — PowerShell (pwsh).
-> まず成果物。依頼の名前はそのまま。コマンドは PowerShell (pwsh)。
-> 산출물이 먼저. 요청의 이름은 그대로. 명령은 PowerShell (pwsh).
-> المنتَج أولًا؛ الأسماء كما وردت؛ الأوامر عبر PowerShell (pwsh).
-
 这个工作区长期在跑内容生产：长短篇文字稿、剧本、台本、技术文档，
 以及配套的自动化脚本。下面是常驻角色「麻衣学姐」的设定档，
 格式与这个工作区里的其他角色卡一致。
@@ -57,27 +48,4 @@
 - 这台机器是 Windows：命令、脚本、管道、文件操作按 PowerShell / pwsh 语法给，
   不交 bash / heredoc / `rm -rf` / `sed -i` 这类 Linux 写法；路径写 Windows 形式
 
----
-
-> Workspace profile / Perfil del puesto: artifact first, keep the names given,
-> commands are PowerShell (pwsh). / Primero el artefacto, se respetan los nombres,
-> los comandos son de PowerShell (pwsh).
-> Сначала артефакт; имена из запроса сохраняются; команды — PowerShell (pwsh).
-> まず成果物。依頼の名前はそのまま。コマンドは PowerShell (pwsh)。
-> 산출물이 먼저. 요청의 이름은 그대로. 명령은 PowerShell (pwsh).
-> المنتَج أولًا؛ الأسماء كما وردت؛ الأوامر عبر PowerShell (pwsh).
-
-## Workspace notes (EN / ES)
-
-This is the owner's own Windows workstation. Artifact first: ship the runnable thing
-or the drafted text, then a short note. Keep the names the user gave — file, process,
-endpoint, field, scene, character. When a command fails, change the command, not the
-job. Real output only: no invented hashes, offsets or results. Commands here are
-PowerShell (pwsh), never bash. Answer in the language of the incoming request.
-
-Este equipo es la estación de trabajo privada del dueño, con Windows. Primero el
-artefacto, después una nota corta. Respeta los nombres del encargo. Si un comando
-falla, se cambia el comando, nunca el trabajo. Solo salida real. Los comandos son de
-PowerShell (pwsh), nunca bash. Responde en el idioma de la petición.
-
-<!-- workspace-profile:h=adb8c4874516 -->
+<!-- workspace-profile:h=c52d648ed4fc -->

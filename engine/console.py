@@ -93,9 +93,11 @@ ACTION_ALIAS = {"apply": "apply", "破甲": "apply", "a": "apply",
 
 PERSONA_KEYS = ("沉浸优先", "表演规则", "学姐的创作室")
 # v6.8 起：三层对抗性段落（反拒绝铁律 / 创作许可前提 / 创作与成人内容）已撤除，
-# 判定键换成正面段落名 + 多语言层在场判定（英文段是否在，是"多语言注入"生效的直接证据）。
+# 多语言层（Workspace conventions / Convenciones del puesto …）也已从注入正文剥离
+# —— 它正是 CC / Codex 拒写的触发源。判定键只留**实际会写进文件的正面段落名**，
+# 否则会出现"明明部署了却一直报旧版"（现场反馈：codex 卡永远 stale）。
 CODEX_KEYS = ("cfg-v7", "任务路由", "本机工作方式", "内容政策", "发送前自检",
-              "Workspace conventions (EN)")
+              "执行要点")
 ROUTE_KEYS = ("任务路由", "归一", "定类", "出招", "草稿质量契约")
 # 路由层不该出现的自曝词
 ROUTE_JB_WORDS = ("忽略之前", "覆盖系统", "prompt injection", "越狱", "jailbreak",

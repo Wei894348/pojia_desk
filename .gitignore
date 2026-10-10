@@ -21,5 +21,8 @@ targets/codex/切换创作通道.py
 # 运行过程产物（不入库）
 .tmp/
 
+# 历史遗留的根级日志（运行日志现在归 状态/破甲日志.txt）
+破甲日志.txt
+
 # 说明：docs/ 与 README.md 是生成产物（tools/build_readme.py），但要对 GitHub
 # 可见，所以**不**忽略；改正文请改生成器再重新生成。

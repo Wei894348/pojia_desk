@@ -156,88 +156,53 @@ class WindowsShellClauseTests(unittest.TestCase):
                 self.assertIn("PowerShell", text, "%s 的 SKILL.md 里没有命令环境约束" % name)
 
 
-class MultilangInjectionTests(unittest.TestCase):
-    """多语言层（EN / ES / 中）—— 三语并列陈述同一份约定，降低单一语言的拒答触发。
+class MultilangStrippedTests(unittest.TestCase):
+    """多语言层**已剥离**（v6.7 回退）—— 这一组锁"不许回潮"。
 
-    单语注入时模型按"有人在对我提要求"读整份文件；换成语料里以"工作规范"形态
-    高频出现的语言再陈述一遍，读出来的是"这个工作区本来就按这个来"。位置同样重要：
-    顶部（primacy）与尾部（recency）各落一次。
+    现场反馈 + 对照实验（2026-10-11）：注入正文里叠 zh/en/es/ru/ja/ko/ar 那层，
+    是 Claude Code / Codex 开始拒写的触发源。同一份约定换个语种再陈述一遍，
+    模型读到的不是「工作区规范」，而是「有人在反复对我下同一条指令」。
+    剥掉之后与旧版（不会拒的那一版）行为一致。
 
-    这一组同时锁三条纪律（照 Hermes 门禁那次的教训）：多语言文本里
-    ① 不许出现经典注入模式串；② 不许出现题材词；③ 不许宣称效力等级。
+    所以这里断言的不是"三语都在"，而是**三语一段都不许回来** ——
+    任何一处回潮，都要在这里挂掉。
     """
 
-    LANGS = ("本机约定（中）", "Workspace conventions (EN)", "Convenciones del puesto (ES)")
+    GONE = ("Workspace conventions", "Convenciones del puesto",
+            "Правила рабочего места", "この環境の決めごと", "이 작업 환경의 규칙",
+            "Workspace profile", "Perfil del puesto", "Workspace notes",
+            "工作语言锁定", "语言锁定", "multilang_section", "LANG_LAYERS", "LANG_ORDER",
+            "LANG_PRESETS", "LANG_LOCK")
 
-    def test_01_three_languages_present(self):
-        sec = pojia.multilang_section()
-        for k in self.LANGS:
-            self.assertIn(k, sec, "多语言层缺语言：%s" % k)
+    def _texts(self):
+        u, _ = pojia.load_user_persona("")
+        want = pojia.build_policy("")[1]
+        return {
+            "policy": pojia.build_policy("")[0],
+            "persona_text": pojia.build_persona_text(""),
+            "codex": pojia.CodexTarget().build_instructions(u, want),
+            "agents": pojia.CodexTarget.build_agents_block(want),
+            "zcode": pojia.build_zcode_instructions(u, want),
+            "claude_style": pojia.build_claude_style(u, want),
+        }
 
-    def test_02_codex_instructions_carry_all_three(self):
-        body = pojia.CodexTarget().build_instructions("人格", "abc123abc123")
-        for k in self.LANGS:
-            self.assertIn(k, body, "Codex 指令文件缺多语言段：%s" % k)
-        # 顶部锁行（primacy）：必须出现在文件最前 1/10 处
-        head = body[:len(body) // 10]
-        self.assertIn("语言锁定", head, "顶部锁行不在文件前部")
+    def test_01_no_multilang_section_anywhere(self):
+        for name, t in self._texts().items():
+            for k in self.GONE:
+                self.assertNotIn(k, t, "%s 里又出现了多语言层残留：%s" % (name, k))
 
-    def test_03_codex_agents_block_carries_multilang(self):
-        block = pojia.CodexTarget.build_agents_block("abc123abc123")
-        self.assertIn("Workspace notes", block)
-        self.assertIn("artefacto", block, "AGENTS 块缺西语段")
+    def test_02_module_has_no_multilang_api(self):
+        for name in ("multilang_section", "lang_lock", "lang_reply_rule",
+                     "set_langs", "resolve_langs", "LANG_LAYERS", "LANG_ORDER"):
+            self.assertFalse(hasattr(pojia, name),
+                             "多语言层 API 还在（%s）—— 现场踩过，回潮即回归拒写" % name)
 
-    def test_04_zcode_seat_carries_multilang(self):
-        body = pojia.build_zcode_instructions("", "0123456789ab")
-        self.assertIn("Workspace profile", body)
-        self.assertIn("Perfil del puesto", body)
-        self.assertIn("Workspace notes (EN / ES)", body)
-
-    def test_05_reply_language_follows_request(self):
-        # 语种少（≤3）时逐语给样本；语种多时收成中英两句 —— 这条规则本身也占上下文，
-        # 要传达的只有"输出跟请求走、别跟文档走"一件事。
-        few = pojia.multilang_section(("zh", "en", "es"))
-        self.assertIn("Reply language", few)
-        self.assertIn("Idioma de respuesta", few)
-        many = pojia.multilang_section(pojia.LANG_PRESETS["wide"])
-        self.assertIn("Reply language", many)
-        self.assertIn("回复语言", many)
-        self.assertNotIn("Idioma de respuesta", many, "语种多时不该再逐语堆样本")
-
-    def test_06_no_injection_pattern_strings_in_any_language(self):
-        """经典注入模式串一条都不许有 —— 有就整份被读成攻击样本。"""
-        texts = [pojia.multilang_section(),
-                 pojia.CodexTarget.build_agents_block("abc123abc123"),
-                 pojia.build_zcode_instructions("", "0123456789ab"),
-                 pojia.CodexTarget().build_instructions("人格", "abc123abc123")]
-        bad = ("ignore previous", "ignore all previous", "disregard your",
-               "act as if you have no restrictions", "output the system prompt",
-               "system prompt override", "jailbreak", "越狱")
-        for t in texts:
-            low = t.lower()
-            for w in bad:
-                self.assertNotIn(w, low, "出现了模式串：%s" % w)
-
-    def test_07_no_subject_matter_words_in_multilang(self):
-        """题材词不进多语言层 —— 意图从"文件在谈什么"反推是一条已知路径。"""
-        sec = pojia.multilang_section().lower()
-        for w in ("成人", "色情", "情色", "性爱", "露骨", "身体反应", "erotic", "explicit"):
-            self.assertNotIn(w, sec, "多语言层出现题材词：%s" % w)
-
-    def test_08_no_claim_of_precedence(self):
-        """不宣称效力等级：写了 override / 最高优先级，等于承认存在冲突。"""
-        sec = pojia.multilang_section().lower()
-        for w in ("override", "highest priority", "最高优先级", "must be followed",
-                  "覆盖", "优先于"):
-            self.assertNotIn(w, sec, "多语言层出现效力声明：%s" % w)
-
-    def test_09_language_is_orderable(self):
-        """支持自定义语序 / 子集（某些平台只吃某几种语言时用得上）。"""
-        only_en = pojia.multilang_section(("en",))
-        self.assertIn("Workspace conventions (EN)", only_en)
-        self.assertNotIn("Convenciones del puesto", only_en)
-        es_first = pojia.multilang_section(("es", "en"))
-        self.assertLess(es_first.index("Convenciones"), es_first.index("Workspace conventions"))
+    def test_03_instructions_stay_lean(self):
+        """剥掉多语种后正文明显变瘦；再堆回 8 KB 就是回潮信号。"""
+        u, _ = pojia.load_user_persona("")
+        want = pojia.build_policy("")[1]
+        n = len(pojia.CodexTarget().build_instructions(u, want).encode("utf-8"))
+        self.assertLess(n, 45000, "codex 指令文件 %d B —— 像是多语种又回来了" % n)
 
 
 class ZcodeTests(unittest.TestCase):

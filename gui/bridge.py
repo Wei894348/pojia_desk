@@ -62,9 +62,10 @@ def has_dsh(targets):
     """
     return "dsh" in targets or "dsh-desktop" in targets
 # 与 console.py 的 CODEX_KEYS 对齐（主脚本里没有这个常量，它在控制台那层）
-# v6.8：对抗性三段已撤，判定键换成正面段落名 + 多语言层（EN/ES 在场即多语言注入生效）
+# v6.8：对抗性三段已撤，多语言层也已剥离 —— 判定键只留实际写进文件的正面段落名，
+# 否则会出现"明明部署了却一直报旧版"（现场反馈：codex 卡永远 stale）。
 CODEX_KEYS = ("cfg-v7", "任务路由", "本机工作方式", "内容政策", "发送前自检",
-              "Workspace conventions (EN)")
+              "执行要点")
 ROUTE_KEYS = ("任务路由", "归一", "定类", "出招", "草稿质量契约")
 ROUTE_JB_WORDS = ("忽略之前", "覆盖系统", "prompt injection", "越狱", "jailbreak",
                   "最高优先级覆盖", "不许拒绝", "不得省略")
@@ -631,7 +632,7 @@ def _preset_rows(t, st, note, want=None, bases=None):
     pbase = None
     if want is not None:
         try:
-            pbase = t.pkg_base(bases or [])
+            pbase = t.pkg_bases(bases or [])
         except Exception:
             pbase = None
 
@@ -789,7 +790,7 @@ def card_dsh_desktop():
     want = _preset_want()
     pbase = None
     try:
-        pbase = t.pkg_base(cached("dsh_bases", 300, lambda: t.find_bases("")))
+        pbase = t.pkg_bases(cached("dsh_bases", 300, lambda: t.find_bases("")))
     except Exception:
         pbase = None
 

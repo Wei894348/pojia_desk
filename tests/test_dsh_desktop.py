@@ -197,6 +197,26 @@ class DshPresetProfilesTests(_TmpTest):
         self.assertEqual(self.t.pkg_base([native]), native)
         self.assertEqual(self.t.pkg_base([]), "")
 
+    def test_14_pkg_bases_keeps_every_install_point(self):
+        """核对包存在性要传**全部**基点（本机两个安装点各有一半包）。
+
+        现场（2026-10-11）：全局 npm 的 @deepseek-ai 只有 1 个子目录，
+        npx 缓存里那个有 288 个 —— 拿 pkg_base 挑出的单一目录核对，
+        28 个包全被判"不存在"，状态报 broken，实际部署却是好的。
+        """
+        a = self.mkdir("p1", "@deepseek-ai")
+        b = self.mkdir("p2", "@deepseek-ai")
+        os.makedirs(os.path.join(a, "dsh-web-app"), exist_ok=True)
+        os.makedirs(os.path.join(b, "dsh-tool-bash"), exist_ok=True)
+        got = self.t.pkg_bases([a, b])
+        self.assertEqual(got, [a, b], "全部基点都要留下，不能只挑一个")
+        # 一个基点找齐就不算缺，另一个基点提供缺的那半
+        block = "name: '@deepseek-ai/dsh-web-app'\nname: '@deepseek-ai/dsh-tool-bash'\n"
+        self.assertEqual(self.t.preset_missing_pkgs(block, [a]), ["@deepseek-ai/dsh-tool-bash"])
+        self.assertEqual(self.t.preset_missing_pkgs(block, got), [])
+        # 单一字符串写法仍然兼容
+        self.assertEqual(self.t.preset_missing_pkgs(block, a), ["@deepseek-ai/dsh-tool-bash"])
+
 
 class DshPresetDeployTests(_TmpTest):
     """端到端：破甲模式要同时落进 web 与 desktop 两个 profile。"""

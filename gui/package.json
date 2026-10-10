@@ -1,6 +1,6 @@
 {
   "name": "pojia-workbench",
-  "version": "6.7",
+  "version": "6.8",
   "private": true,
   "description": "破甲工作台 —— 九个席位（Codex / DSH / DSH 桌面版 / WorkBuddy / ZCode / Claude / Grok / Gemini / Hermes）的统一图形控制台：部署、预演、验证、恢复",
   "main": "main.js",

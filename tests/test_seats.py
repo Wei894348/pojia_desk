@@ -276,6 +276,42 @@ class ClientProbeTests(unittest.TestCase):
         finally:
             _sh.rmtree(tmp, ignore_errors=True)
 
+    def test_18_apply_skips_when_cli_missing(self):
+        """apply 也要看客户端在不在：CLI 没装就别往没人读的目录里落文件。
+
+        现场反馈（2026-10-11）：Grok / Gemini 的 CLI 早已卸载，GUI 批量勾选
+        却照样把 AGENTS.md / GEMINI.md 写进去 —— 卡片停在"本版·无 CLI"，
+        看着像成功、实际没人读。
+        """
+        import shutil as _sh
+        import tempfile
+        from unittest import mock
+        tmp = tempfile.mkdtemp(prefix="pojia_skip_")
+        try:
+            default_home = os.path.join(tmp, "default")
+            os.makedirs(os.path.join(default_home, ".grok"), exist_ok=True)
+
+            class _T(M.GrokTarget):
+                bin_names = ("__pojia_no_such_bin_zzz__",)
+            _T.probe_dirs = ()
+            t = _T()
+            args = mock.MagicMock()
+            args.persona = ""
+            setattr(args, "grok_dir", "")          # 不显式指定目录 → 走守卫
+            args.force = True
+            args.dry_run = False
+            md = os.path.join(default_home, ".grok", "AGENTS.md")
+
+            with mock.patch.object(M, "LOG_PATH", os.path.join(tmp, "t.log")), \
+                    mock.patch.object(_T, "resolve_home", lambda self, e="": default_home), \
+                    mock.patch.object(M, "route_skills_apply", lambda *a, **k: None):
+                res = t.apply(args, "apply")
+
+            self.assertEqual(res, {"skip": True}, "CLI 不在时应跳过而不是写盘")
+            self.assertFalse(os.path.exists(md), "没人读的文件不该被创建：%s" % md)
+        finally:
+            _sh.rmtree(tmp, ignore_errors=True)
+
 
 class HermesDesktopTests(unittest.TestCase):
     """Hermes 有两种落点布局：上游 CLI 在 ~/.hermes，CN Desktop 在 <安装根>/data/hermes-home。
