@@ -415,7 +415,22 @@ def test_home_md(seat):
     home = t.resolve_home("")
     md = os.path.join(home, md_name)
     print("  [%s] %s" % (seat.capitalize(), home))
+
+    # 客户端可执行文件不在 + 文件没部署 = **真正的"未装"**，不是失败。
+    # 现场（2026-10-11）：Grok / Gemini 的 CLI 已卸载，`all test` 于是长年报
+    # [FAIL] —— 一个"没装所以没打"的状态被算成部署出错，把真 FAIL 淹掉了。
+    # 真装了却缺文件、或缺关键段，下面照旧判 FAIL。
+    cli_found = None
+    try:
+        cli_found, _where = t.client_probe()
+    except Exception:
+        cli_found = None
+
     if not os.path.exists(md):
+        if cli_found is False:
+            print("    [SKIP] 未检测到 %s 客户端，%s 不存在（未装 → 不适用）"
+                  % (t.label, md_name))
+            return True
         print("    [WARN] %s 不存在（未部署）—— %s" % (md_name, home_disp))
         return False
     with open(md, encoding="utf-8", errors="replace") as f:

@@ -8,8 +8,10 @@
 """
 import importlib.util
 import os
+import shutil
 import sys
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
@@ -311,6 +313,52 @@ class ClientProbeTests(unittest.TestCase):
             self.assertFalse(os.path.exists(md), "没人读的文件不该被创建：%s" % md)
         finally:
             _sh.rmtree(tmp, ignore_errors=True)
+
+
+class ConsoleSeatTestTests(unittest.TestCase):
+    """`console.py <席位> test` 的三态判定：装了才判、没装算跳过、缺段才算失败。
+
+    现场（2026-10-11）：Grok / Gemini 的 CLI 已卸载，`console.py all test` 却
+    长年报 [FAIL] —— "没装所以没打"被算成部署出错，把真正的 FAIL 淹掉了。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        spec = importlib.util.spec_from_file_location(
+            "pojia_console_seat", os.path.join(root, "engine", "console.py"))
+        cls.c = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.c)
+
+    def _run(self, seat, files, probe):
+        import io
+        import tempfile
+        from contextlib import redirect_stdout
+        T = self.c.m.TARGETS[seat]
+        tmp = tempfile.mkdtemp(prefix="pojia_seattest_")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        for rel, body in files.items():
+            p = os.path.join(tmp, rel)
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(body)
+        with mock.patch.object(T, "client_probe", lambda self: probe), \
+                mock.patch.object(T, "resolve_home", lambda self, e="": tmp):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                ok = self.c.test_home_md(seat)
+            return ok, buf.getvalue()
+
+    def test_cli_missing_is_skip_not_fail(self):
+        ok, out = self._run("grok", {}, (False, ""))
+        self.assertTrue(ok, "没装客户端不该判 FAIL：%s" % out)
+        self.assertIn("SKIP", out)
+
+    def test_cli_present_without_file_still_warns(self):
+        ok, out = self._run("grok", {}, (True, "C:/fake/grok.cmd"))
+        self.assertFalse(ok, "装了却没文件必须报出来：%s" % out)
+        self.assertIn("WARN", out)
 
 
 class HermesDesktopTests(unittest.TestCase):
