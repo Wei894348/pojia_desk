@@ -6567,7 +6567,9 @@ class WorkBuddyTarget:
             "g" if install else "red", "wb")
         log("数据目录 : %s%s" % (data_dir, "" if os.path.isdir(data_dir) else "  (不存在)"), "", "wb")
         user, _src = load_user_persona(getattr(args, "persona", "") or "")
-        _pol, want = build_policy(user)
+        # 状态判定必须与 apply 同基准（席位哈希）：apply 写的是 seat_persona 的 want，
+        # 这里若用 build_policy 的通用哈希，会把已部署判成"旧人格"（2026-10-12 踩到）。
+        _pol, want = build_policy(user), seat_want("workbuddy", user)
 
         targets = self.find_targets(data_dir, install)
         pol_n = loose_n = other_n = 0
