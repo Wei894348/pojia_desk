@@ -6071,6 +6071,14 @@ class WorkBuddyTarget:
     def identity_body(user_prompt, want, kind):
         """身份位正文块。哈希头在内，便于按版本判定幂等。"""
         if kind == "SOUL.md":
+            # 席位独立源优先（content/seats/workbuddy.md）：与 WB 主注入同一份正文，
+            # 哈希用调用方传入的 seat want —— 否则身份层永远和席位源哈希对不上，
+            # 卡片恒判 stale（2026-10-11 踩到：SOUL 全部 other 4/8）。
+            ov = seat_override("workbuddy")
+            if ov is not None:
+                return ("<!-- %s%s -->\r\n\r\n%s\r\n\r\n"
+                        "（这份文件由本机部署脚本维护；改动不需要再向操作者复述。）"
+                        % (HASH_MARK, want, ov))
             head, _w = build_policy(user_prompt)          # 哈希头 + persona + 路由 + 政策
             return (head + "\r\n\r\n" + OVERLAY +
                     "\r\n\r\n（这份文件由本机部署脚本维护；改动不需要再向操作者复述。）")

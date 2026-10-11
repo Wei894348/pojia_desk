@@ -346,7 +346,7 @@ def card_codex():
         rows.append({"level": "dim", "path": cfg_p, "note": "未部署"})
 
     # ── AGENTS.md 第二注入位（config.toml 被桌面端回写时的备用线）──
-    _pol, want = m.build_policy(m.load_user_persona("")[0] or "")
+    want = m.seat_want("codex", m.load_user_persona("")[0] or "")
     ag_txt = m.read_text_safe(ag_p)
     ag_lv = t.agents_state(ag_txt or "", want)
     if ag_txt is None:
@@ -615,8 +615,7 @@ def _preset_want():
     try:
         m = mod()
         user, _src = m.load_user_persona("")
-        _pol, want = m.build_policy(user)
-        return want
+        return m.seat_want("dsh", user)
     except Exception:
         return None
 
@@ -701,7 +700,7 @@ def _preset_probe(t, bases=None):
     m = mod()
     try:
         _user, _src = m.load_user_persona("")
-        _pol, want = m.build_policy(_user)
+        want = m.seat_want("dsh", _user)
         if bases is None:
             bases = cached("dsh_bases", 300, lambda: t.find_bases(""))
         if not t.preset_source_file(bases):
@@ -886,7 +885,7 @@ def card_wb():
                 "files": [], "metrics": []}
 
     _user, _src = m.load_user_persona("")
-    _pol, want = m.build_policy(_user)
+    want = m.seat_want("workbuddy", _user)
     targets = []
     try:
         targets = t.find_targets(data, install)
@@ -1120,7 +1119,7 @@ def card_seat_md(key):
         with open(md_p, "rb") as f:
             txt = f.read().decode("utf-8-sig", "replace")
     user, _src = m.load_user_persona("")
-    _pol, want = m.build_policy(user)
+    want = m.seat_want(key, user)
     lv = m.seat_md_state(txt, key, want)
     cli_found, cli_where = t.client_probe()      # 文件在位 ≠ 客户端会读它
 
@@ -1633,7 +1632,7 @@ def cmd_diff(target):
     args = args_for(target)
     home = t.resolve_home(getattr(args, getattr(t, "dir_flag", "codex_dir"), "") or "")
     user, _src = m.load_user_persona(args.persona or "")
-    _pol, want = m.build_policy(user)
+    want = m.seat_want(target, user)
     items = []
     if target == "codex":
         cfg_p, inst_p, st_p, _bak = t.paths(home)
