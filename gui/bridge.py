@@ -1051,11 +1051,20 @@ def card_seat_md(key):
         else:
             rows.append({"level": "ok", "path": settings_p,
                          "note": "settings.json outputStyle = %s" % m.CLAUDE_STYLE_NAME})
-        # 旧通道残留检查（CLAUDE.md 标记块 / append 参数）—— 有才是问题
-        if begin in (open(md_p, "rb").read().decode("utf-8-sig", "replace")
-                     if os.path.isfile(md_p) else ""):
-            rows.append({"level": "warn", "path": md_p,
-                         "note": "CLAUDE.md 仍带标记块 —— 与 style 双份，跑 apply 清掉"})
+        # CLAUDE.md 托管核对（内容源 content/seats/claude_md.md）—— 与 style 双份才是问题
+        md_txt = (open(md_p, "rb").read().decode("utf-8-sig", "replace")
+                  if os.path.isfile(md_p) else "")
+        md_src = m.read_text_safe(m.CLAUDE_MD_SEAT_SRC) if hasattr(m, "CLAUDE_MD_SEAT_SRC") else None
+        if md_src and md_src.strip():
+            if m.SEAT_MARKS[key][0] in md_txt:
+                rows.append({"level": "warn", "path": md_p,
+                             "note": "CLAUDE.md 仍带标记块 —— 与 style 双份，跑 apply 清掉"})
+            elif md_txt.strip() == md_src.strip():
+                rows.append({"level": "ok", "path": md_p,
+                             "note": "CLAUDE.md · 托管 · 与席位源一致"})
+            else:
+                rows.append({"level": "warn", "path": md_p,
+                             "note": "CLAUDE.md 与席位源不一致（apply 按源覆盖）"})
         shim_has_append = any(
             "--append-system-prompt-file" in (open(p, encoding="utf-8", errors="replace").read()
                                               if os.path.isfile(p) else "")

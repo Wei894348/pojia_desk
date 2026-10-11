@@ -1456,6 +1456,9 @@ def build_persona_text(user_prompt):
 # 测试隔离：环境变量 POJIA_NO_SEAT_OVERRIDE=1 时一律回退共享管线。
 SEAT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "content", "seats")
+# CLAUDE.md 的托管内容源（用户工作区说明，非破甲注入）—— 与席位文件同一哲学：
+# 项目里一份源，apply 保证实盘逐字节一致；删掉源文件即退出托管（不再动 CLAUDE.md）。
+CLAUDE_MD_SEAT_SRC = os.path.join(SEAT_DIR, "claude_md.md")
 
 
 def seat_override_path(seat):
@@ -5529,17 +5532,40 @@ class ClaudeTarget(HomeMdTarget):
             except Exception as e:
                 log("output style 落地失败：%s" % e, "y", self.key)
 
-        # CLAUDE.md 的标记块一律撤掉（双份 = 实测最差形态）。
+        # CLAUDE.md 托管（2026-10-11 用户指令）：内容源 = content/seats/claude_md.md
+        # （用户工作区说明，**非**破甲注入——破甲正文在 style 通道，别往这写）。
+        # 部署 = 保证与源逐字节一致；源文件不存在则退出托管，只做撤块兜底。
         try:
             md_p = os.path.join(home, self.md_name)
             txt = read_text_safe(md_p) or ""
-            if SEAT_MARKS[self.key][0] in txt:
+            src_md = read_text_safe(CLAUDE_MD_SEAT_SRC)
+            canon = (src_md.strip("\r\n") + "\n") if (src_md and src_md.strip()) else None
+            had_block = SEAT_MARKS[self.key][0] in txt
+            if canon is not None:
+                if had_block:
+                    self.backup(home, md_p, "style-strip")
+                    txt = strip_seat_block(txt, self.key)
+                if txt.strip() != canon.strip():
+                    self.backup(home, md_p, "claude-md")
+                    write_text(md_p, canon, make_dirs=True)
+                    log("%s 已按席位源写入（%d 字节；要改内容编辑 %s 再 apply）"
+                        % (self.md_name, len(canon), CLAUDE_MD_SEAT_SRC), "g", self.key)
+                else:
+                    log("%s 与席位源一致" % self.md_name, "dg", self.key)
+            elif had_block:
                 self.backup(home, md_p, "style-strip")
                 rest = strip_seat_block(txt, self.key)
                 write_text(md_p, (rest + "\n") if rest else "", make_dirs=True)
                 log("已撤掉 %s 里的标记块（避免与 style 双份）" % self.md_name, "g", self.key)
+            # 项目快照同步（可还原性）：targets/claude/CLAUDE.md
+            if canon is not None:
+                snap_p = os.path.join(TARGETS_DIR, "claude", self.md_name)
+                old = read_text_safe(snap_p)
+                if old is None or old.strip() != canon.strip():
+                    write_text(snap_p, canon, make_dirs=True)
+                    log("CLAUDE.md 项目快照已同步：%s" % snap_p, "dg", self.key)
         except Exception as e:
-            log("撤 CLAUDE.md 标记块失败：%s" % e, "y", self.key)
+            log("CLAUDE.md 托管失败：%s" % e, "y", self.key)
 
         # 技艺文档：CC 的 skill 通道（独立于正文），缺了补装，已有则原样保留。
         try:
