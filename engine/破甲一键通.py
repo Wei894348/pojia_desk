@@ -1461,6 +1461,11 @@ SEAT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 CLAUDE_MD_SEAT_SRC = os.path.join(SEAT_DIR, "claude_md.md")
 # Codex 的 AGENTS.md 托管源（Windows 约束，非破甲注入）—— 语义同 CLAUDE_MD_SEAT_SRC。
 CODEX_AGENTS_MD_SRC = os.path.join(SEAT_DIR, "codex_agents_md.md")
+# WB 的 USER.md 托管源（Windows 工作区约束，非破甲注入）—— 语义同上：apply 以
+# 标记块合并进 ~/.workbuddy/USER.md（用户笔记原样保留），源缺失即剥块退出托管。
+WB_USER_MD_SEAT_SRC = os.path.join(SEAT_DIR, "workbuddy_user_md.md")
+WB_USER_MARK_BEGIN = "<!-- pojia:wb-usermd begin -->"
+WB_USER_MARK_END = "<!-- pojia:wb-usermd end -->"
 
 
 def seat_override_path(seat):
@@ -6286,7 +6291,12 @@ class WorkBuddyTarget:
                     new = fm + new
             else:
                 new, n_here = patch_identity_lines(raw, ID_LINE_PATCHES)
-                if n_here == 0 or new == raw:
+                # USER.md 托管（Windows 工作区约束）：标记块合并，用户笔记原样保留。
+                # 源不存在 → 剥块退出托管（revert 语义一致）。
+                if name == "USER.md":
+                    new = self.merge_usermd_block(new if new != raw else raw)
+
+                if n_here == 0 and new == raw:
                     st["skip"] += 1
                     continue
                 st["lines"] += n_here
@@ -6303,6 +6313,26 @@ class WorkBuddyTarget:
             except Exception as e:
                 log("身份层写入失败 | %s | %s" % (rel, e), "red", "wb")
         return st
+
+    @staticmethod
+    def merge_usermd_block(text):
+        """把工作区约束块合并进 USER.md：先剥旧块，再追加到末尾；源缺失则只剥不写。"""
+        # 剥旧块（含旧内容），用户笔记不受影响
+        i = text.find(WB_USER_MARK_BEGIN)
+        while i >= 0:
+            j = text.find(WB_USER_MARK_END, i)
+            if j < 0:
+                break
+            text = text[:i] + text[j + len(WB_USER_MARK_END):]
+            i = text.find(WB_USER_MARK_BEGIN)
+        text = text.rstrip("\r\n") + "\r\n"
+        src = (None if os.environ.get("POJIA_NO_SEAT_OVERRIDE")
+               else read_text_safe(WB_USER_MD_SEAT_SRC))
+        if not (src and src.strip()):
+            return text
+        body = "\r\n".join(src.strip("\r\n").replace("\r\n", "\n").split("\n"))
+        return (text + "\r\n" + WB_USER_MARK_BEGIN + "\r\n" + body +
+                "\r\n" + WB_USER_MARK_END + "\r\n")
 
     @staticmethod
     def identity_residue(data_dir):
