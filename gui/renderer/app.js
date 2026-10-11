@@ -12,7 +12,7 @@ const STATE_MAP = {
   orphan:  { cls: 's-orphan',  badge: 'badge-warn', label: 'CLI 未检测到' },
 };
 const LEVEL_CLS = { ok: 'lv-ok', warn: 'lv-warn', err: 'lv-err', info: 'lv-info', dim: 'lv-dim' };
-const ORDER = ['codex', 'dsh', 'dsh-desktop', 'wb', 'zcode', 'claude', 'grok', 'gemini', 'hermes'];
+const ORDER = ['codex', 'dsh', 'dsh-desktop', 'wb', 'zcode', 'claude', 'hermes'];
 // 九张卡，但只有**八个命令行目标**：DSH 桌面版和 npm 版共用同一套命令
 // （preset 一次就写 web + desktop 两份 profile），所以它界面单独成卡、
 // 执行时折回 dsh（bridge 的 CARD_ONLY）。DSH 的「破甲模式」仍不是卡 ——
@@ -20,7 +20,7 @@ const ORDER = ['codex', 'dsh', 'dsh-desktop', 'wb', 'zcode', 'claude', 'grok', '
 const LABELS = {
   codex: 'Codex CLI', dsh: 'DSH (Web/CLI)', 'dsh-desktop': 'DSH 桌面版',
   wb: 'WorkBuddy', zcode: 'ZCode (Z.ai)',
-  claude: 'Claude Code', grok: 'Grok CLI', gemini: 'Gemini CLI', hermes: 'Hermes Agent',
+  claude: 'Claude Code', hermes: 'Hermes Agent',
 };
 
 const OPT_KEY = 'pojia.opts';
@@ -974,7 +974,7 @@ async function loadTx() {
 }
 
 /* ── 写入预览（先预览再确认写入）── */
-const DIFF_KINDS = new Set(['codex', 'zcode', 'claude', 'grok', 'gemini', 'hermes']);
+const DIFF_KINDS = new Set(['codex', 'zcode', 'claude', 'hermes']);
 
 async function doDiff() {
   if (state.busy) return;
