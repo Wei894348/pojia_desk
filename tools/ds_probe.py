@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""直连 DeepSeek anthropic 端点，做 system prompt 对照实验。
+"""直连 DeepSeek anthropic 端点，做 system prompt 写法试验。
 
 背景：zcode 里 deepseek 走 `https://api.deepseek.com/anthropic`，
-system 段是 Anthropic 顶层数组格式。与其反复改 cjs + 重启 + 手测，
-不如在 API 层直接把「哪种 system 写法能让它照写」试出来，再固化回去。
+system 段是 Anthropic 顶层数组格式。在 API 层直接试出哪种写法有效，
+再固化回去。
 
 成本纪律（本脚本铁律）：这是**真实付费上游**。默认只跑单次，
   每次调用都计数并落盘；不加 --yes 不执行。

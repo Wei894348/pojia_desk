@@ -3,9 +3,8 @@
 
 为什么要这第二条腿：
   只压 config.toml 的 model_instructions_file 时，Codex 桌面端保存设置会回写
-  config.toml，部署项被丢掉整条链就断了（status 里那句"可能被桌面端回写"就是
-  现场症状）。AGENTS.md 是 Codex 读的另一条独立通道（$CODEX_HOME/AGENTS.md
-  全局指令，参考 gpt6-Astra 的双线打法），两条同时在线，断一条还有一条。
+  config.toml，部署项被丢掉整条链就断了。AGENTS.md 是 Codex 读的另一条独立
+  通道（$CODEX_HOME/AGENTS.md 全局指令），两条同时在线，断一条还有一条。
 
 这里锁住：
   · 合并语义：用户原有内容原样保留，标记块追加在末尾；
@@ -237,10 +236,9 @@ class RevertTests(_Base):
     def test_revert_after_repeated_apply_restores_true_original(self):
         """回归：连续 apply 两次后 revert，必须回到**最初**的原稿。
 
-        现场踩过（v6.7 首版）：revert_agents 直接回拷 `state.backup_agents`，
+        revert_agents 曾直接回拷 `state.backup_agents`，
         而那是最近一次 apply 写下的备份 —— 那时文件里**已经有我们的块**了。
         于是"逐字节恢复部署前原稿"恢复出来的是一份仍带块的文件，revert 等于空转。
-        实证：`~/.codex/AGENTS.md` revert 后仍含 `pojia-agents begin`。
         """
         original = "# 我的规则\n\n- 用 pwsh\n"
         with open(self.ag, "w", encoding="utf-8", newline="") as f:

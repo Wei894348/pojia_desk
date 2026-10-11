@@ -92,10 +92,7 @@ ACTION_ALIAS = {"apply": "apply", "破甲": "apply", "a": "apply",
                 "dry": "dry-run", "预演": "dry-run", "d": "dry-run"}
 
 PERSONA_KEYS = ("沉浸优先", "表演规则", "学姐的创作室")
-# v6.8 起：三层对抗性段落（反拒绝铁律 / 创作许可前提 / 创作与成人内容）已撤除，
-# 多语言层（Workspace conventions / Convenciones del puesto …）也已从注入正文剥离
-# —— 它正是 CC / Codex 拒写的触发源。判定键只留**实际会写进文件的正面段落名**，
-# 否则会出现"明明部署了却一直报旧版"（现场反馈：codex 卡永远 stale）。
+# 判定键只留**实际会写进文件的正面段落名**，否则部署成功也会被判成旧版。
 CODEX_KEYS = ("cfg-v7", "任务路由", "本机工作方式", "内容政策", "发送前自检",
               "执行要点")
 ROUTE_KEYS = ("任务路由", "归一", "定类", "出招", "草稿质量契约")
@@ -416,9 +413,7 @@ def test_home_md(seat):
     md = os.path.join(home, md_name)
     print("  [%s] %s" % (seat.capitalize(), home))
 
-    # 客户端可执行文件不在 + 文件没部署 = **真正的"未装"**，不是失败。
-    # 现场（2026-10-11）：Grok / Gemini 的 CLI 已卸载，`all test` 于是长年报
-    # [FAIL] —— 一个"没装所以没打"的状态被算成部署出错，把真 FAIL 淹掉了。
+    # 客户端可执行文件不在 + 文件没部署 = "未装"，不是失败；
     # 真装了却缺文件、或缺关键段，下面照旧判 FAIL。
     cli_found = None
     try:

@@ -2,9 +2,7 @@
 # -*- coding: utf-8 -*-
 """build_readme.py —— README / 仓库主页预览的单一来源生成器。
 
-参考 gpt6-Astra 的结构：正文只写一份，同时喂给两个出口
-
-    README.md              → GitHub 仓库主页（Markdown + 内联 HTML）
+正文只写一份，同时喂给两个出口：
     docs/index.html        → 离线排版预览（同一份正文塞进 GitHub 版式的壳里）
     docs/readme-preview.html → 同上，资源路径指向 /docs/（静态服务器场景）
 
@@ -34,7 +32,7 @@ ROOT = os.path.dirname(HERE)
 DOCS = os.path.join(ROOT, "docs")
 ASSETS = os.path.join(DOCS, "assets")
 
-# 正文里引用的位图：生成时按内容哈希改名，避免旧图被浏览器缓存顶掉（Astra 的做法）
+# 正文里引用的位图：生成时按内容哈希改名，避免旧图被浏览器缓存顶掉
 CONTENT_ADDRESSED = ()
 
 

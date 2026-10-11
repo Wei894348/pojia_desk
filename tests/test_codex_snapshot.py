@@ -149,7 +149,7 @@ class DryRunExitTests(_Base):
 class OtherPersonaTests(_Base):
     """实盘是**别版**人格时，项目快照一个字节都不许动。
 
-    验证踩过：拿别人的 body（h=000000000000）走一遍 apply，
+    拿别人的 body（h=000000000000）走一遍 apply，
     项目快照被覆盖成那一版 —— 快照的语义是"本脚本这一版生成了什么"。
     """
 

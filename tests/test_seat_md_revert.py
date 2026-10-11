@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """HomeMdTarget（claude / grok / gemini / hermes）还原路径的回归测试。
 
-现场踩到的两件事，都是 revert 侧的问题：
+revert 侧的两个问题：
 
 1. **Hermes SOUL.md 被还原成 0 字节。** 链路：
    出厂 SOUL.md（英文默认人格）→ apply 检出出厂态、整体接管（base=""）

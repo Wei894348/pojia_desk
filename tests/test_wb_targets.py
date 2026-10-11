@@ -1,6 +1,6 @@
 """WorkBuddy 靶点收集的回归测试。
 
-锁住 现场踩到的一件事：`find_targets()` 把运行时缓存
+锁住一件事：`find_targets()` 把运行时缓存
 `<data>/cache/acc-product-config-v3.json` 也当成了政策靶点。
 
 它其实是 WorkBuddy 自管的派生文件（apply 的语义是**删除**让程序下次启动重建，

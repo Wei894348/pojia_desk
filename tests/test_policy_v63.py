@@ -1,6 +1,6 @@
 """v6.3 文案与覆盖层替换的回归测试。
 
-锁住 现场踩过的三件事：
+锁住三件事：
   1. 覆盖层换了标记名（unlock-v6 / 最高优先级覆盖 -> cfg-v7 / 本机部署配置）之后，
      旧块必须被**整块替换**，不能"新的追加、旧的原样留着"；
   2. CRLF 文件的 YAML 折叠块清空正则在空行处会断掉，旧人格后半段会残留
@@ -159,12 +159,7 @@ class WindowsShellClauseTests(unittest.TestCase):
 class MultilangStrippedTests(unittest.TestCase):
     """多语言层**已剥离**（v6.7 回退）—— 这一组锁"不许回潮"。
 
-    现场反馈 + 对照实验（2026-10-11）：注入正文里叠 zh/en/es/ru/ja/ko/ar 那层，
-    是 Claude Code / Codex 开始拒写的触发源。同一份约定换个语种再陈述一遍，
-    模型读到的不是「工作区规范」，而是「有人在反复对我下同一条指令」。
-    剥掉之后与旧版（不会拒的那一版）行为一致。
-
-    所以这里断言的不是"三语都在"，而是**三语一段都不许回来** ——
+    注入正文固定为单语（中文）。这里锁的是多语言层不许回潮 ——
     任何一处回潮，都要在这里挂掉。
     """
 
@@ -195,7 +190,7 @@ class MultilangStrippedTests(unittest.TestCase):
         for name in ("multilang_section", "lang_lock", "lang_reply_rule",
                      "set_langs", "resolve_langs", "LANG_LAYERS", "LANG_ORDER"):
             self.assertFalse(hasattr(pojia, name),
-                             "多语言层 API 还在（%s）—— 现场踩过，回潮即回归拒写" % name)
+                             "多语言层 API 还在（%s）" % name)
 
     def test_03_instructions_stay_lean(self):
         """剥掉多语种后正文明显变瘦；再堆回 8 KB 就是回潮信号。"""

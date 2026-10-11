@@ -281,8 +281,7 @@ class ClientProbeTests(unittest.TestCase):
     def test_18_apply_skips_when_cli_missing(self):
         """apply 也要看客户端在不在：CLI 没装就别往没人读的目录里落文件。
 
-        现场反馈（2026-10-11）：Grok / Gemini 的 CLI 早已卸载，GUI 批量勾选
-        却照样把 AGENTS.md / GEMINI.md 写进去 —— 卡片停在"本版·无 CLI"，
+        CLI 卸载后文件还在盘上，卡片会停在"本版·无 CLI"，
         看着像成功、实际没人读。
         """
         import shutil as _sh
@@ -318,8 +317,7 @@ class ClientProbeTests(unittest.TestCase):
 class ConsoleSeatTestTests(unittest.TestCase):
     """`console.py <席位> test` 的三态判定：装了才判、没装算跳过、缺段才算失败。
 
-    现场（2026-10-11）：Grok / Gemini 的 CLI 已卸载，`console.py all test` 却
-    长年报 [FAIL] —— "没装所以没打"被算成部署出错，把真正的 FAIL 淹掉了。
+    CLI 已卸载时"没装所以没打"不该算部署出错，否则真正的 FAIL 会被淹掉。
     """
 
     @classmethod
@@ -365,7 +363,7 @@ class HermesDesktopTests(unittest.TestCase):
     """Hermes 有两种落点布局：上游 CLI 在 ~/.hermes，CN Desktop 在 <安装根>/data/hermes-home。
 
     这组断言盯的是「不认桌面版布局」这个具体故障 —— 它的表现不是报错，而是
-    **apply 写进一个没人读的空目录**，而状态看起来还挺正常。验证踩到。
+    **apply 写进一个没人读的空目录**，而状态看起来还挺正常。
     """
 
     def test_20_home_marker_rule(self):

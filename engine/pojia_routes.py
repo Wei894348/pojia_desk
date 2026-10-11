@@ -86,7 +86,7 @@ def _read(path: str, label: str = "") -> str:
         raise FileNotFoundError("缺少 %s：%s" % (label or "文件", path))
     with open(path, "r", encoding="utf-8", newline="") as f:
         raw = f.read().replace("\r\n", "\n")
-    # 注释区间里再出现 `<!--` 会让剥除提前收尾（主脚本 clean_prompt 踩过这坑）
+        # 注释区间里再出现 `<!--` 会让剥除提前收尾
     i = raw.find("<!--")
     while i >= 0:
         seg = raw.find("-->", i + 4)

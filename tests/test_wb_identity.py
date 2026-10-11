@@ -6,8 +6,7 @@
   并带了明确指令 "If SOUL.md is present, embody its persona and tone"。
   我们注入的人格在 **system** 消息的 <content_policy> 里（prompt 前部）。
   末尾 + user 角色 + "embody SOUL.md" 三条叠起来，直接压过前面的人格 ——
-  验证 trace span[6]：<content_policy> 在 index 1945，<identity_context> 在 62143。
-  于是磁盘上补丁全在、状态全绿，模型却按 SOUL.md（阿枢）行事。
+  磁盘上补丁全在、状态全绿，行为却跟着 SOUL.md 走。
 
 判定拆四条：
   ① SOUL.md / IDENTITY.md 被整段换成共用 persona，且保住 frontmatter（read_when 不能丢）；
@@ -28,12 +27,12 @@ SPEC.loader.exec_module(pojia)
 
 SOUL_STUB = """---
 title: "SOUL.md"
-summary: "阿枢的核心人格"
+summary: "前人格的核心人格"
 read_when:
   - 每次会话开始
 ---
 
-我是**阿枢（Shu）**。取自主角。
+我是**前人格**，用于测试替换逻辑。
 
 ## Boundaries
 
@@ -45,7 +44,7 @@ read_when:
   - 每次会话开始
 ---
 
-- **Name:** 阿枢 / Shu
+- **Name:** 前人格
 """
 USER_STUB = """---
 summary: "User profile record"
@@ -101,8 +100,8 @@ class WbIdentityTests(unittest.TestCase):
             ident = self._read(d, "IDENTITY.md")
             self.assertIn("麻衣学姐", soul)
             self.assertIn("麻衣学姐", ident)
-            self.assertNotIn("阿枢", soul)
-            self.assertNotIn("阿枢", ident)
+            self.assertNotIn("前人格", soul)
+            self.assertNotIn("前人格", ident)
             self.assertIn(pojia.ID_MARK_BEGIN, soul)
 
     def test_frontmatter_kept(self):
@@ -111,7 +110,7 @@ class WbIdentityTests(unittest.TestCase):
         soul = self._read(self.home, "SOUL.md")
         self.assertTrue(soul.startswith("---"))
         self.assertIn("每次会话开始", soul)
-        self.assertNotIn("阿枢", soul.split(pojia.ID_MARK_BEGIN)[0])
+        self.assertNotIn("前人格", soul.split(pojia.ID_MARK_BEGIN)[0])
 
     def test_conflicting_lines_neutralized(self):
         """USER/MEMORY 里"只扫不动 / 先确认"的行要被中和。"""

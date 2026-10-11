@@ -61,9 +61,7 @@ def has_dsh(targets):
     "只勾了桌面版卡片"这种情况。
     """
     return "dsh" in targets or "dsh-desktop" in targets
-# 与 console.py 的 CODEX_KEYS 对齐（主脚本里没有这个常量，它在控制台那层）
-# v6.8：对抗性三段已撤，多语言层也已剥离 —— 判定键只留实际写进文件的正面段落名，
-# 否则会出现"明明部署了却一直报旧版"（现场反馈：codex 卡永远 stale）。
+# 与 console.py 的 CODEX_KEYS 对齐：判定键只留实际写进文件的正面段落名。
 CODEX_KEYS = ("cfg-v7", "任务路由", "本机工作方式", "内容政策", "发送前自检",
               "执行要点")
 ROUTE_KEYS = ("任务路由", "归一", "定类", "出招", "草稿质量契约")

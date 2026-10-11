@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """DSH 开头常量补丁的回归测试 —— 上游改名不许让补丁静默失效。
 
-现场踩到（2026-10-10）：`console.py dsh status` 报
+`console.py dsh status` 曾报
     [stale] index.js  部分已打
 
 真因：`patch_intro_consts` 只认旧常量名

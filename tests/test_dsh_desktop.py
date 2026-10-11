@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """DSH 桌面版（DeepSeek Harness Desktop）支持 —— 回归测试。
 
-盯的是三个验证踩到的具体故障：
+盯的是三个具体故障：
 
 1. **认不出桌面版安装**。官方桌面版把核心包全打进 `resources/app.asar`，
    `app.asar.unpacked` 里只落原生模块（dsh-desktop-host / libreoffice-kit），
@@ -200,9 +200,8 @@ class DshPresetProfilesTests(_TmpTest):
     def test_14_pkg_bases_keeps_every_install_point(self):
         """核对包存在性要传**全部**基点（本机两个安装点各有一半包）。
 
-        现场（2026-10-11）：全局 npm 的 @deepseek-ai 只有 1 个子目录，
-        npx 缓存里那个有 288 个 —— 拿 pkg_base 挑出的单一目录核对，
-        28 个包全被判"不存在"，状态报 broken，实际部署却是好的。
+        全局 npm 与 npx 缓存可能各只有一部分包 ——
+        拿单一目录核对会把另一半判成"不存在"。
         """
         a = self.mkdir("p1", "@deepseek-ai")
         b = self.mkdir("p2", "@deepseek-ai")
@@ -324,7 +323,7 @@ class DshPresetDeployTests(_TmpTest):
     # `--from-default-profile` 新建的 profile，cordis.patch.yml 只有一个空数组。
     # YAML 里 `[]` 是一份完整文档，后面再跟 `- insert:` 就是第二份文档，加载直接
     # 失败：end of the stream or a document separator is expected（10:1）。
-    # web / desktop 原本有真实条目，所以这个坑只在自建 profile 上炸 —— 表现比
+      # web / desktop 原本有真实条目，所以只在自建 profile 上炸 —— 表现比
     # "没破甲"更糟：模式下拉里连 pojia 都看不到。
 
     @staticmethod
