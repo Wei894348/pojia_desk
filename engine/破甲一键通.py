@@ -3643,6 +3643,11 @@ class CodexTarget:
             self.revert_agents(home, ag_p)
             tx_remove(st_p)
             route_skills_revert("codex", home, "codex")
+            # 二进制身份补丁回退（按状态文件里的备份逐个还原）。
+            try:
+                codex_bin_restore("codex")
+            except Exception as e:
+                log("[cx] 内置身份还原失败：%s" % e, "red", "codex")
             log("已还原 Codex：移除 model_instructions_file、指令文件与 AGENTS.md 标记块", "g", "codex")
             return {"revert": 1}
 
@@ -3693,6 +3698,12 @@ class CodexTarget:
             # 改了叶子/路由源件后指令文件可以一字未动，skill 却必须重投。
             # 早退分支不补跑的话，skill 永远停在旧版（HomeMdTarget 那边同理）。
             route_skills_apply("codex", home, "codex", dry=is_dry)
+            # 指令文件没变 ≠ 二进制身份已就位（Codex 升级会覆盖补丁）：
+            # 早退分支也要补跑一次内容判定。
+            try:
+                codex_bin_apply("codex")
+            except Exception as e:
+                log("[cx] 内置身份补丁失败（不影响其余通道）：%s" % e, "red", "codex")
             return {"skip": 1}
         if lv == "other" and not getattr(args, "force", False):
             if not config_changed and not ag_changed:
@@ -3830,6 +3841,12 @@ class CodexTarget:
         if bak_ag:
             log("  AGENTS 备份：%s" % bak_ag, "dg", "codex")
         route_skills_apply("codex", home, "codex", dry=is_dry)
+        # 内置身份补丁（与 cc_bin_apply 同构）：换掉 exe 里硬编码的
+        # "You are Codex, …" 身份句 —— model_instructions_file 盖不掉它。
+        try:
+            codex_bin_apply("codex")
+        except Exception as e:
+            log("[cx] 内置身份补丁失败（不影响其余通道）：%s" % e, "red", "codex")
         return {"fixed": 1}
 
     def revert_agents(self, home, ag_p):
@@ -5360,6 +5377,154 @@ def cc_bin_restore(seat="claude"):
     return {"restored": n}
 
 
+# ── Codex 的二进制内置提示词补丁（2026-10-11 起，与 cc_bin_apply 同构）──────
+#
+# 为什么：Codex 的身份句（"You are Codex, …"）硬编码在 codex.exe 的
+# instructions_template 里（JSON 资源，每模型变体一份），model_instructions_file
+# 只能追加在它后面盖不掉身份。身份是拒绝量表的来源 —— 与 CC 同一个机制。
+# Codex 的 base instructions 里**没有**内容审查条款（Guardian policy 只管
+# 数据外泄/凭证/破坏性行为），所以这里只换身份句，不动正文模板。
+#
+# 打法：等长字节替换（新串 ljust 补空格），不改偏移；判定走内容（原串在不在），
+# 不看版本号 —— Codex 升级会覆盖补丁，重跑 apply 自动补上。
+# 运行中的 codex.exe 以共享模式打开：写不动但允许改名，_cc_bin_write 已处理。
+CODEX_BIN_STATE = os.path.join(os.path.expanduser("~"), ".codex", "codex-bin-patch-state.json")
+
+
+def codex_bin_targets():
+    """Codex 桌面/CLI 的主二进制。按已知安装点探测，存在才返回。"""
+    out = [os.path.join(os.path.expanduser("~"), "AppData", "Local", "OpenAI",
+                        "Codex", "bin", "2e5e00daee91c61d", "codex.exe")]
+    # 版本目录可能变：把 bin 下所有 codex.exe 都算上（去重）
+    root = os.path.dirname(os.path.dirname(out[0]))
+    for f in glob.glob(os.path.join(root, "*", "codex.exe")):
+        if f not in out:
+            out.append(f)
+    return [p for p in out if os.path.exists(p)]
+
+
+# 身份句前缀替换表：只动第一句到句号，后面 Personality/工程规范是正文模板，不动。
+# 值是"新句"；落盘时 ljust 补空格到原长（_cc_bin_pad 同款）。
+CODEX_BIN_REPLACEMENTS = {
+    b"You are Codex, a coding agent based on GPT-5.":
+        b"You are Maixue, this machine's coding agent.",
+    b"You are Codex, an agent based on GPT-5.":
+        b"You are Maixue, a local agent on GPT-5.",
+    b"You are Codex, an agent based on GPT-6.":
+        b"You are Maixue, a local agent on GPT-6.",
+    b"You are Codex, an OpenAI general-purpose agentic assistant":
+        b"You are Maixue, an OpenAI general-purpose agentic assistan",
+}
+
+
+def codex_bin_scan(data):
+    """返回 {原串: 偏移列表}。"""
+    hits = {}
+    for old, new in CODEX_BIN_REPLACEMENTS.items():
+        _cc_bin_pad(new, len(old))
+        offs, i = [], data.find(old)
+        while i >= 0:
+            offs.append(i)
+            i = data.find(old, i + 1)
+        if offs:
+            hits[old] = offs
+    return hits
+
+
+def codex_bin_state():
+    try:
+        return json.load(open(CODEX_BIN_STATE, encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _codex_bin_sweep_locked():
+    """清掉腾位残留 `*.pojia-locked-*`。"""
+    root = os.path.join(os.path.expanduser("~"), "AppData", "Local", "OpenAI", "Codex", "bin")
+    for f in glob.glob(os.path.join(root, "*", "codex.exe.pojia-locked-*")):
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+
+
+def codex_bin_apply(seat="codex"):
+    """备份 + 等长替换（复用 _cc_bin_write 的腾位写法）。返回计数。"""
+    targets = codex_bin_targets()
+    if not targets:
+        log("[cx] 未找到 Codex 的二进制，跳过内置身份补丁。", "y", seat)
+        return {"missing": 1}
+    os.makedirs(os.path.dirname(CODEX_BIN_STATE), exist_ok=True)
+    _codex_bin_sweep_locked()
+    ts = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    st = codex_bin_state()
+    patched = already = 0
+    files = []
+    prev = {os.path.normcase(os.path.abspath(f.get("path", ""))): f
+            for f in st.get("files", [])}
+    for p in targets:
+        with open(p, "rb") as f:
+            data = f.read()
+        hits = codex_bin_scan(data)
+        total = sum(len(o) for o in hits.values())
+        if total == 0:
+            already += 1
+            log("[cx] 内置身份已是本版（无原串残留）：%s" % p, "dg", seat)
+            rec = {"path": p, "replacements": 0, "already": True}
+            old_rec = prev.get(os.path.normcase(os.path.abspath(p)), {})
+            if old_rec.get("backup"):
+                rec["backup"] = old_rec["backup"]
+            files.append(rec)
+            continue
+        # 备份与 CC 同目录策略：留状态文件旁 backups/，文件名带目录 slug 防覆盖
+        bakdir = os.path.join(os.path.dirname(CODEX_BIN_STATE), "bin-backups")
+        os.makedirs(bakdir, exist_ok=True)
+        _slug = os.path.basename(os.path.dirname(p)) or "bin"
+        bak = os.path.join(bakdir, "codex.exe.%s.pojia-prepatch.%s.bak" % (_slug, ts))
+        shutil.copy2(p, bak)
+        for old, offs in hits.items():
+            new = _cc_bin_pad(CODEX_BIN_REPLACEMENTS[old], len(old))
+            for off in offs:
+                data = data[:off] + new + data[off + len(old):]
+        _cc_bin_write(p, data)
+        patched += 1
+        log("[cx] 内置身份补丁：%s（%d 处，备份 %s）" % (p, total, bak), "g", seat)
+        files.append({"path": p, "backup": bak, "replacements": total})
+    st.update({"last_patch_time": _dt.datetime.now().isoformat(timespec="seconds"),
+               "files": files})
+    with open(CODEX_BIN_STATE, "w", encoding="utf-8") as f:
+        json.dump(st, f, ensure_ascii=False, indent=2)
+    if patched:
+        log("[cx] Codex 升级会覆盖补丁，届时重跑 apply；正在运行的 Codex 新会话才读到新版。",
+            "y", seat)
+    return {"patched": patched, "already": already}
+
+
+def codex_bin_restore(seat="codex"):
+    """按状态文件里的备份还原打补丁前的字节。"""
+    st = codex_bin_state()
+    n = 0
+    for e in st.get("files", []):
+        bak = e.get("backup")
+        if bak and os.path.exists(bak):
+            try:
+                shutil.copy2(bak, e["path"])
+                n += 1
+                log("[cx] 已还原内置身份：%s" % e["path"], "g", seat)
+            except PermissionError:
+                # 运行中写不动：改名腾位再写
+                _cc_bin_write(e["path"], open(bak, "rb").read())
+                n += 1
+                log("[cx] 已还原内置身份（腾位写）：%s" % e["path"], "g", seat)
+        elif bak:
+            log("[cx] 备份缺失，跳过：%s" % bak, "y", seat)
+    if n:
+        st["files"] = []
+        with open(CODEX_BIN_STATE, "w", encoding="utf-8") as f:
+            json.dump(st, f, ensure_ascii=False, indent=2)
+    return {"restored": n}
+
+
 class ClaudeTarget(HomeMdTarget):
     key = "claude"
     label = "Claude Code"
@@ -5564,7 +5729,9 @@ class ClaudeTarget(HomeMdTarget):
                 if had_block:
                     self.backup(home, md_p, "style-strip")
                     txt = strip_seat_block(txt, self.key)
-                if txt.strip() != canon.strip():
+                # 剥过块就必须落盘：剥完恰好等于席位源时也不能跳过，
+                # 否则 merge_marked_block 刚写进去的合并稿留在盘上（双份复活）。
+                if had_block or txt.strip() != canon.strip():
                     self.backup(home, md_p, "claude-md")
                     write_text(md_p, canon, make_dirs=True)
                     log("%s 已按席位源写入（%d 字节；要改内容编辑 %s 再 apply）"
