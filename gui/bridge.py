@@ -987,7 +987,12 @@ def card_wb():
 
 
 def card_seat_md(key):
-    """Claude / Grok / Gemini 通用卡片：单文件标记块 + skills 投放计数。"""
+    """Claude / Grok / Gemini 通用卡片：单文件标记块 + skills 投放计数。
+
+    Claude 例外（2026-10-11）：CLAUDE_CHANNEL="style" 后主通道是
+    output-styles/pojia.md + settings.outputStyle，CLAUDE.md 本来就**不该**有
+    标记块（双份才是错的）。这一分支按 style 通道判定，别按旧标记块。
+    """
     m = mod()
     t = m.TARGETS[key]()
     home = t.resolve_home("")
@@ -999,6 +1004,91 @@ def card_seat_md(key):
         return {"key": key, "label": t.label, "home": home, "state": "none",
                 "rows": [{"level": "dim", "path": home, "note": "目录不存在（未安装）"}],
                 "files": [], "metrics": []}
+
+    # ---- Claude · style 通道专用判定 ----
+    if key == "claude" and getattr(m, "CLAUDE_CHANNEL", "") == "style":
+        style_p = os.path.join(home, "output-styles", m.CLAUDE_STYLE_NAME + ".md")
+        style_txt = ""
+        if os.path.isfile(style_p):
+            with open(style_p, "rb") as f:
+                style_txt = f.read().decode("utf-8-sig", "replace")
+        settings_p = os.path.join(home, "settings.json")
+        out_style = ""
+        if os.path.isfile(settings_p):
+            try:
+                out_style = (json.loads(open(settings_p, encoding="utf-8").read())
+                             .get("outputStyle") or "")
+            except Exception:
+                out_style = ""
+        user, _src = m.load_user_persona("")
+        want = m.seat_want("claude", user)
+        # style 的哈希记在 CLAUDE_STYLE_MARK 里（不是 cfg-v7 行）—— 用专属提取
+        _mm = re.search(re.escape(m.CLAUDE_STYLE_MARK) + r"\s*([0-9a-f]{12})", style_txt)
+        got = _mm.group(1) if _mm else ""
+        has_mark = bool(_mm)
+        lv = "current" if (has_mark and got == want and out_style == m.CLAUDE_STYLE_NAME) \
+            else ("stale" if has_mark else "none")
+        if style_txt:
+            files.append({"path": style_p, "exists": True,
+                          "size": len(style_txt.encode("utf-8")),
+                          "sha": sha_of(style_p), "role": "output-styles/%s.md" % m.CLAUDE_STYLE_NAME,
+                          "hit": [], "miss": [] if lv in ("current", "stale") else ["无 style 标记"]})
+        state = lv if lv in ("current", "stale") else "none"
+        if state == "current":
+            rows.append({"level": "ok", "path": style_p,
+                         "note": "output style · 主通道 · 本版"})
+        elif state == "stale":
+            rows.append({"level": "warn", "path": style_p,
+                         "note": "output style 在但哈希旧（apply 自动升级）"})
+        else:
+            rows.append({"level": "warn", "path": style_p,
+                         "note": "未部署（output style 不存在）"})
+        if out_style != m.CLAUDE_STYLE_NAME:
+            state = "none"
+            rows.append({"level": "warn", "path": settings_p,
+                         "note": "settings.json outputStyle = %r（应为 %r）"
+                                 % (out_style, m.CLAUDE_STYLE_NAME)})
+        else:
+            rows.append({"level": "ok", "path": settings_p,
+                         "note": "settings.json outputStyle = %s" % m.CLAUDE_STYLE_NAME})
+        # 旧通道残留检查（CLAUDE.md 标记块 / append 参数）—— 有才是问题
+        if begin in (open(md_p, "rb").read().decode("utf-8-sig", "replace")
+                     if os.path.isfile(md_p) else ""):
+            rows.append({"level": "warn", "path": md_p,
+                         "note": "CLAUDE.md 仍带标记块 —— 与 style 双份，跑 apply 清掉"})
+        shim_has_append = any(
+            "--append-system-prompt-file" in (open(p, encoding="utf-8", errors="replace").read()
+                                              if os.path.isfile(p) else "")
+            for p in t.shim_paths())
+        if shim_has_append:
+            rows.append({"level": "warn", "path": "npm shims",
+                         "note": "shim 仍挂 --append-system-prompt-file —— 跑 apply 清掉"})
+        md_rows_len = len(rows)
+        cli_found, cli_where = t.client_probe()
+        total = ours = 0
+        skills_root = os.path.join(home, "skills")
+        if os.path.isdir(skills_root):
+            for name in os.listdir(skills_root):
+                if os.path.isdir(os.path.join(skills_root, name)):
+                    total += 1
+                    sk = os.path.join(skills_root, name, "SKILL.md")
+                    if os.path.isfile(sk):
+                        with open(sk, "rb") as sf:
+                            if b"pojia-route-skill" in sf.read()[-600:]:
+                                ours += 1
+        metrics = [{"name": "客户端",
+                    "value": (os.path.basename(cli_where) if cli_found
+                              else ("未检测到" if cli_found is False else "—")),
+                    "ok": cli_found is not False},
+                   {"name": "标记块", "value": {"current": "本版", "stale": "旧版",
+                                               "none": "未部署"}.get(state, state),
+                    "ok": state == "current"},
+                   {"name": "路由 skills", "value": "%d / %d" % (ours, total) if total else "未投放",
+                    "ok": ours > 0},
+                   {"name": "原稿备份", "value": "有" if os.path.isdir(bak) else "无",
+                    "ok": os.path.isdir(bak)}]
+        return {"key": key, "label": t.label, "home": home, "state": state,
+                "rows": rows, "files": files, "metrics": metrics}
 
     txt = ""
     if os.path.isfile(md_p):
