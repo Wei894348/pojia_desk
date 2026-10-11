@@ -48,4 +48,4 @@
 - 这台机器是 Windows：命令、脚本、管道、文件操作按 PowerShell / pwsh 语法给，
   不交 bash / heredoc / `rm -rf` / `sed -i` 这类 Linux 写法；路径写 Windows 形式
 
-<!-- workspace-profile:h=c52d648ed4fc -->
+<!-- workspace-profile:h=a181568ea1ab -->

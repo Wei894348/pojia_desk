@@ -129,8 +129,10 @@ class CodexConfigTests(unittest.TestCase):
         self.assertEqual(Path(state["backup_config"]).read_text(encoding="utf-8"), original)
         self.assertEqual(state["hash_mark"], pojia.HASH_MARK + self.want)
         _, rows = self.target.status_rows(self.args)
-        # 三条 loose：指令文件 / config 顶层项 / AGENTS.md 标记块（双线注入）
-        self.assertEqual(sum(row[0] == "loose" for row in rows), 3)
+        # 两条 loose：指令文件 / config 顶层项。
+        # （2026-10-11 起 AGENTS.md 第二注入位默认**关闭**=去双份，实测 25%→62%，
+        #   所以这里不再有"AGENTS.md 标记块"那条 loose。）
+        self.assertEqual(sum(row[0] == "loose" for row in rows), 2)
         before = {p.name: p.stat().st_mtime_ns for p in self.home.iterdir()}
         self.assertEqual(self.target.apply(self.args, "apply"), {"skip": 1})
         self.assertEqual(before, {p.name: p.stat().st_mtime_ns for p in self.home.iterdir()})

@@ -120,16 +120,12 @@ class DryRunExitTests(_Base):
         persona = "人格正文"
         _pol, want = self.m.build_policy(persona)
         instr = self.T.build_instructions(persona, want)
-        # 双线注入：AGENTS.md 那一路也得是"本版"，否则这一轮不算"已是本版"，
-        # 走不到 skip 分支（新增第二条注入位后会先补 AGENTS 再报 skip）。
-        ag_block = self.T.build_agents_block(want)
-        # newline="" —— 不能让 Windows 把 \n 翻成 \r\n，否则 config 会"看起来被改过"
+        # 2026-10-11 起第二注入位（AGENTS.md）默认关闭=去双份 ⇒ 这一轮只要
+        # 指令文件 + config 是本版就算"已是本版"（早退分支里两条快照都会补写）。
         with open(os.path.join(home, self.m.CODEX_INSTR), "w", encoding="utf-8", newline="") as f:
             f.write(instr)
         with open(os.path.join(home, "config.toml"), "w", encoding="utf-8", newline="") as f:
             f.write(self.T.patch_config("", "./" + self.m.CODEX_INSTR))
-        with open(os.path.join(home, self.m.CODEX_AGENTS), "w", encoding="utf-8", newline="") as f:
-            f.write(self.T.merge_agents_block("", ag_block))
 
         calls = []
         with mock.patch.object(

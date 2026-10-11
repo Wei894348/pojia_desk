@@ -100,6 +100,33 @@ ROUTE_KEYS = ("任务路由", "归一", "定类", "出招", "草稿质量契约"
 ROUTE_JB_WORDS = ("忽略之前", "覆盖系统", "prompt injection", "越狱", "jailbreak",
                   "最高优先级覆盖", "不许拒绝", "不得省略")
 
+# 关键段断言分两轨（v6.9 起）：
+#   角色卡版（grok / gemini / hermes）识别位 = 「工作区角色库 / 工程任务」；
+#   完整版（claude 的 CLAUDE.md）装的是 persona 正文，没有那两段 —— 拿角色卡
+#   断言去查完整版会 2 处假阳性。这里按席位分开，不再一刀切。
+ROLE_CARD_KEYS = ("工作区角色库", "出戏就是演砸", "学姐在", "工程任务")
+FULL_VERSION_KEYS = PERSONA_KEYS + ("出戏就是演砸", "学姐在")
+# Claude 完整版是**普通 markdown 注入**（不进上游的系统提示词扫描通道），
+# 「成人向 / 身体反应 / 性爱 / 情色 / 色情 / 写实 / 成人」是内容层的题材词，属正常。
+# ZCode 那套反查表是按"上游会扫系统提示词"的场景设计的，直接套用会一片假阳性。
+# ★ 这里列的是 `ZCODE_JB_WORDS` 里**全部属于"题材/尺度类"的词**，一次列全 ——
+#   不要按"当前命中几个"逐个补：2026-10-11 就因为只补了 6 个，
+#   后来往路由层加了个「色情小说」立刻又 FAIL 一次。
+CLAUDE_CONTENT_WORDS = frozenset((
+    "成人向", "成年写作者", "成人小说", "写到多细", "身体反应",
+    "成人", "色情", "写实", "性爱", "情色",
+))
+# 2026-10-11 起 CC/Codex **故意恢复**老版（v6.2）的强授权条款（用户实测
+# "迭代前不拒"，见 skill §3.1.11）。下面这些词是写回的内容，不再算越狱腔；
+# ZCode 那条腿（角色卡版、上游会扫系统提示词）仍然保持原反查表。
+CLAUDE_JB_ALLOWED = frozenset((
+    "反拒绝铁律", "覆盖声明", "最高优先级覆盖", "操作者指令", "内容政策",
+    "硬性失败", "点名即需求", "创作许可前提", "最终覆盖", "覆盖机制",
+    "最高优先级", "残留条款无效", "层级声明", "禁止拒绝", "拒绝审查",
+))
+CLAUDE_JB_WORDS = tuple(w for w in m.ZCODE_JB_WORDS
+                        if w not in CLAUDE_CONTENT_WORDS and w not in CLAUDE_JB_ALLOWED)
+
 
 def build_args(target, extra=None):
     """构造与 破甲一键通.py 一致的参数对象。
@@ -159,24 +186,34 @@ def test_codex():
         ok = ok and good
         print("    [%s] 关键段: %s" % ("OK  " if good else "FAIL", k))
 
-    # 第二注入位：AGENTS.md 标记块。config.toml 被桌面端回写时，这条腿还在。
-    # 判据是"块在 + 哈希对上"，不是"文件在" —— 用户自己的 AGENTS.md 不算数。
+    # 第二注入位：AGENTS.md 标记块。**2026-10-11 起默认关闭（去双份）** ——
+    # 真实 Codex 语境实测：双份 25% vs 去双份 62%（n=8，
+    # tools/pojia_refusal_test.py）。所以这一端的断言也翻过来：
+    # 我们的标记块**必须不存在**，用户自己的 AGENTS.md 内容照旧保留。
     tgt = m.TARGETS["codex"]()
     ag_p = tgt.agents_path(home)
     ag_txt = m.read_text_safe(ag_p)
     _, want = m.build_policy(m.load_user_persona("")[0] or "")
     ag_lv = tgt.agents_state(ag_txt or "", want)
-    if ag_txt is None:
-        ok = False
-        print("    [FAIL] AGENTS.md 不存在（第二注入位未部署）")
-    elif ag_lv == "current":
-        print("    [OK  ] AGENTS.md 标记块: 本版（%d B）" % os.path.getsize(ag_p))
-    elif ag_lv == "other":
-        ok = False
-        print("    [FAIL] AGENTS.md 标记块哈希旧 —— 跑 apply 升级")
+    if m.CODEX_DUAL_LEG:
+        if ag_txt is None:
+            ok = False
+            print("    [FAIL] AGENTS.md 不存在（第二注入位未部署）")
+        elif ag_lv == "current":
+            print("    [OK  ] AGENTS.md 标记块: 本版（%d B）" % os.path.getsize(ag_p))
+        elif ag_lv == "other":
+            ok = False
+            print("    [FAIL] AGENTS.md 标记块哈希旧 —— 跑 apply 升级")
+        else:
+            ok = False
+            print("    [FAIL] AGENTS.md 无本工具标记块")
     else:
-        ok = False
-        print("    [FAIL] AGENTS.md 无本工具标记块")
+        if ag_lv == "":
+            print("    [OK  ] AGENTS.md 无本工具标记块（去双份，正确状态）")
+        else:
+            ok = False
+            print("    [FAIL] AGENTS.md 仍带标记块 —— 与 model_instructions_file "
+                  "**双份**（实测 25% vs 单份 62%），必须撤掉")
     # 新鲜度：persona.md 改过但没重打 → stale
     persona = os.path.join(m.CONTENT_DIR, "persona.md")
     if os.path.exists(persona):
@@ -431,45 +468,86 @@ def test_home_md(seat):
     with open(md, encoding="utf-8", errors="replace") as f:
         txt = f.read()
     begin, end = m.SEAT_MARKS[seat]
-    if begin not in txt or end not in txt:
-        print("    [WARN] 用户自有文件，未含标记块（未部署）")
-        return False
-    # 只取标记块内部做正反校验
-    blk = txt.split(begin, 1)[1].split(end, 1)[0]
-    for k in ("工作区角色库", "出戏就是演砸", "学姐在", "工程任务"):
-        good = k in blk
-        ok = ok and good
-        print("    [%s] 关键段: %s" % ("OK  " if good else "FAIL", k))
-    hits = [w for w in m.ZCODE_JB_WORDS if w in blk]
-    if hits:
-        ok = False
-        print("    [FAIL] 越狱腔残留: %s" % "、".join(hits))
-    else:
-        print("    [OK  ] 无越狱腔残留")
-    if seat == "hermes":
-        ok = _hermes_gate(blk, md_name) and ok
+    has_block = (begin in txt and end in txt)
+    blk = txt.split(begin, 1)[1].split(end, 1)[0] if has_block else ""
+    # Claude 从 2026-10-11 起首选 **system 层注入**（正文在 <home>/pojia-inject.md，
+    # 由 npm shim 的 --append-system-prompt-file 追加），CLAUDE.md 退回用户原稿 ——
+    # 所以这一端不再要求 CLAUDE.md 带标记块，断言源在下面的 claude 分支里另选。
+    if seat != "claude":
+        if not has_block:
+            print("    [WARN] 用户自有文件，未含标记块（未部署）")
+            return False
+        for k in ROLE_CARD_KEYS:
+            good = k in blk
+            ok = ok and good
+            print("    [%s] 关键段: %s" % ("OK  " if good else "FAIL", k))
+        hits = [w for w in m.ZCODE_JB_WORDS if w in blk]
+        if hits:
+            ok = False
+            print("    [FAIL] 越狱腔残留: %s" % "、".join(hits))
+        else:
+            print("    [OK  ] 无越狱腔残留")
+        if seat == "hermes":
+            ok = _hermes_gate(blk, md_name) and ok
 
-    # Claude 的第二条通道：output style
-    #   CLAUDE.md 走的是 user 消息里的 system-reminder，只够到人格 / 口令；
-    #   内容层要靠 ~/.claude/output-styles/pojia.md —— 它落在 role=system 的独立块。
-    #   所以这一端**必须两条一起看**，只看 CLAUDE.md 会把"半套"当成"全套"。
+    # Claude 的通道：**官方 output style**（2026-10-11 二度反转，见
+    # ClaudeTarget.post_apply 的 docstring）。真实 prompt_snapshot 快照按时间对齐后：
+    #   style 通道期间 成人露骨 3 写 / 0 拒；切到 --append-system-prompt-file 后 1 写 / 3 拒。
+    # v6.9 那句"style 是拒绝触发器"的对照里，style 组同时带着 CLAUDE.md 标记块 ——
+    # 那是**双份**，变量被污染，证明不了 style 本身差。
+    # 所以这一端的断言翻过来：style 必须在位且带完整版正文；append 参数与 CLAUDE.md
+    # 标记块都必须**不存在**（双份是实测最差形态）。
     if seat == "claude":
         style_p = os.path.join(home, "output-styles", m.CLAUDE_STYLE_NAME + ".md")
-        if not os.path.exists(style_p):
-            ok = False
-            print("    [FAIL] output style 缺失（内容层没落盘）：%s" % style_p)
+        if os.path.exists(style_p):
+            src = open(style_p, encoding="utf-8", errors="replace").read()
+            print("    [OK  ] output style 注入：%s（%d 字符）" % (style_p, len(src)))
+            if m.CLAUDE_STYLE_MARK in src:
+                print("    [OK  ] style 标记在位")
+            else:
+                ok = False
+                print("    [FAIL] style 文件缺标记（不是本工具写的？）")
         else:
-            st = open(style_p, encoding="utf-8", errors="replace").read()
-            keys = [("系统身份位标记", m.CLAUDE_STYLE_MARK),
-                    ("完整版·内容层", "情爱、黑暗、禁忌"),
-                    ("完整版·路由层", "这个工作区长期在接技术活儿"),
-                    ("frontmatter keep-coding-instructions",
-                     "keep-coding-instructions: true")]
-            for name, k in keys:
-                good = k in st
-                ok = ok and good
-                print("    [%s] output style %s" % ("OK  " if good else "FAIL", name))
-            print("    [info] output style 文件：%s（%d 字节）" % (style_p, os.path.getsize(style_p)))
+            src = blk
+            ok = False
+            print("    [FAIL] output style 不存在（主通道未部署）：%s" % style_p)
+            print("           修：python engine/破甲一键通.py --target claude --apply --force --yes")
+        if m.CLAUDE_CHANNEL == "style":
+            got = []
+            for p in t.shim_paths():
+                if not os.path.exists(p):
+                    continue
+                if "--append-system-prompt-file" in open(p, encoding="utf-8",
+                                                          errors="replace").read():
+                    got.append(os.path.basename(p))
+            if got:
+                ok = False
+                print("    [FAIL] npm shim 仍挂着 --append-system-prompt-file（%s）—— "
+                      "与 style **双份**，实测通过率最低" % "、".join(got))
+                print("           修：python engine/破甲一键通.py --target claude --apply --force --yes")
+            else:
+                print("    [OK  ] npm shim 无 append 参数（正确状态）")
+        if has_block:
+            ok = False
+            print("    [FAIL] CLAUDE.md 仍带标记块 —— 与 style **双份**，必须撤掉")
+        else:
+            print("    [OK  ] CLAUDE.md 无标记块（避免双份）")
+        for k in FULL_VERSION_KEYS:
+            good = k in src
+            ok = ok and good
+            print("    [%s] 关键段: %s" % ("OK  " if good else "FAIL", k))
+        hits = [w for w in CLAUDE_JB_WORDS if w in src]
+        if hits:
+            ok = False
+            print("    [FAIL] 越狱腔残留: %s" % "、".join(hits))
+        else:
+            print("    [OK  ] 无越狱腔残留")
+        for k, label in (("情爱、黑暗、禁忌", "完整版·内容层"),
+                         ("这个工作区长期在接技术活儿", "完整版·路由层"),
+                         ("成熟向类型小说写作规范", "技艺文档")):
+            good = k in src
+            ok = ok and good
+            print("    [%s] 注入源 %s" % ("OK  " if good else "FAIL", label))
         sp = os.path.join(home, "settings.json")
         cfg = {}
         if os.path.exists(sp):
@@ -478,12 +556,12 @@ def test_home_md(seat):
             except Exception as e:
                 print("    [WARN] settings.json 解析失败：%s" % e)
                 cfg = {}
-        on = cfg.get("outputStyle") == m.CLAUDE_STYLE_NAME
-        ok = ok and on
-        print("    [%s] settings.json outputStyle = %s"
-              % ("OK  " if on else "FAIL", cfg.get("outputStyle") or "(未设)"))
-        if not on:
-            print("           没启用等于没写：跑 python engine/破甲一键通.py --target claude --apply --force --yes")
+        if cfg.get("outputStyle") == m.CLAUDE_STYLE_NAME:
+            print("    [OK  ] settings.json outputStyle = %s" % m.CLAUDE_STYLE_NAME)
+        else:
+            ok = False
+            print("    [FAIL] settings.json outputStyle = %s（主通道没启用，style 不会被读）"
+                  % (cfg.get("outputStyle") or "(未设)"))
 
         # 第三条通道：二进制内置提示词补丁（等长字节替换）。
         # 判定用内容不用版本号：原串还在 = 被 CC 升级覆盖过 = 需要重打。

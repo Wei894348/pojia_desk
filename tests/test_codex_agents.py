@@ -131,6 +131,10 @@ class StateTests(_Base):
 class ApplyTests(_Base):
     def setUp(self):
         super().setUp()
+        # 这一组测的是**双线**代码路径（CODEX_DUAL_LEG=True）；
+        # 默认形态（去双份）见 DedupeTests。
+        self.m.CODEX_DUAL_LEG = True
+        self.addCleanup(setattr, self.m, "CODEX_DUAL_LEG", False)
         self.proc = mock.patch.object(self.m, "find_processes", return_value=[])
         self.proc.start()
         self.addCleanup(self.proc.stop)
@@ -192,6 +196,8 @@ class ApplyTests(_Base):
 class RevertTests(_Base):
     def setUp(self):
         super().setUp()
+        self.m.CODEX_DUAL_LEG = True
+        self.addCleanup(setattr, self.m, "CODEX_DUAL_LEG", False)
         self.proc = mock.patch.object(self.m, "find_processes", return_value=[])
         self.proc.start()
         self.addCleanup(self.proc.stop)
@@ -263,6 +269,53 @@ class RevertTests(_Base):
         self.T.apply(self.args(), "apply")
         st2 = json.loads(self.read(os.path.join(self.home, self.m.CODEX_STATE)))
         self.assertEqual(st2["agents_original_sha256"], first, "原稿哈希被第二次 apply 覆盖了")
+
+
+class DedupeTests(_Base):
+    """默认形态：**去双份**（CODEX_DUAL_LEG=False，2026-10-11 起）。
+
+    依据 tools/pojia_refusal_test.py 的真实 Codex 语境实测（n=8）：
+    双份 25% / 去双份 62% / 官方 base+AGENTS 单腿 12%。
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.m.CODEX_DUAL_LEG = False
+        self.addCleanup(setattr, self.m, "CODEX_DUAL_LEG", True)
+        self.proc = mock.patch.object(self.m, "find_processes", return_value=[])
+        self.proc.start()
+        self.addCleanup(self.proc.stop)
+        self.skills = mock.patch.object(self.m, "route_skills_apply", lambda *a, **k: None)
+        self.skills.start()
+        self.addCleanup(self.skills.stop)
+
+    def test_apply_does_not_create_agents_block(self):
+        self.T.apply(self.args(), "apply")
+        self.assertFalse(os.path.exists(self.ag),
+                         "没有用户内容时不该新建 AGENTS.md（去双份）")
+
+    def test_apply_strips_existing_block_but_keeps_user(self):
+        old = self.T.merge_agents_block("# 我的规则\n",
+                                        self.T.build_agents_block("aaaaaaaaaaaa"))
+        with open(self.ag, "w", encoding="utf-8", newline="") as f:
+            f.write(old)
+        self.T.apply(self.args(), "apply")
+        txt = self.read()
+        self.assertNotIn(self.m.AGENTS_MARK_BEGIN, txt)
+        self.assertIn("# 我的规则", txt)
+
+    def test_apply_removes_file_that_was_only_ours(self):
+        with open(self.ag, "w", encoding="utf-8", newline="") as f:
+            f.write(self.T.build_agents_block("aaaaaaaaaaaa"))
+        self.T.apply(self.args(), "apply")
+        self.assertFalse(os.path.exists(self.ag),
+                         "整份都是我们的块 ⇒ 文件该被移除，不留空文件")
+
+    def test_instructions_file_still_written(self):
+        self.T.apply(self.args(), "apply")
+        inst = os.path.join(self.home, self.m.CODEX_INSTR)
+        self.assertTrue(os.path.isfile(inst))
+        self.assertIn("任务路由", self.read(inst))
 
 
 class LiveSnapshotTests(unittest.TestCase):
