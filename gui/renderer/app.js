@@ -587,6 +587,28 @@ function buildMetrics(c) {
 function buildDetail(c, open) {
   const detail = document.createElement('div');
   detail.className = 'detail' + (open ? '' : ' hide');
+  // 部署文件清单 —— 该席位落了哪些盘上文件（bridge 的 files[]，含 manifest 补齐）
+  (c.files || []).forEach((f) => {
+    if (!f.path) return;
+    const base = (f.path || '').split(/[\\/]/).filter(Boolean).pop();
+    const sizeTxt = f.isdir ? '目录' : (typeof f.size === 'number' ? f.size + ' B' : '');
+    const row = document.createElement('div');
+    row.className = 'row';
+    const dot = document.createElement('span');
+    dot.className = 'dot ' + (f.exists ? 'ok' : 'err');
+    const p = document.createElement('span');
+    p.className = 'rpath';
+    p.textContent = '[部署] ' + (f.role ? f.role + ' · ' : '') + base + (sizeTxt ? '（' + sizeTxt + '）' : '');
+    p.title = f.path || '';
+    p.addEventListener('click', () => { if (f.path) api.openPath(f.path); });
+    const note = document.createElement('span');
+    note.className = 'rnote';
+    note.textContent = f.exists ? '' : '缺失';
+    row.appendChild(dot);
+    row.appendChild(p);
+    row.appendChild(note);
+    detail.appendChild(row);
+  });
   (c.rows || []).forEach((r) => {
     const row = document.createElement('div');
     row.className = 'row';

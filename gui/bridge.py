@@ -1180,17 +1180,61 @@ CARD_FN = {"codex": card_codex, "dsh": card_dsh, "dsh-desktop": card_dsh_desktop
            "hermes": lambda: card_seat_md("hermes")}
 
 
+# 每个席位"部署了什么文件"清单（相对 home；文件已列过的跳过）
+DEPLOY_MANIFEST = {
+    "codex": [("config.toml", "配置（模型 / 指令文件指针）"),
+              ("codex-unlock-instructions.md", "主注入 · model_instructions_file"),
+              ("AGENTS.md", "托管 · Windows 约束"),
+              ("skills", "技能目录（路由三拍 100 份)")],
+    "claude": [("output-styles/pojia.md", "主注入 · output style"),
+               ("settings.json", "通道启用（outputStyle + 模型映射）"),
+               ("CLAUDE.md", "托管 · 工作区说明 + Windows 约束"),
+               ("skills", "技能目录（路由三拍 + mature-fiction）")],
+    "zcode": [("AGENTS.md", "主注入 · 角色档 + Windows 约束")],
+    "hermes": [("SOUL.md", "门禁身份层"), ("skills", "技能目录")],
+}
+
+
+def _augment_deploy_files(card):
+    """把 DEPLOY_MANIFEST 里该席位的部署文件补进 files[]（已列过的不重复）。"""
+    manifest = DEPLOY_MANIFEST.get(card.get("key")) or []
+    home = card.get("home") or ""
+    if not manifest or not home or not os.path.isdir(home):
+        return
+    have = {f.get("path") for f in card.get("files", [])}
+    for rel, role in manifest:
+        p = os.path.join(home, rel)
+        if p in have:
+            continue
+        exists = os.path.exists(p)
+        isdir = os.path.isdir(p)
+        size = None
+        if exists and not isdir:
+            try:
+                size = os.path.getsize(p)
+            except OSError:
+                size = None
+        card.setdefault("files", []).append(
+            {"path": p, "exists": exists, "size": size, "isdir": isdir,
+             "role": role, "hit": [], "miss": []})
+
+
 def cmd_status(targets):
     m = mod()  # 预热：模块加载是全局惰性的，别让第一次调用落在工作线程里
     want = m.sha1_short("|" + m.POLICY_BASE + "|" + m.OVERLAY + "|False")
 
     def one(k):
         try:
-            return CARD_FN[k]()
+            card = CARD_FN[k]()
         except Exception as e:
             return {"key": k, "label": k, "home": "", "state": "broken",
                     "rows": [{"level": "err", "path": "", "note": "检测出错：%s" % e}],
                     "files": [], "metrics": []}
+        try:
+            _augment_deploy_files(card)
+        except Exception:
+            pass
+        return card
 
     # 四个目标彼此独立，并行探 —— 串行要 5 秒，dsh 一个就占 3.5 秒
     with ThreadPoolExecutor(max_workers=4) as ex:
