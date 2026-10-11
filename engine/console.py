@@ -206,7 +206,21 @@ def test_codex():
             ok = False
             print("    [FAIL] AGENTS.md 无本工具标记块")
     else:
-        if ag_lv == "":
+        # AGENTS.md 托管（内容源 content/seats/codex_agents_md.md = Windows 约束）：
+        # 与源一致 ⇒ ok；标记块出现 ⇒ 双份回归 FAIL；漂移 ⇒ warn（apply 按源覆盖）。
+        ag_src = m.read_text_safe(m.CODEX_AGENTS_MD_SRC)
+        if ag_src and ag_src.strip():
+            if ag_lv != "":
+                ok = False
+                print("    [FAIL] AGENTS.md 仍带标记块 —— 与 model_instructions_file "
+                      "**双份**（实测 25% vs 单份 62%），必须撤掉")
+            elif (ag_txt or "").strip() == ag_src.strip():
+                print("    [OK  ] AGENTS.md · 托管 · 与席位源一致（Windows 约束，%d B）"
+                      % os.path.getsize(ag_p))
+            else:
+                print("    [WARN] AGENTS.md 与席位源不一致（apply 按源覆盖；"
+                      "改内容编辑 %s）" % m.CODEX_AGENTS_MD_SRC)
+        elif ag_lv == "":
             print("    [OK  ] AGENTS.md 无本工具标记块（去双份，正确状态）")
         else:
             ok = False

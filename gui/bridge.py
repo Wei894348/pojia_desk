@@ -366,10 +366,19 @@ def card_codex():
     elif ag_lv == "other":
         rows.append({"level": "warn", "path": ag_p, "note": "AGENTS.md 标记块哈希旧（部署自动升级）"})
     else:
-        rows.append({"level": "ok" if os.path.isfile(ag_p) else "dim", "path": ag_p,
-                     "note": ("AGENTS.md 无标记块（去双份·正确状态，用户内容 %d B 保留）"
-                              % os.path.getsize(ag_p)) if os.path.isfile(ag_p)
-                             else "AGENTS.md 不存在（去双份下的正确状态）"})
+        _ag_src = m.read_text_safe(m.CODEX_AGENTS_MD_SRC) or ""
+        if _ag_src.strip() and os.path.isfile(ag_p):
+            if (m.read_text_safe(ag_p) or "").strip() == _ag_src.strip():
+                rows.append({"level": "ok", "path": ag_p,
+                             "note": "AGENTS.md · 托管 · 与席位源一致（Windows 约束）"})
+            else:
+                rows.append({"level": "warn", "path": ag_p,
+                             "note": "AGENTS.md 与席位源不一致（apply 按源覆盖）"})
+        else:
+            rows.append({"level": "ok" if os.path.isfile(ag_p) else "dim", "path": ag_p,
+                         "note": ("AGENTS.md 无标记块（用户内容 %d B 保留）"
+                                  % os.path.getsize(ag_p)) if os.path.isfile(ag_p)
+                                 else "AGENTS.md 不存在（去双份下的正确状态）"})
 
     st = {}
     try:
@@ -384,8 +393,9 @@ def card_codex():
                {"name": "指令文件", "value": ("%d B" % size_of(inst_p)) if is_ours else "—", "ok": is_ours},
                # 去双份（CODEX_DUAL_LEG=False）后 AGENTS.md 本来就不带标记块：
                # 文件还在（用户内容）→ 显示字节数而非"—"；标记块再出现反而是问题。
-               {"name": "AGENTS 块", "value": ("%d B" % size_of(ag_p)) if ag_lv else
-                    ("%d B · 无块(正确)" % size_of(ag_p)) if os.path.isfile(ag_p) else "—",
+               {"name": "AGENTS.md", "value":
+                    ("%d B" % size_of(ag_p)) if ag_lv else
+                    ("托管·一致" if os.path.isfile(ag_p) else "—"),
                 "ok": ag_lv == "current" or (not ag_lv and os.path.isfile(ag_p))},
                {"name": "备份目录", "value": "有" if os.path.isdir(bak) else "无", "ok": os.path.isdir(bak)}]
     if is_ours and files and files[0].get("role") == "指令文件":

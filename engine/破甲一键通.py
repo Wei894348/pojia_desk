@@ -1459,6 +1459,8 @@ SEAT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 # CLAUDE.md 的托管内容源（用户工作区说明，非破甲注入）—— 与席位文件同一哲学：
 # 项目里一份源，apply 保证实盘逐字节一致；删掉源文件即退出托管（不再动 CLAUDE.md）。
 CLAUDE_MD_SEAT_SRC = os.path.join(SEAT_DIR, "claude_md.md")
+# Codex 的 AGENTS.md 托管源（Windows 约束，非破甲注入）—— 语义同 CLAUDE_MD_SEAT_SRC。
+CODEX_AGENTS_MD_SRC = os.path.join(SEAT_DIR, "codex_agents_md.md")
 
 
 def seat_override_path(seat):
@@ -3358,6 +3360,18 @@ class CodexTarget:
         与 sync_snapshot 同一理由：快照记的是"本脚本这一版生成了什么"，
         要能拿来和实盘逐字节比对，而不是靠人肉对照。
         """
+        # AGENTS.md 托管（Windows 约束）的项目快照：内容 = 席位源本身。
+        # CODEX_DUAL_LEG=False 时实盘无标记块，追加块快照不再代表实盘 ——
+        # 这份才是与实盘逐字节对应的可还原副本。放在最前，避免被 same 早退跳过。
+        if not CODEX_DUAL_LEG and not dry:
+            src_md = read_text_safe(CODEX_AGENTS_MD_SRC)
+            if src_md and src_md.strip():
+                snap2 = os.path.join(TARGETS_DIR, "codex", "AGENTS.md")
+                old2 = read_text_safe(snap2)
+                if old2 is None or old2.strip() != src_md.strip():
+                    write_text(snap2, src_md.strip("\r\n") + "\n", make_dirs=True)
+                    log("  AGENTS.md 托管快照已同步：%s" % snap2, "dg", "codex")
+
         p = cls.agents_snapshot_path()
         old = read_text_safe(p)
         same = old is not None and old.replace("\r\n", "\n") == block.replace("\r\n", "\n")
@@ -3651,11 +3665,16 @@ class CodexTarget:
         if CODEX_DUAL_LEG:
             ag_new = self.merge_agents_block(ag_base, ag_block)
         else:
-            # 去双份：只留**用户自己的**内容，我们那块不再往 user 层放。
-            # 用户内容清空后得到空串 —— 此时若文件本来就存在，说明它整份都是我们建的，
-            # 直接移除（见下面的写入分支），别留一个空文件让 Codex 每轮读一个空指令块。
-            ag_new = self.strip_agents_block(ag_base or "").strip("\n")
-            ag_new = (ag_new + "\n") if ag_new else ""
+            # 托管（2026-10-11 用户指令）：AGENTS.md 内容源 = content/seats/codex_agents_md.md
+            # （Windows 约束）。apply 保证与源逐字节一致；源不存在才回退
+            # "去双份：只留用户内容"，用户内容空则整份移除（不留空指令文件）。
+            _ag_src = (None if os.environ.get("POJIA_NO_SEAT_OVERRIDE")
+                       else read_text_safe(CODEX_AGENTS_MD_SRC))
+            if _ag_src and _ag_src.strip():
+                ag_new = _ag_src.strip("\r\n") + "\n"
+            else:
+                ag_new = self.strip_agents_block(ag_base or "").strip("\n")
+                ag_new = (ag_new + "\n") if ag_new else ""
         ag_changed = (old_ag or "") != ag_new
 
         config_changed = (cfg != new_cfg)
