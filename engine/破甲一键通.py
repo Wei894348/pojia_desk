@@ -6782,7 +6782,9 @@ TARGET_ALIAS = {"workbuddy": "wb", "dsh-desktop": "dsh", "codex-cli": "codex",
                 "hermes": "hermes", "hermes-agent": "hermes",
                 "hermess": "hermes", "hr": "hermes"}
 
-ALL_KEYS = ["dsh", "codex", "wb", "zcode", "claude", "grok", "gemini", "hermes"]
+# grok / gemini 已按用户决定移出部署面（2026-10-11）：类保留（测试/手动 revert 用），
+# 但不进 ALL_KEYS —— all/菜单/GUI 都不再触达。
+ALL_KEYS = ["dsh", "codex", "wb", "zcode", "claude", "hermes"]
 
 
 def resolve_targets(spec):
@@ -6970,7 +6972,7 @@ def _pick_targets():
     except (EOFError, KeyboardInterrupt):
         return []
     m = {"1": "dsh", "2": "codex", "3": "wb", "4": "zcode",
-         "5": "claude", "6": "grok", "7": "gemini", "8": "hermes",
+         "5": "claude", "6": "hermes",
          "9": "all"}
     out = []
     for ch in c:

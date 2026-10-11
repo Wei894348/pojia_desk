@@ -42,7 +42,7 @@ CONSOLE = os.path.join(ENGINE, "console.py")
 # 界面卡列表（不是命令行目标列表）。DSH 拆两张：npm/Web 版（dsh）与
 # 桌面版（dsh-desktop）—— 后者执行时折回 dsh（见 CARD_ONLY），
 # 所以命令行侧仍然是八个目标。
-ORDER = ("codex", "dsh", "dsh-desktop", "wb", "zcode", "claude", "grok", "gemini", "hermes")
+ORDER = ("codex", "dsh", "dsh-desktop", "wb", "zcode", "claude", "hermes")
 # 破甲模式（用户级 agent preset）**不再是一张独立卡片** —— 它是 DSH 这个目标
 # 自己的一个可选动作，状态并进 card_dsh 的体检项与明细，由 DSH 卡片里的下拉控制。
 # PSEUDO 只是"命令行仍可显式寻址"的别名：`status pojia` 看它的状态快照。
@@ -1161,8 +1161,6 @@ CARD_FN = {"codex": card_codex, "dsh": card_dsh, "dsh-desktop": card_dsh_desktop
            "wb": card_wb, "zcode": card_zcode,
            "pojia": card_preset,
            "claude": lambda: card_seat_md("claude"),
-           "grok": lambda: card_seat_md("grok"),
-           "gemini": lambda: card_seat_md("gemini"),
            "hermes": lambda: card_seat_md("hermes")}
 
 
@@ -1516,7 +1514,7 @@ def cmd_run(action, targets, flags=None):
 
 # ─────────────────────────── diff 预览（先预览再确认写入） ───────────────────────────
 
-_DIFF_KINDS = {"codex", "zcode", "claude", "grok", "gemini", "hermes"}   # 指令文件型，可全文对比
+_DIFF_KINDS = {"codex", "zcode", "claude", "hermes"}   # 指令文件型，可全文对比
 
 
 def _diff_rows(before, after, ctx=2):

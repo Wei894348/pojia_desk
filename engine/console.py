@@ -54,13 +54,11 @@ TARGET_ALIAS = {"codex": "codex", "c": "codex",
                 "wb": "wb", "workbuddy": "wb", "w": "wb",
                 "zcode": "zcode", "zai": "zcode", "z": "zcode",
                 "claude": "claude", "cc": "claude", "claude-code": "claude",
-                "grok": "grok", "grok-cli": "grok",
-                "gemini": "gemini", "gemini-cli": "gemini",
                 "hermes": "hermes", "hermes-agent": "hermes", "hermess": "hermes",
                 "hr": "hermes",
                 "all": "all"}
 
-ALL_TARGETS = ("dsh", "codex", "wb", "zcode", "claude", "grok", "gemini", "hermes")
+ALL_TARGETS = ("dsh", "codex", "wb", "zcode", "claude", "hermes")
 
 
 def norm_target_spec(spec):
@@ -732,7 +730,7 @@ def run_test(targets):
         ok = test_wb() and ok
     if "zcode" in targets:
         ok = test_zcode() and ok
-    for seat in ("claude", "grok", "gemini", "hermes"):
+    for seat in ("claude", "hermes"):
         if seat in targets:
             ok = test_home_md(seat) and ok
     print("-" * 62)
