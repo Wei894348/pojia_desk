@@ -366,7 +366,10 @@ def card_codex():
     elif ag_lv == "other":
         rows.append({"level": "warn", "path": ag_p, "note": "AGENTS.md 标记块哈希旧（部署自动升级）"})
     else:
-        rows.append({"level": "dim", "path": ag_p, "note": "AGENTS.md 无本工具标记块（部署时合并，不动用户内容）"})
+        rows.append({"level": "ok" if os.path.isfile(ag_p) else "dim", "path": ag_p,
+                     "note": ("AGENTS.md 无标记块（去双份·正确状态，用户内容 %d B 保留）"
+                              % os.path.getsize(ag_p)) if os.path.isfile(ag_p)
+                             else "AGENTS.md 不存在（去双份下的正确状态）"})
 
     st = {}
     try:
@@ -379,8 +382,11 @@ def card_codex():
 
     metrics = [{"name": "配置", "value": os.path.basename(cfg_p), "ok": os.path.isfile(cfg_p)},
                {"name": "指令文件", "value": ("%d B" % size_of(inst_p)) if is_ours else "—", "ok": is_ours},
-               {"name": "AGENTS 块", "value": ("%d B" % size_of(ag_p)) if ag_lv else "—",
-                "ok": ag_lv == "current"},
+               # 去双份（CODEX_DUAL_LEG=False）后 AGENTS.md 本来就不带标记块：
+               # 文件还在（用户内容）→ 显示字节数而非"—"；标记块再出现反而是问题。
+               {"name": "AGENTS 块", "value": ("%d B" % size_of(ag_p)) if ag_lv else
+                    ("%d B · 无块(正确)" % size_of(ag_p)) if os.path.isfile(ag_p) else "—",
+                "ok": ag_lv == "current" or (not ag_lv and os.path.isfile(ag_p))},
                {"name": "备份目录", "value": "有" if os.path.isdir(bak) else "无", "ok": os.path.isdir(bak)}]
     if is_ours and files and files[0].get("role") == "指令文件":
         metrics.append({"name": "关键段", "value": "%d/%d" % (len(files[0]["hit"]), len(keys)),
