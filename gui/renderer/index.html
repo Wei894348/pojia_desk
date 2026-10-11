@@ -12,7 +12,7 @@
   <div class="tb-left">
     <div class="logo">破</div>
     <div class="tb-title">破甲工作台</div>
-    <div class="ver" id="tbVersion">v6.8</div>
+    <div class="ver clickable" id="tbVersion" title="点击查看更新日志 / 检查新版本">v6.8</div>
     <div class="tb-sub" id="tbSub">九目标统一控制台</div>
   </div>
   <div class="tb-drag"></div>
@@ -128,6 +128,21 @@
     </div>
     <div class="modalhint">左 = 落盘现状，右 = 部署将写入的内容。确认无误再点「部署」—— 所有写入走事务，可按快照回退。</div>
     <div class="modalbody" id="diffBody"></div>
+  </div>
+</div>
+
+<div class="modal" id="upModal">
+  <div class="modalbox">
+    <div class="modalhead">
+      <span class="mh-title">更新日志</span>
+      <span class="mh-sub" id="upMeta">—</span>
+      <div class="mh-spacer"></div>
+      <button class="minibtn" id="btnUpReload" title="重新检查">刷新</button>
+      <button class="wbtn close" id="btnUpClose" title="关闭">&#x2715;</button>
+    </div>
+    <div class="modalhint" id="upHint">正在检查最新版本……</div>
+    <div class="modalbody" id="upBody"></div>
+    <div class="modalfoot" id="upFoot"></div>
   </div>
 </div>
 

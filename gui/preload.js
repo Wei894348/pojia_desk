@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('pojia', {
   openPath: (target) => ipcRenderer.invoke('pojia:openPath', target),
   readLog: () => ipcRenderer.invoke('pojia:readLog'),
   openConsole: () => ipcRenderer.invoke('pojia:openConsole'),
+  checkUpdate: () => ipcRenderer.invoke('pojia:checkUpdate'),
   onLog: (cb) => { ipcRenderer.on('pojia:log', (_e, evt) => cb(evt)); },
   win: (act) => ipcRenderer.send('pojia:win', act),
 });

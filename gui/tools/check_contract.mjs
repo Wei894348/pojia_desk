@@ -70,6 +70,7 @@ const dynIds = new Set([
   ...grab(appSrc, /\.id\s*=\s*'([\w-]+)'/g),
   ...grab(appSrc, /\bmk\(\s*'([\w-]+)'/g),
   ...grab(appSrc, /(?:querySelector|getElementById)\(\s*'#?([\w-]+)'/g),
+  ...grab(appSrc, /id="([\w-]+)"/g),        // innerHTML 动态拼的 id（更新弹窗的「去更新」按钮）
 ]);
 // $() 里允许拼字符串（变量），只查字面量
 const wanted = grab(appSrc, /\$\(\s*'([\w-]+)'\s*\)/g);

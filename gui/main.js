@@ -347,6 +347,29 @@ ipcMain.handle('pojia:openConsole', async () => {
   return err ? { ok: false, error: err } : { ok: true };
 });
 
+// ── GitHub 更新检查（公开仓，无 token 也能读） ──────────────────────────────
+// 渲染层点版本号 → 这里去 api.github.com 拉 latest release → 比对本地 VERSION。
+// 网络不通 / 限流 / 不是本仓部署时不弹错，静默返回 { ok: false }。
+ipcMain.handle('pojia:checkUpdate', async () => {
+  const local = (fs.readFileSync(path.join(ROOT, 'VERSION'), 'utf8').trim()) || '';
+  const out = { ok: false, local, latest: '', url: '', body: '', published: '' };
+  try {
+    const res = await fetch('https://api.github.com/repos/Wei894348/pojia_desk/releases/latest',
+      { headers: { 'User-Agent': 'pojia-workbench', 'Accept': 'application/vnd.github+json' },
+        signal: AbortSignal.timeout(15000) });
+    if (!res.ok) return out;
+    const j = await res.json();
+    const tag = String(j.tag_name || '').replace(/^v/i, '').trim();
+    out.latest = tag;
+    out.url = j.html_url || '';
+    out.body = j.body || '';
+    out.published = j.published_at || '';
+    out.ok = true;
+    out.hasUpdate = !!tag && tag !== local;
+  } catch (_) { /* 网络不通：静默 */ }
+  return out;
+});
+
 ipcMain.on('pojia:win', (_e, act) => {
   if (!mainWin) return;
   if (act === 'min') mainWin.minimize();

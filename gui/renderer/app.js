@@ -1134,6 +1134,11 @@ function bind() {
   $('diffModal').addEventListener('click', (e) => { if (e.target.id === 'diffModal') closeDiff(); });
   $('routeInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') doRoute(); });
 
+  $('tbVersion').addEventListener('click', openUpdate);
+  $('btnUpClose').addEventListener('click', closeUpdate);
+  $('btnUpReload').addEventListener('click', () => checkUpdate(true));
+  $('upModal').addEventListener('click', (e) => { if (e.target.id === 'upModal') closeUpdate(); });
+
   document.addEventListener('keydown', (e) => {
     if (e.key === 'F5') { e.preventDefault(); refreshStatus(false, null, true); }
     if (e.key === 'F9') { e.preventDefault(); doTest(); }
@@ -1158,6 +1163,92 @@ function bind() {
   //   这里只负责一件事：启动时把 state.opts 的回显画上去。
   paintDshOpts();
 }
+
+// ── 更新检查（点版本号 / 启动时静默查一次） ─────────────────────────────────
+
+let UP_CACHE = null;          // { ok, local, latest, url, body, hasUpdate }
+
+function mdToHtml(md) {
+  // 只解析 release body 里实际会出现的语法：# 标题 / - 列表 / `code` / ``` 块 / **加粗** / [链接](url)
+  const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const out = [];
+  let inCode = false, codeBuf = [];
+  for (const raw of String(md || '').split(/\r?\n/)) {
+    if (raw.trim().startsWith('```')) {
+      if (inCode) { out.push('<pre><code>' + esc(codeBuf.join('\n')) + '</code></pre>'); codeBuf = []; }
+      inCode = !inCode; continue;
+    }
+    if (inCode) { codeBuf.push(raw); continue; }
+    const line = esc(raw);
+    if (/^#{1,3}\s/.test(line)) { out.push('<h3>' + line.replace(/^#{1,3}\s*/, '') + '</h3>'); continue; }
+    if (/^[-*]\s/.test(line)) {
+      if (!out.length || !out[out.length - 1].endsWith('</ul>')) out.push('<ul>');
+      out.push('<li>' + line.replace(/^[-*]\s*/, '') + '</li>');
+      continue;
+    }
+    if (out.length && out[out.length - 1].endsWith('</li>') && !out[out.length - 1].endsWith('</ul>')) out.push('</ul>');
+    if (line.trim()) out.push('<p>' + line + '</p>');
+  }
+  if (codeBuf.length) out.push('<pre><code>' + esc(codeBuf.join('\n')) + '</code></pre>');
+  return out.join('\n')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, '<a href="#" class="uplink" data-url="$2">$1</a>');
+}
+
+function paintUpdate(d) {
+  const meta = $('upMeta'), hint = $('upHint'), body = $('upBody'), foot = $('upFoot');
+  const badge = $('tbVersion');
+  if (!d || !d.ok) {
+    meta.textContent = '—';
+    hint.textContent = '检查失败（网络不通或 GitHub 限流），稍后再试。';
+    body.innerHTML = '<div class="upempty">拿不到最新版本信息。</div>';
+    foot.innerHTML = '';
+    return;
+  }
+  const when = d.published ? d.published.slice(0, 10) : '';
+  meta.textContent = '最新 v' + d.latest + (when ? ' · ' + when : '') + ' · 本地 v' + d.local;
+  body.innerHTML = '<div class="uplog">' + (mdToHtml(d.body) || '<p>（无描述）</p>') + '</div>';
+  if (d.hasUpdate) {
+    hint.textContent = '有新版本 v' + d.latest + '（本地 v' + d.local + '）。';
+    foot.innerHTML = '<button class="btn primary" id="btnUpGo">去更新</button>'
+      + '<span class="ltext" style="color:var(--dim);font-size:11px">打开 GitHub Release 页面下载</span>';
+    badge.classList.add('has-update');
+    badge.title = '有新版本 v' + d.latest + ' — 点击查看';
+    const go = $('btnUpGo');
+    if (go) go.addEventListener('click', () => { if (d.url) window.open(d.url, '_blank'); });
+  } else {
+    hint.textContent = '已是最新版本 v' + d.local + '。';
+    foot.innerHTML = '';
+    badge.classList.remove('has-update');
+  }
+  body.querySelectorAll('.uplink').forEach((a) => a.addEventListener('click', (e) => {
+    e.preventDefault();
+    if (a.dataset.url) window.open(a.dataset.url, '_blank');
+  }));
+}
+
+async function checkUpdate(manual) {
+  if (manual) {
+    $('upMeta').textContent = '—';
+    $('upHint').textContent = '正在检查最新版本……';
+    $('upBody').innerHTML = '<div class="upempty">请求 GitHub 中……</div>';
+    $('upFoot').innerHTML = '';
+  }
+  try { UP_CACHE = await api.checkUpdate(); }
+  catch (e) { UP_CACHE = { ok: false, error: String(e.message || e) }; }
+  paintUpdate(UP_CACHE);
+  return UP_CACHE;
+}
+
+async function openUpdate() {
+  $('upModal').classList.add('on');
+  if (UP_CACHE) { paintUpdate(UP_CACHE); return; }
+  await checkUpdate(true);
+}
+
+function closeUpdate() { $('upModal').classList.remove('on'); }
+
 
 loadOpts();
 bind();
