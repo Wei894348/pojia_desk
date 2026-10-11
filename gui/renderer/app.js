@@ -747,7 +747,9 @@ async function boot() {
     $('tbVersion').textContent = 'v' + ((info.meta && info.meta.version) || '?');
     // 副标题跟着 ORDER 走 —— 加席位时不会再漏成「四目标」
     const CN = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
-    $('tbSub').textContent = (CN[ORDER.length] || ORDER.length) + '目标统一控制台';
+    // dsh-desktop 与 dsh 是同一目标的第二张卡，不计入「目标数」
+    const nTargets = ORDER.filter((k) => k !== 'dsh-desktop').length;
+    $('tbSub').textContent = (CN[nTargets] || nTargets) + '目标统一控制台';
     $('sbPython').textContent = info.python ? (info.python.split('\\').pop() + ' · ' + info.pythonVersion) : 'python 未找到';
     $('sbPython').title = info.python || '未找到';
     $('sbRoot').textContent = '项目 ' + (info.root || '');

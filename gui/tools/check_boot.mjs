@@ -179,8 +179,8 @@ await (async () => { try { X.loadOpts(); X.bind(); await X.boot(); } catch (e) {
 check('bind() + boot() 不抛异常', !bootErr, bootErr && (bootErr.message + '\n' + bootErr.stack));
 check('版本号被 meta 覆盖（页面里那个只是占位）',
   $('tbVersion').textContent === 'v' + SRC_VERSION, $('tbVersion').textContent);
-check('副标题按 ORDER 算（九张卡 → 九目标）',
-  $('tbSub').textContent === '九目标统一控制台', $('tbSub').textContent);
+check('副标题按 ORDER 算（七张卡 → 六目标）',
+  $('tbSub').textContent === '六目标统一控制台', $('tbSub').textContent);
 check('底部栏回显解释器与项目根',
   $('sbPython').textContent.includes('python.exe') && $('sbRoot').textContent.includes('pojia_desk'),
   $('sbPython').textContent + ' | ' + $('sbRoot').textContent);
@@ -225,8 +225,9 @@ check('只勾「增加破甲模式」→ flags=preset-only，所有卡片都还�
 calls.run.length = 0;
 setOpts(false, false);
 await deploy.fire('click'); await new Promise((r) => setImmediate(r));
-check('都不勾 → dsh 被剔出目标，其余 7 个照跑、不带开关',
-  lastRun().targets.length === 7 && !lastRun().targets.includes('dsh') && lastRun().flags.length === 0,
+check('都不勾 → dsh / dsh-desktop 被剔出目标，其余 5 个照跑、不带开关',
+  lastRun().targets.length === 5 && !lastRun().targets.includes('dsh')
+    && !lastRun().targets.includes('dsh-desktop') && lastRun().flags.length === 0,
   JSON.stringify(lastRun()));
 
 // ── 3. 恢复按钮：都不勾时不把 dsh 带上 ─────────────────────

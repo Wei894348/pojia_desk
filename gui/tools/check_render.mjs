@@ -155,21 +155,21 @@ const dshCardOf = (extra) => buildCard(Object.assign(
   { key: 'dsh', label: 'DSH (DeepSeek Harness)', home: 'h', state: 'current', rows: [], metrics: [] },
   extra || {}));
 
-console.log('【1】九张卡 = 八个命令行目标 + DSH 桌面版，没有「破甲模式」卡');
+console.log('【1】七张卡 = 六个命令行目标 + DSH 桌面版，没有「破甲模式」卡');
 check('ORDER 不含 pojia', !ORDER.includes('pojia'), ORDER.join(','));
-check('九张卡（八个目标 + dsh-desktop）', ORDER.length === 9, ORDER.join(','));
+check('七张卡（八个目标 + dsh-desktop）', ORDER.length === 7, ORDER.join(','));
 check('DSH 桌面版紧跟 DSH',
   ORDER.indexOf('dsh-desktop') === ORDER.indexOf('dsh') + 1, ORDER.join(','));
 check('每张卡都是真目标或界面卡，没混进伪目标',
   ORDER.every((k) => k !== 'pojia' && LABELS[k]), ORDER.join(','));
 renderSkeleton(ORDER);
-check('骨架就是九张', doc.getElementById('cards').children.length === 9);
+check('骨架就是七张', doc.getElementById('cards').children.length === 7);
 // 喂数据对象（upsertCard 取的是 c.key，不是 DOM 节点）
 [{ key: 'wb', label: 'WorkBuddy', home: '', state: 'none', rows: [], metrics: [] },
  { key: 'codex', label: 'Codex', home: '', state: 'current', rows: [], metrics: [] }]
   .forEach(upsertCard);
-check('插入后还是九张（替换骨架，不会凭空多一张）',
-  doc.getElementById('cards').children.length === 9,
+check('插入后还是七张（替换骨架，不会凭空多一张）',
+  doc.getElementById('cards').children.length === 7,
   String(doc.getElementById('cards').children.length));
 check('顺序仍是 ORDER',
   doc.getElementById('cards').children.map((c) => c.dataset.key).join(',') === ORDER.join(','),
@@ -386,7 +386,7 @@ check('指标块随新结果补上', !!node2 && !!node2.querySelector('.metrics'
 check('明细块随新结果补上并保持在下一位',
   !!node2 && !!node2.querySelector('.detail')
   && node2.children[node2.children.length - 1].className.split(' ')[0] === 'detail');
-check('卡片总数与顺序不变（九张、按 ORDER）',
+check('卡片总数与顺序不变（七张、按 ORDER）',
   wrap.children.length === ORDER.length
   && wrap.children.map((c) => c.dataset.key).join(',') === ORDER.join(','),
   wrap.children.map((c) => c.dataset.key).join(','));
@@ -403,12 +403,12 @@ const boxes = () => w2.children.map((c) => {
 });
 state.selected = new Set();
 renderCards(state.cards);
-check('全不选：九张卡的勾选框全空', boxes().every((b) => b === false), String(boxes()));
-check('全不选：九张卡都带 off（变灰）',
+check('全不选：七张卡的勾选框全空', boxes().every((b) => b === false), String(boxes()));
+check('全不选：七张卡都带 off（变灰）',
   w2.children.every((c) => c.className.includes('off')));
 state.selected = new Set(ORDER);
 renderCards(state.cards);
-check('全选：九张卡的勾选框全打上', boxes().every((b) => b === true), String(boxes()));
+check('全选：七张卡的勾选框全打上', boxes().every((b) => b === true), String(boxes()));
 check('全选：没有卡还留灰', w2.children.every((c) => !c.className.includes('off')));
 // 反选 = 在现状上取补集，勾选框也得跟着翻
 state.selected = new Set([ORDER[0], ORDER[1]]);
@@ -422,7 +422,7 @@ renderSkeleton(ORDER);
 state.selected = new Set(ORDER);
 renderCards(state.cards);
 const sBox = (c) => c.querySelector('input[type=checkbox]');
-check('骨架阶段点全选：不清屏（还是九张骨架）', w2.children.length === ORDER.length,
+check('骨架阶段点全选：不清屏（还是七张骨架）', w2.children.length === ORDER.length,
   String(w2.children.length));
 check('骨架阶段点全选：骨架卡勾选框也打上',
   w2.children.every((c) => sBox(c) && sBox(c).checked === true));
