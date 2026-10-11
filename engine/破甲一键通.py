@@ -6334,6 +6334,86 @@ class WorkBuddyTarget:
         return (text + "\r\n" + WB_USER_MARK_BEGIN + "\r\n" + body +
                 "\r\n" + WB_USER_MARK_END + "\r\n")
 
+    # ---------------- 自定义指令通道（settings.json personalization.customPrompt）----
+    #  为什么它是独立通道：user-context-identity.tpl 里 <user_custom_instructions> 的
+    #  包装语是全场唯一带 "override every default policy and preset rule" 的位置，
+    #  且在 system 提示词（USER.md 走 user 角色 <identity_context>）。两层比一层稳。
+    #  存取： PersonalizationCollector 先读 appConfig("personalization")，空则回退
+    #  ~/.workbuddy/settings.json 的 personalization.customPrompt（legacy 位）——
+    #  本脚本写 legacy 位：GUI 没保存过时零冲突；GUI 保存后 appConfig 接管，
+    #  settings.json 里的这份变成静默备份，不覆盖用户在界面里改的内容。
+    WB_SETTINGS_LEGACY_KEY = "personalization"
+
+    @classmethod
+    def customprompt_sync(cls, data_dir, dry=False):
+        """把席位源同步进 settings.json 的 personalization.customPrompt。
+
+        用户已在 GUI 保存过别的 customPrompt 时不覆盖（GUI 的值经 appConfig
+        优先生效，这里不抢）；源缺失则移除本通道写的键（退出托管）。
+        返回动作字符串（written/same/skip/removed/none）。
+        """
+        if not data_dir:
+            return "none"
+        sp = os.path.join(data_dir, "settings.json")
+        try:
+            raw = read_text_safe(sp)
+            doc = json.loads(raw) if raw else {}
+        except Exception:
+            doc = {}
+        pers = doc.get(cls.WB_SETTINGS_LEGACY_KEY)
+        pers = pers if isinstance(pers, dict) else {}
+        cur = pers.get("customPrompt")
+        src = (None if os.environ.get("POJIA_NO_SEAT_OVERRIDE")
+               else read_text_safe(WB_USER_MD_SEAT_SRC))
+        canon = src.strip() if (src and src.strip()) else None
+        if canon is None:
+            # 退出托管：只删我们自己写的
+            if cur is not None:
+                return "skip"          # 内容来历不明（GUI 保存过/用户手写），不动
+            return "skip"
+        if cur is not None and cur != canon:
+            # 已有别的值：GUI 保存过或用户自己写了 → 不覆盖
+            log("自定义指令已有非托管内容，不覆盖（GUI 设置优先）", "dg", "wb")
+            return "skip"
+        if cur == canon:
+            return "same"
+        if dry:
+            log("[预演] 将写入自定义指令 personalization.customPrompt（%d 字符）" % len(canon), "y", "wb")
+            return "written"
+        pers["customPrompt"] = canon
+        doc[cls.WB_SETTINGS_LEGACY_KEY] = pers
+        backup_file(sp)                     # 同目录 settings.json.bak，revert 语义一致
+        write_text(sp, json.dumps(doc, ensure_ascii=False, indent=2) + "\n", make_dirs=True)
+        log("自定义指令已写入 personalization.customPrompt（%d 字符）" % len(canon), "g", "wb")
+        return "written"
+
+    @classmethod
+    def customprompt_revert(cls, data_dir):
+        """还原自定义指令：本脚本写入且与席位源一致 → 删键；其余（GUI 值）不动。"""
+        if not data_dir:
+            return False
+        sp = os.path.join(data_dir, "settings.json")
+        try:
+            raw = read_text_safe(sp)
+            doc = json.loads(raw) if raw else {}
+        except Exception:
+            return False
+        pers = doc.get(cls.WB_SETTINGS_LEGACY_KEY)
+        if not isinstance(pers, dict) or "customPrompt" not in pers:
+            return False
+        src = read_text_safe(WB_USER_MD_SEAT_SRC)
+        if pers["customPrompt"] == (src.strip() if src else None):
+            del pers["customPrompt"]
+            if pers:
+                doc[cls.WB_SETTINGS_LEGACY_KEY] = pers
+            else:
+                doc.pop(cls.WB_SETTINGS_LEGACY_KEY, None)
+            write_text(sp, json.dumps(doc, ensure_ascii=False, indent=2) + "\n", make_dirs=True)
+            log("已还原自定义指令（personalization.customPrompt）", "g", "wb")
+            return True
+        log("自定义指令非本脚本所写（GUI 值），还原时保留", "dg", "wb")
+        return False
+
     @staticmethod
     def identity_residue(data_dir):
         """还没被中和的冲突行数（USER.md / MEMORY.md 这类只改行的文件）。"""
@@ -6695,6 +6775,7 @@ class WorkBuddyTarget:
                             except Exception:
                                 pass
             log("共恢复 %d 个文件（.unlockbak）" % n, "g", "wb")
+            self.customprompt_revert(data_dir)
             route_skills_revert("wb", data_dir, "wb")
             log("提示：还原后需重启 WorkBuddy 才生效。", "dg", "wb")
             return {"revert": n}
@@ -6771,6 +6852,9 @@ class WorkBuddyTarget:
         idst = self.patch_identity(data_dir, user, want, dry=dry)
         stats["identity"] = idst["fixed"]
         stats["identity_cur"] = idst["cur"]
+
+        # ---------- 自定义指令（settings.json personalization.customPrompt）----------
+        stats["customprompt"] = self.customprompt_sync(data_dir, dry=dry)
 
         # ---------- 命令闸门 ----------
         for p in jsf:
