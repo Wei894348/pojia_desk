@@ -3,6 +3,11 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import os
+
+# 席位独立源会让单测读到仓库里的 content/seats/ —— 测试一律走共享管线
+os.environ.setdefault("POJIA_NO_SEAT_OVERRIDE", "1")
+
 import unittest
 from unittest import mock
 
@@ -39,6 +44,16 @@ class CodexConfigTests(unittest.TestCase):
         self.proc_patch = mock.patch.object(pojia, "find_processes", return_value=[])
         self.proc_patch.start()
         self.addCleanup(self.proc_patch.stop)
+        # sync_snapshot 写的是**仓库真实快照**（targets/codex/），与 tmp home 无关；
+        # 席位独立源之后测试生成的正文 ≠ 实盘，不 mock 会把快照写花。
+        self.snap = mock.patch.object(pojia.CodexTarget, "sync_snapshot",
+                                      staticmethod(lambda *a, **k: "skipped"))
+        self.snap.start()
+        self.addCleanup(self.snap.stop)
+        self.snap2 = mock.patch.object(pojia.CodexTarget, "sync_agents_snapshot",
+                                       staticmethod(lambda *a, **k: "skipped"))
+        self.snap2.start()
+        self.addCleanup(self.snap2.stop)
 
     def legacy_config(self):
         return ('model = "example"\n[model_providers.example]\nname = "Example"\n\n'

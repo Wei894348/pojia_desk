@@ -5,6 +5,9 @@
 外部改动检测、越界与体积上限。全程在临时目录里跑，不碰真实目标。
 """
 import os
+
+# 席位独立源会让单测读到仓库里的 content/seats/ —— 测试一律走共享管线
+os.environ.setdefault("POJIA_NO_SEAT_OVERRIDE", "1")
 import sys
 import tempfile
 import unittest

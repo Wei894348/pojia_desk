@@ -13,6 +13,9 @@ v6.1 / 24891 B，而实盘已经是 v6.2 / 40431 B，谁都不知道该信哪份
 import hashlib
 import importlib.util
 import os
+
+# 席位独立源会让单测读到仓库里的 content/seats/ —— 测试一律走共享管线
+os.environ.setdefault("POJIA_NO_SEAT_OVERRIDE", "1")
 import re
 import sys
 import tempfile

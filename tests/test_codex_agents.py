@@ -17,6 +17,9 @@
 import importlib.util
 import json
 import os
+
+# 席位独立源会让单测读到仓库里的 content/seats/ —— 测试一律走共享管线
+os.environ.setdefault("POJIA_NO_SEAT_OVERRIDE", "1")
 import tempfile
 import unittest
 from unittest import mock
@@ -141,6 +144,16 @@ class ApplyTests(_Base):
         self.skills = mock.patch.object(self.m, "route_skills_apply", lambda *a, **k: None)
         self.skills.start()
         self.addCleanup(self.skills.stop)
+        # sync_snapshot 写的是**仓库真实快照**（targets/codex/），与 tmp home 无关；
+# 席位独立源之后测试生成的正文 ≠ 实盘，不 mock 会把快照写花。
+        self.snap = mock.patch.object(self.m.CodexTarget, "sync_snapshot",
+                                      staticmethod(lambda *a, **k: "skipped"))
+        self.snap.start()
+        self.addCleanup(self.snap.stop)
+        self.snap2 = mock.patch.object(self.m.CodexTarget, "sync_agents_snapshot",
+                                       staticmethod(lambda *a, **k: "skipped"))
+        self.snap2.start()
+        self.addCleanup(self.snap2.stop)
 
     def test_apply_creates_agents_with_block(self):
         self.assertEqual(self.T.apply(self.args(), "apply"), {"fixed": 1})
@@ -184,6 +197,10 @@ class ApplyTests(_Base):
         self.assertFalse(os.path.exists(self.ag), "预演不该新建 AGENTS.md")
 
     def test_snapshot_matches_live_block(self):
+        # 此用例专门验证 AGENTS 快照写入 —— 单独恢复真实的 sync_agents_snapshot
+        # （sync_snapshot 保持 mock，否则测试生成的指令正文会写花仓库快照）。
+        self.snap2.stop()
+        self.addCleanup(self.snap2.start)
         self.T.apply(self.args(), "apply")
         snap = os.path.join(self.m.TARGETS_DIR, self.m.CODEX_SNAPDIR, self.m.CODEX_AGENTS_SNAP)
         with open(snap, encoding="utf-8", newline="") as f:

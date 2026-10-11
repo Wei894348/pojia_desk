@@ -14,6 +14,9 @@
 """
 import importlib.util
 import os
+
+# 席位独立源会让单测读到仓库里的 content/seats/ —— 测试一律走共享管线
+os.environ.setdefault("POJIA_NO_SEAT_OVERRIDE", "1")
 import sys
 import unittest
 from unittest import mock
