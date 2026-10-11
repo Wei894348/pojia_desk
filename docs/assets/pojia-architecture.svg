@@ -23,7 +23,7 @@
     <rect x="720" y="40" width="440" height="180" rx="10" fill="#fff7f7" stroke="#d1d9e0"/>
     <text x="740" y="72" font-weight="700" font-size="16">落点（文件级补丁，全部可逆）</text>
     <text x="740" y="100">codex · dsh · dsh-desktop · wb · zcode</text>
-    <text x="740" y="126">claude · grok · gemini · hermes</text>
+    <text x="740" y="126">claude · hermes</text>
     <text x="740" y="152">+ 各席位 skills/（父类目 6 + 小类 80）</text>
     <text x="740" y="178">+ 状态/tx/&lt;id&gt;/（写前留证快照）</text>
     <text x="740" y="204">+ 历史备份/（按时间戳归档原版）</text>

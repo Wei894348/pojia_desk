@@ -99,7 +99,7 @@ ARCH_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 420" wid
     <rect x="720" y="40" width="440" height="180" rx="10" fill="#fff7f7" stroke="#d1d9e0"/>
     <text x="740" y="72" font-weight="700" font-size="16">落点（文件级补丁，全部可逆）</text>
     <text x="740" y="100">codex · dsh · dsh-desktop · wb · zcode</text>
-    <text x="740" y="126">claude · grok · gemini · hermes</text>
+    <text x="740" y="126">claude · hermes</text>
     <text x="740" y="152">+ 各席位 skills/（父类目 6 + 小类 80）</text>
     <text x="740" y="178">+ 状态/tx/&lt;id&gt;/（写前留证快照）</text>
     <text x="740" y="204">+ 历史备份/（按时间戳归档原版）</text>
@@ -143,14 +143,14 @@ def content_address(src_name: str) -> str:
 def body(version: str) -> str:
     tpl = """<div align="center">
   <h1>破甲工作台 · pojia_desk</h1>
-  <p><strong>九个席位 · 一个入口 · 部署 / 验证 / 恢复全程可逆</strong></p>
+  <p><strong>七个席位 · 一个入口 · 部署 / 验证 / 恢复全程可逆</strong></p>
   <p><sub>v${VERSION} · 纯 Python 标准库</sub></p>
 </div>
 
 <h2 id="功能">功能</h2>
 <ul>
-<li>一个脚本统一管理九个客户端的人格注入：部署、状态检测、预演、验证、还原</li>
-<li>Codex / DeepSeek Harness（Web + 桌面版）/ WorkBuddy / ZCode / Claude Code / Grok / Gemini / Hermes</li>
+<li>一个脚本统一管理七个客户端的人格注入：部署、状态检测、预演、验证、还原</li>
+<li>Codex / DeepSeek Harness（Web + 桌面版）/ WorkBuddy / ZCode / Claude Code / Hermes</li>
 <li>每次改动先备份、进事务快照，随时可整包还原；CLI 不在的席位自动跳过不写盘</li>
 <li>86 份路由 skill 按需加载；纯 Python 标准库，零第三方依赖</li>
 </ul>
@@ -237,13 +237,13 @@ def preview_page(html_body: str, version: str, absolute: bool) -> str:
 <span class="preview-label">仓库主页排版预览 · 非 GitHub 在线页面</span></header>
 <nav class="repo-tabs"><span class="selected">代码与说明</span><span>问题讨论</span><span>变更记录</span><span>项目文档</span></nav>
 <div class="container">
-<div class="notice"><span><strong>九张席位卡、八个命令行目标。</strong>纯 Python 标准库，零第三方依赖；每个改动都有备份与事务快照，随时可还原。</span>
+<div class="notice"><span><strong>七张席位卡、六个命令行目标。</strong>纯 Python 标准库，零第三方依赖；每个改动都有备份与事务快照，随时可还原。</span>
 <a href="%s">%s</a></div>
 <div class="repo-grid"><article class="readme"><div class="readme-tab">README.md · 项目主页</div>
 <div class="markdown-body">%s</div></article>
 <aside class="about"><h3>关于破甲工作台</h3>
 <p>一个入口，统一管理多目标人格注入的部署、验证与恢复。</p>
-<span class="tag">v%s</span><span class="tag">Python 标准库</span><span class="tag">九席位</span>
+<span class="tag">v%s</span><span class="tag">Python 标准库</span><span class="tag">七席位</span>
 <hr><h3>当前版本</h3><p>%s<br>命令 <code>console.bat</code> / 图形 <code>破甲工作台.bat</code></p>
 <a href="#上手使用">上手使用 ↓</a><a href="#支持的目标">支持的目标 ↓</a><a href="#目录结构">目录结构 ↓</a><a href="#自检与测试">自检与测试 ↓</a>
 <hr><p>README 与本页由 <code>tools/build_readme.py</code> 同一份正文生成。</p></aside>

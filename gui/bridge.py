@@ -1002,7 +1002,7 @@ def card_wb():
 
 
 def card_seat_md(key):
-    """Claude / Grok / Gemini 通用卡片：单文件标记块 + skills 投放计数。
+    """Claude / Grok / Gemini 通用卡片（grok/gemini 通道保留，GUI 不再出卡）：单文件标记块 + skills 投放计数。
 
     Claude 例外（2026-10-11）：CLAUDE_CHANNEL="style" 后主通道是
     output-styles/pojia.md + settings.outputStyle，CLAUDE.md 本来就**不该**有
@@ -1653,7 +1653,7 @@ def cmd_diff(target):
         ag_p = os.path.join(home, "AGENTS.md")
         items.append({"path": ag_p, "before": m.read_text_safe(ag_p) or "",
                       "after": m.build_zcode_instructions(user, want), "note": "AGENTS.md（整文件改写）"})
-    else:  # claude / grok / gemini / hermes —— 标记块合并
+    else:  # claude / hermes —— 标记块合并（grok/gemini 已移出 GUI，仅保留 revert 通道）
         md_p = os.path.join(home, t.md_name)
         old = m.read_text_safe(md_p) or ""
         after = m.merge_marked_block(old, target, m.build_zcode_instructions(user, want))

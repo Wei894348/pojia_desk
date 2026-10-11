@@ -1,13 +1,13 @@
 <div align="center">
   <h1>破甲工作台 · pojia_desk</h1>
-  <p><strong>九个席位 · 一个入口 · 部署 / 验证 / 恢复全程可逆</strong></p>
+  <p><strong>七个席位 · 一个入口 · 部署 / 验证 / 恢复全程可逆</strong></p>
   <p><sub>v6.8 · 纯 Python 标准库</sub></p>
 </div>
 
 <h2 id="功能">功能</h2>
 <ul>
-<li>一个脚本统一管理九个客户端的人格注入：部署、状态检测、预演、验证、还原</li>
-<li>Codex / DeepSeek Harness（Web + 桌面版）/ WorkBuddy / ZCode / Claude Code / Grok / Gemini / Hermes</li>
+<li>一个脚本统一管理七个客户端的人格注入：部署、状态检测、预演、验证、还原</li>
+<li>Codex / DeepSeek Harness（Web + 桌面版）/ WorkBuddy / ZCode / Claude Code / Hermes</li>
 <li>每次改动先备份、进事务快照，随时可整包还原；CLI 不在的席位自动跳过不写盘</li>
 <li>86 份路由 skill 按需加载；纯 Python 标准库，零第三方依赖</li>
 </ul>

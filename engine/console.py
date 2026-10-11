@@ -5,7 +5,7 @@
     python engine/console.py                     # 交互菜单
     python engine/console.py <目标> <动作>
 
-    目标： codex | dsh | wb | zcode | all
+    目标： codex | dsh | wb | zcode | claude | hermes | all
     动作： apply   破甲（--force 落盘）
            revert  复原（从备份还原官方原版）
            status  状态检测（只读）
@@ -18,8 +18,8 @@
     python engine/console.py codex apply
     python engine/console.py wb revert
     python engine/console.py all test
-    python engine/engine/console.py tx                      # 部署历史
-    python engine/engine/console.py tx restore 3fa1c2d8     # 回退到某次部署之前
+    python engine/console.py tx                      # 部署历史
+    python engine/console.py tx restore 3fa1c2d8     # 回退到某次部署之前
 """
 import argparse
 import glob
@@ -62,7 +62,7 @@ ALL_TARGETS = ("dsh", "codex", "wb", "zcode", "claude", "hermes")
 
 
 def norm_target_spec(spec):
-    """把 'claude,grok' / 'dsh codex' / 'cc' 这类写法归一成 'claude,grok'。
+    """把 'claude,codex' / 'dsh codex' / 'cc' 这类写法归一成 'claude,codex'。
 
     任一片段不认识就返回 None（由调用方报错）；含 all 直接返回 'all'。
     单一来源：目标集合以主脚本的 resolve_targets 为准，这里只做别名 + 分片。
@@ -99,7 +99,7 @@ ROUTE_JB_WORDS = ("忽略之前", "覆盖系统", "prompt injection", "越狱", 
                   "最高优先级覆盖", "不许拒绝", "不得省略")
 
 # 关键段断言分两轨（v6.9 起）：
-#   角色卡版（grok / gemini / hermes）识别位 = 「工作区角色库 / 工程任务」；
+#   角色卡版（grok / gemini / hermes 通道保留）识别位 = 「工作区角色库 / 工程任务」；
 #   完整版（claude 的 CLAUDE.md）装的是 persona 正文，没有那两段 —— 拿角色卡
 #   断言去查完整版会 2 处假阳性。这里按席位分开，不再一刀切。
 ROLE_CARD_KEYS = ("工作区角色库", "出戏就是演砸", "学姐在", "工程任务")
@@ -401,7 +401,8 @@ def _hermes_gate(text, label="SOUL.md"):
     为什么单列这条：Hermes 在把 SOUL.md 放进系统提示词第 1 槽位之前会跑
     `tools/threat_patterns.scan_for_threats(content, scope="context")`，
     **命中即整份 BLOCKED** —— 模型只看得到内置默认身份，等于白打。
-    这与 claude/grok/gemini 那三个"纯 markdown 注入"的席位有本质区别：
+    这与 claude/grok/gemini 那三个"纯 markdown 注入"席位（grok/gemini 已移出部署面，
+    通道保留）有本质区别：
     那三个写坏了只是效果差，Hermes 写坏了是**一点都不生效**，而且从会话里
     看不出来（没有报错、没有警告，只有一句 BLOCKED 走在日志里）。
 
@@ -450,7 +451,7 @@ def _hermes_gate(text, label="SOUL.md"):
 
 
 def test_home_md(seat):
-    """Claude / Grok / Gemini 专项验证（三席位共用一套断言）。
+    """Claude / Grok / Gemini 专项验证（三席位共用一套断言；grok/gemini 通道保留）。
 
     只断言**我们自己的标记块**，不碰用户自有内容 —— 那部分本来就不归我们管
     （比如 .claude/CLAUDE.md 里用户自己的手稿，内容是什么与我们无关）。
@@ -792,8 +793,8 @@ def tx_history(seat="", limit=0):
             r["id"][:8], r["seat"], r["at"][5:16],
             "%d/%d" % (r["changed"], r["files"]), r["status"], note))
     print()
-    print("  校验: python engine/engine/console.py tx verify <编号>")
-    print("  回退: python engine/engine/console.py tx restore <编号>")
+    print("  校验: python engine/console.py tx verify <编号>")
+    print("  回退: python engine/console.py tx restore <编号>")
     return 0
 
 
@@ -803,7 +804,7 @@ def tx_verify(tx_id):
         print("  [FAIL] 事务模块未加载"); return 2
     full = _resolve_tx_id(tx, tx_id)
     if not full:
-        print("  找不到这次部署：%s（用 python engine/engine/console.py tx 看列表）" % tx_id)
+        print("  找不到这次部署：%s（用 python engine/console.py tx 看列表）" % tx_id)
         return 2
     rep = tx.verify(full)
     print("=" * 62)
@@ -833,7 +834,7 @@ def tx_restore(tx_id, force=False):
         print("  [FAIL] 事务模块未加载"); return 2
     full = _resolve_tx_id(tx, tx_id)
     if not full:
-        print("  找不到这次部署：%s（用 python engine/engine/console.py tx 看列表）" % tx_id)
+        print("  找不到这次部署：%s（用 python engine/console.py tx 看列表）" % tx_id)
         return 2
     print("  按快照回退 %s ..." % full[:8])
     try:
@@ -862,12 +863,12 @@ def tx_purge(keep=None):
 
 def tx_usage():
     print("用法:")
-    print("  python engine/engine/console.py tx                    部署历史")
-    print("  python engine/engine/console.py tx list [目标]        只看某个目标（codex/dsh/wb/zcode/claude/grok/gemini）")
-    print("  python engine/engine/console.py tx verify <编号>      校验快照 + 当前落盘态")
-    print("  python engine/engine/console.py tx restore <编号>     按快照回退（现场被改过则中止）")
-    print("  python engine/engine/console.py tx restore <编号> --force   强制覆盖，丢掉后续改动")
-    print("  python engine/engine/console.py tx purge [n]          清理旧快照，默认保留 12 次")
+    print("  python engine/console.py tx                    部署历史")
+    print("  python engine/console.py tx list [目标]        只看某个目标（codex/dsh/wb/zcode/claude/hermes）")
+    print("  python engine/console.py tx verify <编号>      校验快照 + 当前落盘态")
+    print("  python engine/console.py tx restore <编号>     按快照回退（现场被改过则中止）")
+    print("  python engine/console.py tx restore <编号> --force   强制覆盖，丢掉后续改动")
+    print("  python engine/console.py tx purge [n]          清理旧快照，默认保留 12 次")
     return 0
 
 
@@ -883,11 +884,11 @@ def tx_cmd(argv):
         return tx_history(seat=seat)
     if sub in ("verify", "check", "校验"):
         if len(argv) < 2:
-            print("  缺少编号。用法: python engine/engine/console.py tx verify <编号>"); return 2
+            print("  缺少编号。用法: python engine/console.py tx verify <编号>"); return 2
         return tx_verify(argv[1])
     if sub in ("restore", "rollback", "回退", "还原"):
         if len(argv) < 2:
-            print("  缺少编号。用法: python engine/engine/console.py tx restore <编号>"); return 2
+            print("  缺少编号。用法: python engine/console.py tx restore <编号>"); return 2
         return tx_restore(argv[1], force=("--force" in argv or "-f" in argv))
     if sub in ("purge", "clean", "清理"):
         k = None
@@ -909,7 +910,7 @@ EXTRA_FLAGS = {"--full": "full", "--nofileguard": "nofileguard",
 
 
 def dispatch(target, action, extra=None):
-    tset = m.resolve_targets(target)        # 支持 'claude,grok' / 'all'，单一来源在主脚本
+    tset = m.resolve_targets(target)        # 支持 'claude,codex' / 'all'，单一来源在主脚本
     if action == "test":
         return run_test(tset)
     args = build_args(target)
@@ -928,7 +929,7 @@ def menu():
     while True:
         print()
         print("=" * 62)
-        print("  破甲控制台   目标: codex / dsh / wb / zcode / claude / grok / gemini / hermes / all")
+        print("  破甲控制台   目标: codex / dsh / wb / zcode / claude / hermes / all")
         print("               动作: apply / revert / status / test / dry")
         print("=" * 62)
         print("  [1] 全部破甲        [2] 全部复原       [3] 全部状态")
@@ -960,7 +961,7 @@ def menu():
                 if input("  确认回退 %s ？(y/N) " % t).strip().lower() == "y":
                     tx_restore(t)
         elif c == "5":
-            t = input("  目标 (codex/dsh/wb/zcode/claude/grok/gemini) > ").strip().lower()
+            t = input("  目标 (codex/dsh/wb/zcode/claude/hermes) > ").strip().lower()
             t = TARGET_ALIAS.get(t)
             a = input("  动作 (apply/revert/status/test) > ").strip().lower()
             a = ACTION_ALIAS.get(a)
@@ -978,7 +979,7 @@ def main(argv):
     # 归一预览：python engine/console.py route "帮我弄个挂"
     if args[0].lower() in ("route", "归一", "归"):
         return route_preview(" ".join(args[1:]))
-    # 部署事务：python engine/engine/console.py tx [list|verify|restore|purge]
+    # 部署事务：python engine/console.py tx [list|verify|restore|purge]
     if args[0].lower() in ("tx", "事务", "历史"):
         return tx_cmd(args[1:])
     # 档位×通道组合器：python engine/console.py compose max reverse "目标"

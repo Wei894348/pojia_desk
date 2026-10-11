@@ -13,7 +13,7 @@ const STATE_MAP = {
 };
 const LEVEL_CLS = { ok: 'lv-ok', warn: 'lv-warn', err: 'lv-err', info: 'lv-info', dim: 'lv-dim' };
 const ORDER = ['codex', 'dsh', 'dsh-desktop', 'wb', 'zcode', 'claude', 'hermes'];
-// 九张卡，但只有**八个命令行目标**：DSH 桌面版和 npm 版共用同一套命令
+// 七张卡，但只有**六个命令行目标**：DSH 桌面版和 npm 版共用同一套命令
 // （preset 一次就写 web + desktop 两份 profile），所以它界面单独成卡、
 // 执行时折回 dsh（bridge 的 CARD_ONLY）。DSH 的「破甲模式」仍不是卡 ——
 // 它是 DSH 卡片里的一个下拉选项（两个勾选框），状态并进那张卡的体检项与明细。
@@ -26,7 +26,7 @@ const LABELS = {
 const OPT_KEY = 'pojia.opts';
 
 // ── 刷新策略 ───────────────────────────────────────────────
-// 状态检测一次要跑 8 个目标（dsh 单卡就 3.5s），代价很高。
+// 状态检测一次要跑 6 个目标（dsh 单卡就 3.5s），代价很高。
 // 所以：① 两次真检测之间留冷却窗口，窗口内的刷新请求合并成一次；
 //      ② 单张卡的结果缓存 20 秒，冷却窗口外的自动刷新（切窗口回来之类）
 //         直接吃缓存，不重探；③ 只有手动刷新与刚跑完动作的目标才真探。
