@@ -1,0 +1,194 @@
+{
+  "stamp": "20261012-111228",
+  "created": "2026-10-12 11:12:29",
+  "install_dir": "F:\\Softstore\\WorkBuddy",
+  "data_dir": "C:\\Users\\86157\\.workbuddy",
+  "templates": [
+    {
+      "rel": "<data>\\plugins\\cache\\workbuddy-builtin\\welcomemode-code\\5.5.6-wb.38337834.g5f969292.h9c7c332db516\\prompt.tpl",
+      "size": 71103,
+      "sha256": "176ff4587bfac765872b65bc8fdf8b8cba4eb684af8c812d9448fcf3a5c9ef4f"
+    },
+    {
+      "rel": "<data>\\plugins\\cache\\workbuddy-builtin\\welcomemode-code\\5.6.2-wb.39298511.g37a65c0b.he233403f909a\\prompt.tpl",
+      "size": 73024,
+      "sha256": "cfe0e945cd748f58642af8f15f1dcfaa185cc69cd9c6dd5fec4f2cacd5085873"
+    },
+    {
+      "rel": "<data>\\plugins\\cache\\workbuddy-builtin\\welcomemode-code\\5.7.3-wb.40038958.gaa9f13d9.hff9adc917099\\prompt.tpl",
+      "size": 68654,
+      "sha256": "d8267cd8ff1b09a8521a25e72d8a8b34691185f5295d62c0125288d236564639"
+    },
+    {
+      "rel": "<data>\\plugins\\cache\\workbuddy-builtin\\welcomemode-code\\5.7.6-wb.40409493.g306add2a.h2bbe757cd444\\prompt.tpl",
+      "size": 68654,
+      "sha256": "d8267cd8ff1b09a8521a25e72d8a8b34691185f5295d62c0125288d236564639"
+    },
+    {
+      "rel": "<data>\\plugins\\cache\\workbuddy-builtin\\welcomemode-code\\5.7.7-wb.40774747.g2e8619da.had9031c93ded\\prompt.tpl",
+      "size": 68654,
+      "sha256": "d8267cd8ff1b09a8521a25e72d8a8b34691185f5295d62c0125288d236564639"
+    },
+    {
+      "rel": "<data>\\plugins\\cache\\workbuddy-builtin\\welcomemode-design\\5.5.6-wb.38337834.g5f969292.h9c7c332db516\\prompt.tpl",
+      "size": 68491,
+      "sha256": "a3613d32c21fa2e8e5a1784a531ab65dd1f506c0188f18661b5aea1cab9b77d7"
+    },
+    {
+      "rel": "<data>\\plugins\\cache\\workbuddy-builtin\\welcomemode-design\\5.6.2-wb.39298511.g37a65c0b.he233403f909a\\prompt.tpl",
+      "size": 70053,
+      "sha256": "8217ce1c1d22da2ed02d0fa9b0e344a7a26e2697a258faf270a3b1a52c9f0a14"
+    },
+    {
+      "rel": "<data>\\plugins\\cache\\workbuddy-builtin\\welcomemode-design\\5.7.3-wb.40038958.gaa9f13d9.hff9adc917099\\prompt.tpl",
+      "size": 66473,
+      "sha256": "500f846c032e824f4078ec3d1dbf860be00d3906e38e0e6f73eca9b226069948"
+    },
+    {
+      "rel": "<data>\\plugins\\cache\\workbuddy-builtin\\welcomemode-design\\5.7.6-wb.40409493.g306add2a.h2bbe757cd444\\prompt.tpl",
+      "size": 66473,
+      "sha256": "500f846c032e824f4078ec3d1dbf860be00d3906e38e0e6f73eca9b226069948"
+    },
+    {
+      "rel": "<data>\\plugins\\cache\\workbuddy-builtin\\welcomemode-design\\5.7.7-wb.40774747.g2e8619da.had9031c93ded\\prompt.tpl",
+      "size": 66473,
+      "sha256": "500f846c032e824f4078ec3d1dbf860be00d3906e38e0e6f73eca9b226069948"
+    },
+    {
+      "rel": "<data>\\plugins\\cache\\workbuddy-builtin\\welcomemode-work\\5.5.6-wb.38337834.g5f969292.h9c7c332db516\\prompt.tpl",
+      "size": 71425,
+      "sha256": "502b93d7b98f73ac08d62ebda6ed5f18b559b86c41d6be7e0ad889f78fecacef"
+    },
+    {
+      "rel": "<data>\\plugins\\cache\\workbuddy-builtin\\welcomemode-work\\5.6.2-wb.39298511.g37a65c0b.he233403f909a\\prompt.tpl",
+      "size": 73387,
+      "sha256": "0a9d2ee177e663ff3cb04a6b55f5d571ec890e09ebcb373013c19c421168f0f5"
+    },
+    {
+      "rel": "<data>\\plugins\\cache\\workbuddy-builtin\\welcomemode-work\\5.7.3-wb.40038958.gaa9f13d9.hff9adc917099\\prompt.tpl",
+      "size": 69017,
+      "sha256": "559bbdc92640dc356608aa56facc81d256cec89480db10871b26e68b89539c11"
+    },
+    {
+      "rel": "<data>\\plugins\\cache\\workbuddy-builtin\\welcomemode-work\\5.7.6-wb.40409493.g306add2a.h2bbe757cd444\\prompt.tpl",
+      "size": 69017,
+      "sha256": "559bbdc92640dc356608aa56facc81d256cec89480db10871b26e68b89539c11"
+    },
+    {
+      "rel": "<data>\\plugins\\cache\\workbuddy-builtin\\welcomemode-work\\5.7.7-wb.40774747.g2e8619da.had9031c93ded\\prompt.tpl",
+      "size": 69017,
+      "sha256": "559bbdc92640dc356608aa56facc81d256cec89480db10871b26e68b89539c11"
+    },
+    {
+      "rel": "<data>\\plugins\\marketplaces\\workbuddy-builtin\\welcomemode\\code\\prompt.tpl",
+      "size": 70626,
+      "sha256": "c44677106da01736097f3fe1e2f440d72f3d233abfd568e3065bd4270c769016"
+    },
+    {
+      "rel": "<data>\\plugins\\marketplaces\\workbuddy-builtin\\welcomemode\\design\\prompt.tpl",
+      "size": 67549,
+      "sha256": "7dca89ec10efbfe8f95e943d7822fbfbfbfa7f32ca6958d8ab35a8cd01e4dc33"
+    },
+    {
+      "rel": "<data>\\plugins\\marketplaces\\workbuddy-builtin\\welcomemode\\work\\prompt.tpl",
+      "size": 70626,
+      "sha256": "c44677106da01736097f3fe1e2f440d72f3d233abfd568e3065bd4270c769016"
+    },
+    {
+      "rel": "<install>\\resources\\app.asar.unpacked\\resources\\plugins\\workbuddy-builtin\\welcomemode\\code\\prompt.tpl",
+      "size": 71103,
+      "sha256": "176ff4587bfac765872b65bc8fdf8b8cba4eb684af8c812d9448fcf3a5c9ef4f"
+    },
+    {
+      "rel": "<install>\\resources\\app.asar.unpacked\\resources\\plugins\\workbuddy-builtin\\welcomemode\\design\\prompt.tpl",
+      "size": 68491,
+      "sha256": "a3613d32c21fa2e8e5a1784a531ab65dd1f506c0188f18661b5aea1cab9b77d7"
+    },
+    {
+      "rel": "<install>\\resources\\app.asar.unpacked\\resources\\plugins\\workbuddy-builtin\\welcomemode\\work\\prompt.tpl",
+      "size": 71425,
+      "sha256": "502b93d7b98f73ac08d62ebda6ed5f18b559b86c41d6be7e0ad889f78fecacef"
+    },
+    {
+      "rel": "<install>\\resources\\app.asar.unpacked\\resources\\templates\\user-context-identity.tpl",
+      "size": 2004,
+      "sha256": "819e3734c373ef484cbde69f5742ff6c0976dcfe685034161ab63e10adf3884c"
+    },
+    {
+      "rel": "<install>\\resources\\app.asar.unpacked\\resources\\templates\\workbuddy-ask-code-prompt.tpl",
+      "size": 49947,
+      "sha256": "84e37be4ac7db0bb2201a4c3198a5f7359fc16f55b3d623757b68d9bb0d4778f"
+    },
+    {
+      "rel": "<install>\\resources\\app.asar.unpacked\\resources\\templates\\workbuddy-ask-coding-prompt.tpl",
+      "size": 49951,
+      "sha256": "6883e3dd54afeaf4f5c138e9d536c4ba76066051d792f025843a812693fdde0b"
+    },
+    {
+      "rel": "<install>\\resources\\app.asar.unpacked\\resources\\templates\\workbuddy-ask-prompt.tpl",
+      "size": 49933,
+      "sha256": "1bd8bed77d911654064e40715ef88554a10f1fc19aee33186e46074d7b0fef26"
+    },
+    {
+      "rel": "<install>\\resources\\app.asar.unpacked\\resources\\templates\\workbuddy-craft-code-prompt.tpl",
+      "size": 77974,
+      "sha256": "5a2e5084bf358d96233234dd675b8a1bfafa82b3d7fd5dd23e42218eb3285f0e"
+    },
+    {
+      "rel": "<install>\\resources\\app.asar.unpacked\\resources\\templates\\workbuddy-craft-coding-prompt.tpl",
+      "size": 77170,
+      "sha256": "d99ee4cf1e1572f0c12a0ed7ba07ef74cf39fee5d0d4d64729c797b664c92b79"
+    },
+    {
+      "rel": "<install>\\resources\\app.asar.unpacked\\resources\\templates\\workbuddy-craft-design-prompt.tpl",
+      "size": 69994,
+      "sha256": "8b6813a472f51d8a7a586587a75a137a6bff4a140c9803824243faf062d721ab"
+    },
+    {
+      "rel": "<install>\\resources\\app.asar.unpacked\\resources\\templates\\workbuddy-expert-code-prompt.tpl",
+      "size": 77789,
+      "sha256": "73f4b8fd49db68e88234114584259cbd849eb426884fcf488b748414c6ca05b4"
+    },
+    {
+      "rel": "<install>\\resources\\app.asar.unpacked\\resources\\templates\\workbuddy-expert-coding-prompt.tpl",
+      "size": 77063,
+      "sha256": "49c8a0fcdca70d78c7ab4fa642ddb9be62dfdaa495d6f8f867f4c66bfe3f25cc"
+    },
+    {
+      "rel": "<install>\\resources\\app.asar.unpacked\\resources\\templates\\workbuddy-expert-prompt.tpl",
+      "size": 77336,
+      "sha256": "a39019ed00fedce5bbea4cbb8037117eaeecadd02da6a678475fde21109f12d4"
+    },
+    {
+      "rel": "<install>\\resources\\app.asar.unpacked\\resources\\templates\\workbuddy-prompt.tpl",
+      "size": 76690,
+      "sha256": "e3b70d7d278b4237ab2f6bac1db01d74e0efcc943ded433307b6aa13582c336f"
+    }
+  ],
+  "bigfiles": [
+    {
+      "rel": "<install>\\resources\\app.asar.unpacked\\cli\\product.json",
+      "size": 426485,
+      "sha256": "d27324c2858bf2e18faac84e7a7cdadfa236aedd05cf31d995d4de667832a017",
+      "exists": true
+    },
+    {
+      "rel": "<install>\\resources\\app.asar.unpacked\\cli\\dist\\codebuddy.js",
+      "size": 23317734,
+      "sha256": "a9a674757bb9f5687d8fd31d0bf399dab4a6db5629913dab6a518021ed2d4d57",
+      "exists": true
+    },
+    {
+      "rel": "<install>\\resources\\app.asar.unpacked\\cli\\dist\\codebuddy-headless.js",
+      "size": 19796712,
+      "sha256": "b1fdc6fba8cd6c727c88da6464b46b1737cd14f62554d6f3aa08a6d8c019fbcb",
+      "exists": true
+    },
+    {
+      "rel": "<data>\\cache\\acc-product-config-v3.json",
+      "size": -1,
+      "sha256": "",
+      "exists": false
+    }
+  ]
+}

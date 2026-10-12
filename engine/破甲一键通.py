@@ -6994,7 +6994,10 @@ class WorkBuddyTarget:
         tpl_dir = os.path.join(out, "tpl")
         os.makedirs(tpl_dir, exist_ok=True)
         user, _s = load_user_persona(getattr(args, "persona", "") or "")
-        _p, want = build_policy(user)
+        # 快照的 loose/other 统计要与 apply 同基准：wb 模板写的是
+        # seat_persona('workbuddy') 席位哈希，用 build_policy 的通用哈希会把
+        # 本版快照误标成 other。
+        _p, want = seat_persona("workbuddy", user)
 
         recs = []
         for t in self.find_targets(data_dir, install):
