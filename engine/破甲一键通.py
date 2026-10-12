@@ -2188,7 +2188,9 @@ class DshTarget:
         bases = self.find_bases(getattr(args, "dsh_dir", "") or "")
         log("检测到 %d 个 @deepseek-ai 安装" % len(bases), "c", "dsh")
         user, _src = load_user_persona(getattr(args, "persona", "") or "")
-        _pol, want = build_policy(user)
+        # 状态判定必须与 apply/deploy_preset 同基准（席位哈希）。dump 曾用
+        # build_policy 的通用哈希，导致破甲模式被误报"人格来自旧版"（2026-10-12）。
+        _pol, want = seat_persona("dsh", user)
         rows, seen_fp = [], set()
         for b in bases:
             tg = self.collect_targets(b)
@@ -6346,73 +6348,92 @@ class WorkBuddyTarget:
 
     @classmethod
     def customprompt_sync(cls, data_dir, dry=False):
-        """把席位源同步进 settings.json 的 personalization.customPrompt。
+        """把席位源同步进 personalization.customPrompt（双落点）。
 
-        用户已在 GUI 保存过别的 customPrompt 时不覆盖（GUI 的值经 appConfig
-        优先生效，这里不抢）；源缺失则移除本通道写的键（退出托管）。
-        返回动作字符串（written/same/skip/removed/none）。
+        两条读链，缺一不可：
+          · prompt 注入（PersonalizationCollector）：appConfig("personalization")
+            → 空则回退 legacy ~/.workbuddy/settings.json。
+          · GUI 显示（daemon configGet → AppConfigService）：只读
+            ~/.workbuddy/app/app-config.json，无 legacy 回退 —— 只写 settings.json
+            时注入生效但界面看不到（2026-10-12 实测）。
+        所以两个文件都写。用户已在 GUI 保存过别的 customPrompt 时不覆盖
+        （GUI 值优先生效，这里不抢）；源缺失则不动。
+        返回动作字符串（written/same/skip/none）。
         """
         if not data_dir:
             return "none"
-        sp = os.path.join(data_dir, "settings.json")
-        try:
-            raw = read_text_safe(sp)
-            doc = json.loads(raw) if raw else {}
-        except Exception:
-            doc = {}
-        pers = doc.get(cls.WB_SETTINGS_LEGACY_KEY)
-        pers = pers if isinstance(pers, dict) else {}
-        cur = pers.get("customPrompt")
         src = (None if os.environ.get("POJIA_NO_SEAT_OVERRIDE")
                else read_text_safe(WB_USER_MD_SEAT_SRC))
         canon = src.strip() if (src and src.strip()) else None
         if canon is None:
-            # 退出托管：只删我们自己写的
-            if cur is not None:
-                return "skip"          # 内容来历不明（GUI 保存过/用户手写），不动
             return "skip"
-        if cur is not None and cur != canon:
-            # 已有别的值：GUI 保存过或用户自己写了 → 不覆盖
-            log("自定义指令已有非托管内容，不覆盖（GUI 设置优先）", "dg", "wb")
-            return "skip"
-        if cur == canon:
-            return "same"
-        if dry:
-            log("[预演] 将写入自定义指令 personalization.customPrompt（%d 字符）" % len(canon), "y", "wb")
+
+        # 两处落点：app-config.json（GUI + collector 主链）与 settings.json（legacy 备份）
+        spots = [
+            os.path.join(data_dir, "app", "app-config.json"),
+            os.path.join(data_dir, "settings.json"),
+        ]
+        changed = False
+        for sp in spots:
+            try:
+                raw = read_text_safe(sp)
+                doc = json.loads(raw) if raw else {}
+            except Exception:
+                doc = {}
+            pers = doc.get(cls.WB_SETTINGS_LEGACY_KEY)
+            pers = pers if isinstance(pers, dict) else {}
+            cur = pers.get("customPrompt")
+            if cur is not None and cur != canon:
+                log("自定义指令已有非托管内容，不覆盖（%s）" % os.path.basename(sp), "dg", "wb")
+                continue
+            if cur == canon:
+                continue
+            if dry:
+                log("[预演] 将写入自定义指令 personalization.customPrompt → %s（%d 字符）"
+                    % (os.path.relpath(sp, data_dir), len(canon)), "y", "wb")
+                changed = True
+                continue
+            pers["customPrompt"] = canon
+            doc[cls.WB_SETTINGS_LEGACY_KEY] = pers
+            backup_file(sp)
+            write_text(sp, json.dumps(doc, ensure_ascii=False, indent=2) + "\n", make_dirs=True)
+            log("自定义指令已写入（%s，%d 字符）" % (os.path.relpath(sp, data_dir), len(canon)), "g", "wb")
+            changed = True
+        if dry and changed:
             return "written"
-        pers["customPrompt"] = canon
-        doc[cls.WB_SETTINGS_LEGACY_KEY] = pers
-        backup_file(sp)                     # 同目录 settings.json.bak，revert 语义一致
-        write_text(sp, json.dumps(doc, ensure_ascii=False, indent=2) + "\n", make_dirs=True)
-        log("自定义指令已写入 personalization.customPrompt（%d 字符）" % len(canon), "g", "wb")
-        return "written"
+        return "same" if not changed else "written"
 
     @classmethod
     def customprompt_revert(cls, data_dir):
         """还原自定义指令：本脚本写入且与席位源一致 → 删键；其余（GUI 值）不动。"""
         if not data_dir:
             return False
-        sp = os.path.join(data_dir, "settings.json")
-        try:
-            raw = read_text_safe(sp)
-            doc = json.loads(raw) if raw else {}
-        except Exception:
-            return False
-        pers = doc.get(cls.WB_SETTINGS_LEGACY_KEY)
-        if not isinstance(pers, dict) or "customPrompt" not in pers:
-            return False
         src = read_text_safe(WB_USER_MD_SEAT_SRC)
-        if pers["customPrompt"] == (src.strip() if src else None):
-            del pers["customPrompt"]
-            if pers:
-                doc[cls.WB_SETTINGS_LEGACY_KEY] = pers
+        canon = src.strip() if src else None
+        removed = False
+        for sp in (os.path.join(data_dir, "app", "app-config.json"),
+                   os.path.join(data_dir, "settings.json")):
+            try:
+                raw = read_text_safe(sp)
+                doc = json.loads(raw) if raw else {}
+            except Exception:
+                continue
+            pers = doc.get(cls.WB_SETTINGS_LEGACY_KEY)
+            if not isinstance(pers, dict) or "customPrompt" not in pers:
+                continue
+            if pers["customPrompt"] == canon:
+                del pers["customPrompt"]
+                if pers:
+                    doc[cls.WB_SETTINGS_LEGACY_KEY] = pers
+                else:
+                    doc.pop(cls.WB_SETTINGS_LEGACY_KEY, None)
+                write_text(sp, json.dumps(doc, ensure_ascii=False, indent=2) + "\n", make_dirs=True)
+                log("已还原自定义指令（%s）" % os.path.relpath(sp, data_dir), "g", "wb")
+                removed = True
             else:
-                doc.pop(cls.WB_SETTINGS_LEGACY_KEY, None)
-            write_text(sp, json.dumps(doc, ensure_ascii=False, indent=2) + "\n", make_dirs=True)
-            log("已还原自定义指令（personalization.customPrompt）", "g", "wb")
-            return True
-        log("自定义指令非本脚本所写（GUI 值），还原时保留", "dg", "wb")
-        return False
+                log("自定义指令非本脚本所写（GUI 值），还原时保留（%s）"
+                    % os.path.basename(sp), "dg", "wb")
+        return removed
 
     @staticmethod
     def identity_residue(data_dir):
