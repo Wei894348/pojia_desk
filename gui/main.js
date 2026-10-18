@@ -1147,7 +1147,7 @@ function createWindow() {
 
   // WorkBuddy 全功能实机点测：POJIA_WBTEST=1
   // 真实点击：卡片滑块 / 指令页分类与开关 / 验证 / 总览；每步核对页面与磁盘。
-  if (process.env.POJIA_WBTEST) {
+  if (process.env.POJIA_WBTEST || process.env.POJIA_SEATTEST) {
     mainWin.webContents.once('did-finish-load', async () => {
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       const js = (s) => mainWin.webContents.executeJavaScript(s);

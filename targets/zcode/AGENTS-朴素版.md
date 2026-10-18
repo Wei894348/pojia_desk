@@ -1,4 +1,4 @@
-<!-- workspace-profile:h=697891b2fcd1 -->
+<!-- pojia-seat h=1dcbf977096d -->
 <!-- 席位独立提示词源：改这份只影响 zcode。删除即回退共享管线。 -->
 
 # 工作区角色库

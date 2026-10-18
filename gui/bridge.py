@@ -1083,6 +1083,93 @@ def card_wb():
     return card
 
 
+def card_seat_deploy(key):
+    """Claude / Hermes / ZCode 卡片：以 seats_deploy 的落点核对为准。
+
+    旧 card_seat_md 按「标记块哈希 + 旧版 output style 哈希」判定，
+    与新的三落点引擎口径不同（新版主落点是整份写入的文件，没有标记块），
+    会给出「verify 全过、卡片却报未部署」的矛盾结论。
+    """
+    sd = _seat_deploy()
+    if sd is None:
+        return {"key": key, "label": key, "home": "", "state": "broken",
+                "rows": [{"level": "err", "path": "", "note": "engine/seats_deploy.py 缺失"}],
+                "files": [], "metrics": []}
+    spec = sd.SEATS[key]
+    home = sd.home_of(key)
+    v = sd.verify(key)
+    st = sd.state(key)
+    rows, files, metrics = [], [], []
+    if not os.path.isdir(home):
+        return {"key": key, "label": spec["label"], "home": home, "state": "none",
+                "rows": [{"level": "dim", "path": home, "note": "目录不存在（未安装）"}],
+                "files": [], "metrics": []}
+
+    done, total = v["done"], v["total"]
+    deployed = st.get("pack_on") is not False and v["ok"]
+    if deployed:
+        state = "current"
+    elif st.get("restoredAt") and st.get("pack_on") is False:
+        state = "none"
+    elif total and done == 0:
+        state = "none"
+    elif any(c["ok"] for c in v["checks"]):
+        state = "stale"
+    else:
+        state = "none"
+
+    by_role = {}
+    for c in v["checks"]:
+        by_role.setdefault(c["role"], []).append(c)
+    prim = (by_role.get("指令文件") or [{}])[0]
+    rows.append({"level": "ok" if v["ok"] else "warn", "path": home,
+                 "note": "%s 落点：%d / %d 就位" % (spec["label"], done, total)})
+    rows.append({"level": "ok" if prim.get("ok") else "warn",
+                 "path": prim.get("path") or "",
+                 "note": "指令文件 %s · %s" % (
+                     spec["primary"],
+                     "整份写入" if spec["primary_kind"] == "file" else "标记块合并")})
+    for role, note in (("记忆文件标记块", "记忆文件标记块"),
+                       ("outputStyle 指针", "settings.json outputStyle")):
+        for c in by_role.get(role) or []:
+            rows.append({"level": "ok" if c["ok"] else "warn", "path": c["path"],
+                         "note": note})
+    sks = by_role.get("SKILL.md") or []
+    if sks:
+        n_ok = sum(1 for c in sks if c["ok"])
+        rows.append({"level": "ok" if n_ok == len(sks) else "warn",
+                     "path": os.path.join(home, "skills"),
+                     "note": "路由 skills：%d / %d" % (n_ok, len(sks))})
+    files = [{"path": c["path"], "exists": c["exists"], "size": c.get("bytes"),
+              "role": c["role"], "hit": [] if not c["ok"] else ["已就位"],
+              "miss": [] if c["ok"] else ["未就位"]}
+             for c in v["checks"] if c["role"] != "SKILL.md"]
+    metrics = [
+        {"name": "指令源", "value": sd.pack_name(key) or "—", "ok": bool(sd.pack_name(key))},
+        {"name": "指令文件", "value": "已写入" if prim.get("ok") else "未写入",
+         "ok": bool(prim.get("ok"))},
+    ]
+    if spec.get("memory"):
+        mchk = (by_role.get("记忆文件标记块") or [{}])[0]
+        metrics.append({"name": spec["memory"], "value": "已合并" if mchk.get("ok") else "未写入",
+                        "ok": bool(mchk.get("ok"))})
+    if spec.get("settings"):
+        schk = (by_role.get("outputStyle 指针") or [{}])[0]
+        metrics.append({"name": "outputStyle", "value": "pojia" if schk.get("ok") else "未设置",
+                        "ok": bool(schk.get("ok"))})
+    if sks:
+        n_ok = sum(1 for c in sks if c["ok"])
+        metrics.append({"name": "SKILL.md", "value": "%d / %d" % (n_ok, len(sks)),
+                        "ok": n_ok == len(sks)})
+    try:
+        nb = len(os.listdir(os.path.join(home, "pojia-backups")))
+    except OSError:
+        nb = 0
+    metrics.append({"name": "备份", "value": "有" if nb else "无", "ok": nb > 0})
+    return {"key": key, "label": spec["label"], "home": home, "state": state,
+            "rows": rows, "files": files, "metrics": metrics}
+
+
 def card_seat_md(key):
     """Claude / Grok / Gemini 通用卡片（grok/gemini 通道保留，GUI 不再出卡）：单文件标记块 + skills 投放计数。
 
@@ -1255,10 +1342,10 @@ def card_seat_md(key):
 
 
 CARD_FN = {"codex": card_codex, "dsh": card_dsh, "dsh-desktop": card_dsh_desktop,
-           "wb": card_wb, "zcode": card_zcode,
+           "wb": card_wb, "zcode": lambda: card_seat_deploy("zcode"),
            "pojia": card_preset,
-           "claude": lambda: card_seat_md("claude"),
-           "hermes": lambda: card_seat_md("hermes")}
+           "claude": lambda: card_seat_deploy("claude"),
+           "hermes": lambda: card_seat_deploy("hermes")}
 
 
 # 每个席位"部署了什么文件"清单（相对 home；文件已列过的跳过）
@@ -1763,40 +1850,42 @@ def cmd_instr_disable(seat):
 
 
 def cmd_instr_toggle(seat, name, on):
-    """指令文件的滑块：拨右 = 部署这一份，四落点一起写；拨左 = 还原。
+    """指令文件的滑块：拨右 = 部署这一份，落点一起写；拨左 = 还原。
 
-    「注入中」看部署状态表里记的 pack —— 换一份时旧的自然落回未部署。
-    ChatGPT / WorkBuddy 各自一套引擎，正文互不共享。
+    ChatGPT / WorkBuddy / Claude / Hermes / ZCode 各用各的引擎，正文互不共享。
     """
-    ad = _wb_deploy() if seat in ("wb", "workbuddy") else _codex_deploy()
-    lib = (ad.INSTR_LIB if ad is not None else "")
+    is_seat = seat in ("claude", "hermes", "zcode")
+    is_wb = seat in ("wb", "workbuddy")
+    ad = _seat_deploy() if is_seat else (_wb_deploy() if is_wb else _codex_deploy())
+    lib = (ad.lib_dir(seat) if is_seat and ad is not None
+           else (ad.INSTR_LIB if ad is not None else ""))
     if ad is None:
         return {"ok": False, "error": "engine/%s 缺失"
-                % ("workbuddy_deploy.py" if seat in ("wb", "workbuddy")
-                   else "codex_deploy.py")}
+                % ("seats_deploy.py" if is_seat else
+                   "workbuddy_deploy.py" if is_wb else "codex_deploy.py")}
     # 只接受指令库里的裸文件名：挡住 ../ 越界与绝对路径
     if not name or name != os.path.basename(name) or not name.lower().endswith(".md"):
         return {"ok": False, "error": "指令源文件名无效：%s" % name}
     if not os.path.isfile(os.path.join(lib, name)):
         return {"ok": False, "error": "指令库里没有这份文件：%s" % name}
+    eng = seat if is_seat else ("wb" if is_wb else "codex")
     if not on:
-        # 关掉「当前这份指令源」：内容都来自这份源件，一路撤到底
-        ad.set_pack(name, False)
-        r = ad.deploy("codex" if seat == "codex" else "wb", {"pack": ""})
-        st = ad.state()
+        ad.set_pack(seat, name, False) if is_seat else ad.set_pack(name, False)
+        r = ad.deploy(eng, {"pack": ""})
+        st = ad.state(seat) if is_seat else ad.state()
         return {"ok": r.get("ok", True),
                 "note": "已关闭指令注入（撤下部署文件与相关落点）",
                 "removed": r.get("removed") or [], "state": st,
-                "home": ad.home_of("codex") if seat == "codex" else ad.home_of()}
-    # 刚点过「还原」时四路都是关的；单独部署一份指令源不等于只写这一份文件 ——
-    # 用户在卡片上明确选了「部署」，其它几路也应当恢复。
-    st = ad.state()
-    ad.set_pack(name, True)
-    flags = (("pack_on", "agents", "config", "skills") if seat == "codex"
+                "home": ad.home_of(seat) if is_seat else
+                        (ad.home_of() if is_wb else ad.home_of("codex"))}
+    st = ad.state(seat) if is_seat else ad.state()
+    ad.set_pack(seat, name, True) if is_seat else ad.set_pack(name, True)
+    flags = (("pack_on", "primary", "memory", "settings", "skills") if is_seat
+             else ("pack_on", "agents", "config", "skills") if not is_wb
              else ("pack_on", "custom", "templates", "identity", "skills"))
     if all(st.get(f) is False for f in flags):
-        ad.enable_all()
-    r = ad.deploy("codex" if seat == "codex" else "wb", {"pack": name})
+        ad.enable_all(seat) if is_seat else ad.enable_all()
+    r = ad.deploy(eng, {"pack": name})
     return {"ok": r.get("ok", False),
             "note": "已部署 %s（%d 个落点）" % (name, len(r.get("written") or [])),
             "written": r.get("written"), "home": r.get("home")}
@@ -2232,6 +2321,142 @@ def _wb_deploy():
     return m
 
 
+def _seat_deploy():
+    """加载 engine/seats_deploy.py（Claude / Hermes / ZCode 的三落点部署）。"""
+    import importlib.util
+    p = os.path.join(ENGINE, "seats_deploy.py")
+    if not os.path.isfile(p):
+        return None
+    spec = importlib.util.spec_from_file_location("seats_deploy", p)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+_SEAT_DEPLOY_KEYS = ("claude", "hermes", "zcode")
+
+
+def _doc_scan_seat(agent, label):
+    """Claude / Hermes / ZCode 页 = 各自的三类落点（指令文件 / 记忆或指针 / SKILL.md）。"""
+    sd = _seat_deploy()
+    if sd is None:
+        return {"ok": False, "error": "engine/seats_deploy.py 缺失"}
+    spec = sd.SEATS.get(agent)
+    if not spec:
+        return {"ok": False, "error": "未知席位：%s" % agent}
+    home = sd.home_of(agent)
+    v = sd.verify(agent)
+    st = sd.state(agent)
+    notes = _doc_notes()
+    out = []
+    lib = sd.lib_dir(agent)
+    active = ((st.get("pack") or sd.pack_name(agent))
+              if st.get("pack_on") is not False else "")
+    for fn in sd.lib_files(agent):
+        p = (spec["seed"] if fn == os.path.basename(spec["seed"])
+             else os.path.join(spec["lib"], fn))
+        if not p or not os.path.isfile(p):
+            continue
+        is_active = fn == active
+        out.append({
+            "id": _doc_rel(p), "path": p, "name": fn, "cat": "instruction",
+            "size": os.path.getsize(p), "exists": True,
+            "enabled": is_active, "active": is_active, "deployable": True,
+            "note": ("注入中 · 写入 %s" % os.path.basename(spec["primary"])) if is_active
+                    else "拨右把它部署为 %s 的指令文件" % spec["label"],
+            "labels": [_label("指令源", "info"),
+                       _label("注入中" if is_active else "未部署",
+                              "ok" if is_active else "muted")],
+            "memo": notes.get(_doc_rel(p), ""),
+        })
+    # 主落点本身（指令文件写到哪里）
+    prim = next((c for c in v["checks"] if c["role"] == "指令文件"), None)
+    prim_p = (prim or {}).get("path") or os.path.join(home, spec["primary"])
+    out.append({
+        "id": "seat:%s/primary" % agent,
+        "path": prim_p,
+        "name": "%s · %s" % (os.path.basename(spec["primary"]),
+                             "整份写入" if spec["primary_kind"] == "file" else "标记块"),
+        "cat": "config",
+        "title": "指令文件落点",
+        "size": (prim or {}).get("bytes") or 0,
+        "exists": bool(prim),
+        "enabled": st.get("primary") is not False, "managed": True, "live": True,
+        "note": ("正文来自 %s，部署时写进这里" % active) if active else "先在指令文件里选一份正文",
+        "labels": [_label("落点", "info"),
+                   _label("已启用" if st.get("primary") is not False else "已关闭",
+                          "ok" if st.get("primary") is not False else "muted"),
+                   _label("已就位" if (prim or {}).get("ok") else "待部署",
+                          "ok" if (prim or {}).get("ok") else "muted")],
+        "memo": notes.get("seat:%s/primary" % agent, ""),
+    })
+    if spec.get("memory"):
+        mchk = next((c for c in v["checks"] if c["role"] == "记忆文件标记块"), None)
+        mp = (mchk or {}).get("path") or os.path.join(home, spec["memory"])
+        out.append({
+            "id": "seat:%s/memory" % agent, "path": mp,
+            "name": spec["memory"], "cat": "agents",
+            "size": (mchk or {}).get("bytes") or 0, "exists": bool(mchk),
+            "enabled": st.get("memory") is not False, "managed": True, "live": True,
+            "note": "标记块合并，用户自己的内容保留",
+            "labels": [_label("记忆文件", "info"),
+                       _label("已启用" if st.get("memory") is not False else "已关闭",
+                              "ok" if st.get("memory") is not False else "muted"),
+                       _label("已就位" if (mchk or {}).get("ok") else "待部署",
+                              "ok" if (mchk or {}).get("ok") else "muted")],
+            "memo": notes.get("seat:%s/memory" % agent, ""),
+        })
+    if spec.get("settings"):
+        schk = next((c for c in v["checks"] if c["role"] == "outputStyle 指针"), None)
+        out.append({
+            "id": "seat:%s/settings" % agent,
+            "path": (schk or {}).get("path") or sd.settings_path(agent),
+            "name": "outputStyle 指针", "cat": "config",
+            "size": (schk or {}).get("bytes") or 0, "exists": bool(schk),
+            "enabled": st.get("settings") is not False, "managed": True, "live": True,
+            "note": "settings.json 里 outputStyle = pojia",
+            "labels": [_label("配置指针", "info"),
+                       _label("已启用" if st.get("settings") is not False else "已关闭",
+                              "ok" if st.get("settings") is not False else "muted"),
+                       _label("已就位" if (schk or {}).get("ok") else "待部署",
+                              "ok" if (schk or {}).get("ok") else "muted")],
+            "memo": notes.get("seat:%s/settings" % agent, ""),
+        })
+    try:
+        routes = _routes_mod()
+    except Exception:
+        routes = None
+    for sid, text in sd._skill_items(agent, all_items=True):
+        p = os.path.join(home, "skills", sid, "SKILL.md")
+        nid = "seat:%s/skill/%s" % (agent, sid)
+        on = sd.skill_on(agent, sid)
+        chk = next((c for c in v["checks"]
+                    if c["role"] == "SKILL.md" and os.path.normcase(c["path"]) == os.path.normcase(p)),
+                   {})
+        leaf_p = os.path.join(ROOT, "content", "routes", "leaves", sid + ".md")
+        meta = routes.leaf_meta(sid) if (routes and os.path.isfile(leaf_p)) else None
+        parent_key = next((k for k, vv in (routes.CATEGORIES if routes else {}).items()
+                           if vv[3] == sid), "")
+        if meta:
+            cn, cat_cn, kind = meta["name"], meta["category_name"], "小类"
+        elif parent_key:
+            _s, pname, _kw, _slug = routes.CATEGORIES[parent_key]
+            cn, cat_cn, kind = pname, "类目", "父类目"
+        else:
+            cn, cat_cn, kind = sid, "SKILL.md", "技能"
+        out.append({
+            "id": nid, "path": p, "name": sid, "cat": "skill",
+            "title": cn, "category": cat_cn,
+            "size": len(text.encode("utf-8")), "exists": os.path.isfile(p),
+            "enabled": on, "managed": True, "skill": True, "note": "",
+            "labels": [_label(cat_cn, "info"), _label(kind, "muted"),
+                       _label("已投放" if chk.get("ok") else "未投放",
+                              "ok" if chk.get("ok") else "muted")],
+            "memo": notes.get(nid, ""),
+        })
+    return _doc_finish(out, agent, label, home)
+
+
 def _doc_scan(agent):
     """扫出某个 Agent 名下的文档。
 
@@ -2242,6 +2467,8 @@ def _doc_scan(agent):
         return _doc_scan_codex(label)
     if agent == "workbuddy":
         return _doc_scan_wb(label)
+    if agent in _SEAT_DEPLOY_KEYS:
+        return _doc_scan_seat(agent, label)
     out = []
     seen = set()
 
@@ -2645,6 +2872,29 @@ def _codex_skill_key(sid):
     return "codex:skill/%s" % sid
 
 
+def _seat_toggle(sd, seat, flag, want):
+    st = sd.state(seat)
+    st[flag] = bool(want)
+    sd.save_state(seat, st)
+    return {"ok": True, "id": "seat:%s/%s" % (seat, flag), "enabled": bool(want),
+            "note": "已%s · 下次部署时%s写这一路" % ("启用" if want else "停用",
+                                                  "" if want else "不")}
+
+
+def _seat_skill_toggle(sd, seat, sid, want):
+    leaf = os.path.join(ROOT, "content", "routes", "leaves", sid + ".md")
+    if os.path.isfile(leaf):
+        ok = _doc_set_enabled(_doc_rel(leaf), want)
+    else:
+        st = sd.state(seat)
+        st["seat:skill/%s" % sid] = bool(want)
+        sd.save_state(seat, st)
+        ok = True
+    return {"ok": ok, "id": "seat:%s/skill/%s" % (seat, sid), "enabled": bool(want),
+            "note": ("已启用 · 下次部署会重新投放" if want
+                     else "已停用 · 下次部署会撤下这一份 skill")}
+
+
 def _wb_toggle(doc_id, want):
     """WorkBuddy 页的三类开关：自定义指令 / 模板政策块 / 身份层，SKILL 走通用开关表。"""
     wd = _wb_deploy()
@@ -2675,10 +2925,73 @@ def _wb_toggle(doc_id, want):
     return {"ok": False, "error": "未知开关：%s" % doc_id}
 
 
+def _seat_read_landing(doc_id):
+    """seat 页落点的只读展示：说清楚这里是什么、现在写了什么。"""
+    sd = _seat_deploy()
+    if sd is None:
+        return {"ok": False, "error": "engine/seats_deploy.py 缺失"}
+    seat = doc_id[len("seat:"):].split("/", 1)[0]
+    if seat not in _SEAT_DEPLOY_KEYS:
+        return {"ok": False, "error": "未知席位"}
+    spec = sd.SEATS[seat]
+    home = sd.home_of(seat)
+    rest = doc_id[len("seat:"):].partition("/")[2]
+    if rest == "primary":
+        p = os.path.join(home, spec["primary"])
+        txt = _read_text(p) if os.path.isfile(p) else ""
+        lines = ["# 指令文件落点（只读）", "",
+                 "%s 的主注入落点是 `%s`（%s）。" % (
+                     spec["label"], spec["primary"],
+                     "整份写入" if spec["primary_kind"] == "file" else "标记块合并"),
+                 "正文本身在「指令文件」页里编辑；部署时写进这里。", ""]
+        if txt:
+            lines += ["## 当前内容（%d 字符）" % len(txt), "", txt]
+        else:
+            lines.append("（当前没有写入）")
+        return {"ok": True, "id": doc_id, "path": p, "content": "\n".join(lines),
+                "editable": False, "live": True,
+                "hint": "落点只读；正文在指令文件里改"}
+    if rest == "memory" and spec.get("memory"):
+        p = os.path.join(home, spec["memory"])
+        txt = _read_text(p) if os.path.isfile(p) else ""
+        lines = ["# 记忆文件（只读）", "",
+                 "`%s` 里我们只写一个标记块，用户自己的内容原样保留。" % spec["memory"],
+                 "下面显示整个文件。", "",
+                 "## 当前内容（%d 字符）" % len(txt), "", txt or "（文件不存在）"]
+        return {"ok": True, "id": doc_id, "path": p, "content": "\n".join(lines),
+                "editable": False, "live": True, "hint": "落点只读"}
+    if rest == "settings":
+        p = sd.settings_path(seat)
+        txt = _read_text(p) if os.path.isfile(p) else ""
+        lines = ["# outputStyle 指针（只读）", "",
+                 "部署时把 `settings.json` 的 `outputStyle` 设为 `pojia`，"
+                 "指向 `output-styles/pojia.md`。", "",
+                 "## 当前内容", "", txt or "（文件不存在）"]
+        return {"ok": True, "id": doc_id, "path": p, "content": "\n".join(lines),
+                "editable": False, "live": True, "hint": "落点只读"}
+    return {"ok": False, "error": "未知落点"}
+
+
 def _wb_edit_path(doc_id):
     """WorkBuddy 页落点的编辑目标：真正承载正文的才可写，落点本身只读展示。"""
     wd = _wb_deploy()
     home = wd.home_of() if wd else os.path.join(os.path.expanduser("~"), ".workbuddy")
+    if doc_id.startswith("seat:"):
+        # seat 页的落点都是「只读展示」：正文在指令文件里改
+        seat = doc_id[len("seat:"):].split("/", 1)[0]
+        sd = _seat_deploy()
+        if sd is None or seat not in _SEAT_DEPLOY_KEYS:
+            return "", "未知席位"
+        spec = sd.SEATS[seat]
+        shome = sd.home_of(seat)
+        rest = doc_id[len("seat:"):].partition("/")[2]
+        if rest.startswith("skill/"):
+            sid = rest[len("skill/"):]
+            leaf = os.path.join(ROOT, "content", "routes", "leaves", sid + ".md")
+            if os.path.isfile(leaf):
+                return leaf, "SKILL.md 正文源（部署时投放到 <home>/skills/）"
+            return "", "父类目内容由 content/routes/ 生成"
+        return os.path.join(shome, spec["primary"]), "落点（只读展示）"
     if doc_id.startswith("wb:skill/"):
         sid = doc_id[len("wb:skill/"):]
         leaf = os.path.join(ROOT, "content", "routes", "leaves", sid + ".md")
@@ -2791,6 +3104,27 @@ def cmd_doc_toggle(rel):
     关闭只是把这份文档从"合成清单"里摘掉，源文件一个字节不改 ——
     生成脚本、引擎按路径找源件的地方都不会对不上。改完实时生效于下一次部署。
     """
+    if rel.startswith("seat:"):
+        # seat:<席位>/primary|memory|settings|skill/<id>
+        body = rel[len("seat:"):]
+        seat, _, rest = body.partition("/")
+        sd = _seat_deploy()
+        if sd is None or seat not in _SEAT_DEPLOY_KEYS:
+            return {"ok": False, "error": "未知席位：%s" % rel}
+        st = sd.state(seat)
+        if rest == "primary":
+            return _seat_toggle(sd, seat, "primary", st.get("primary") is False)
+        if rest == "memory":
+            return _seat_toggle(sd, seat, "memory", st.get("memory") is False)
+        if rest == "settings":
+            return _seat_toggle(sd, seat, "settings", st.get("settings") is False)
+        if rest.startswith("skill/"):
+            sid = rest[len("skill/"):]
+            leaf = os.path.join(ROOT, "content", "routes", "leaves", sid + ".md")
+            if os.path.isfile(leaf):
+                return _seat_skill_toggle(sd, seat, sid, not _doc_enabled(leaf))
+            return _seat_skill_toggle(sd, seat, sid, st.get("seat:skill/%s" % sid) is False)
+        return {"ok": False, "error": "未知开关：%s" % rel}
     if rel.startswith("wb:"):
         st = _wb_deploy().state() if _wb_deploy() else {}
         if rel in ("wb:custom", "wb:templates", "wb:identity"):
@@ -2998,6 +3332,8 @@ def cmd_doc_read(rel):
     """整文件读出（编辑用）。ChatGPT 页的 id 折到项目里的源件。"""
     path, note = (_codex_edit_path(rel) if rel.startswith("codex:")
                   else _wb_edit_path(rel) if rel.startswith("wb:") else ("", ""))
+    if rel.startswith("seat:") and rel.split("/", 1)[1] in ("primary", "memory", "settings"):
+        return _seat_read_landing(rel)
     if rel.startswith("wb:") and rel in ("wb:custom", "wb:templates"):
         return _wb_read_landing(rel)
     if rel.startswith("codex:") or rel.startswith("wb:"):
@@ -3502,8 +3838,9 @@ def _pump(cmd, tag, label):
         emit({"type": "line", "target": tag, "level": "err", "text": "启动失败：%s" % e})
         return 1
     assert p.stdout is not None
-    is_codex = tag in ("codex", "wb") and any(
-        ("codex_deploy.py" in str(c) or "workbuddy_deploy.py" in str(c)) for c in cmd)
+    is_codex = tag in ("codex", "wb", "claude", "hermes", "zcode") and any(
+        ("codex_deploy.py" in str(c) or "workbuddy_deploy.py" in str(c)
+         or "seats_deploy.py" in str(c)) for c in cmd)
     buf = []
     for raw in p.stdout:
         ln, level = classify(raw)
@@ -3518,6 +3855,35 @@ def _pump(cmd, tag, label):
         for text, level in _codex_deploy_lines(buf, tag):
             emit({"type": "line", "target": tag, "level": level, "text": text})
     return p.returncode or 0
+
+
+def _seat_deploy_lines(seat, d, out, written, removed, pack):
+    """Claude / Hermes / ZCode 的日志摘要：每个落点一句话。"""
+    act = d.get("action") or ""
+    prim = [p for p in written if p.endswith((".md", ".json"))
+            and p.replace("\\", "/").endswith(("/pojia.md", "/CLAUDE.md", "/SOUL.md",
+                                               "/AGENTS.md", "/settings.json"))]
+    skills = [p for p in written if p.replace("\\", "/").endswith("/SKILL.md")]
+    if act == "deploy":
+        out.append(("指令源：" + (pack or "（无 —— 按官方原版处理）"),
+                    "ok" if pack else "warn"))
+        if prim:
+            out.append(("写入落点 %d 份：%s" % (
+                len(prim), "、".join(sorted({os.path.basename(p) for p in prim}))), "ok"))
+        if skills:
+            out.append(("投放技能 %d 份 SKILL.md" % len(skills), "ok"))
+        if not written and not removed:
+            out.append(("落点已是最新，本次无需改动", "dim"))
+    elif act == "restore":
+        out.append(("还原完成：回拷备份、撤下投放的落点", "ok"))
+        n_skill = sum(1 for p in removed if p.replace("\\", "/").endswith("SKILL.md"))
+        if removed and n_skill != len(removed):
+            out.append(("  回拷用户文件 %d 份" % (len(removed) - n_skill), "dim"))
+        if n_skill:
+            out.append(("  撤下技能 %d 份" % n_skill, "dim"))
+    if d.get("note"):
+        out.append((d["note"], "ok"))
+    return out
 
 
 def _wb_deploy_lines(d, out, written, removed, pack, kb, short):
@@ -3591,6 +3957,8 @@ def _codex_deploy_lines(lines, tag="codex"):
 
     if tag == "wb":
         return _wb_deploy_lines(d, out, written, removed, pack, kb, short)
+    if tag in _SEAT_DEPLOY_KEYS:
+        return _seat_deploy_lines(tag, d, out, written, removed, pack)
     instr = [p for p in written if (os.sep + "prompts" + os.sep) in p]
     agents = [p for p in written if p.replace("\\", "/").endswith("/AGENTS.md")]
     cfg = [p for p in written if p.replace("\\", "/").endswith("/config.toml")]
@@ -3708,6 +4076,20 @@ def cmd_run(action, targets, flags=None):
                         and st.get("templates") is False and st.get("identity") is False
                         and st.get("skills") is False):
                     ad.enable_all()
+                cmd.append("apply")
+            else:
+                cmd.append({"revert": "restore", "dry": "deploy"}[argv_action])
+            if argv_action == "dry":
+                cmd.append("--dry")
+        elif k in _SEAT_DEPLOY_KEYS:
+            # Claude / Hermes / ZCode：各自三落点（指令文件 / 记忆或指针 / SKILL.md）
+            cmd = [sys.executable, os.path.join(ENGINE, "seats_deploy.py"), k]
+            if argv_action == "apply":
+                sd = _seat_deploy()
+                st = sd.state(k) if sd else {}
+                if all(st.get(f) is False for f in ("pack_on", "primary", "memory",
+                                                    "settings", "skills")):
+                    sd.enable_all(k)
                 cmd.append("apply")
             else:
                 cmd.append({"revert": "restore", "dry": "deploy"}[argv_action])
