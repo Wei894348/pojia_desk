@@ -40,14 +40,16 @@ SEATS = {
         "home_default": ".claude",
         "lib": os.path.join(BASE, "targets", "claude", "instructions"),
         "seed": os.path.join(SEAT_DIR, "claude.md"),
-        "primary": os.path.join("output-styles", "pojia.md"),
-        "primary_kind": "file",          # 整份写入（output style 是纯正文文件）
-        # Claude Code 要求 output style 带 YAML frontmatter（name 必须与槽位一致），
-        # 少这一段启动就会报错 —— 部署时必须原样带上。
-        "primary_fm": ("---\nname: pojia\ndescription: 本机工作区配置\n"
-                       "keep-coding-instructions: true\n---\n\n"),
-        "memory": "CLAUDE.md",           # 标记块合并
-        "settings": "settings.json",     # outputStyle 指针
+        # 参照 Astra 的落法：主通道 = CLAUDE.md 标记块；规则层 rules/pojia.md；
+        # output style 保留为可选指针（settings.json 的 outputStyle）。
+        "primary": "CLAUDE.md",
+        "primary_kind": "marked",        # 标记块合并，用户自己的记忆保留
+        "rules": "rules/pojia.md",       # 规则层：整份写入
+        "style": os.path.join("output-styles", "pojia.md"),
+        "style_fm": ("---\nname: pojia\ndescription: 本机工作区配置\n"
+                     "keep-coding-instructions: true\n---\n\n"),
+        "settings": "settings.json",     # outputStyle 指针（可选，默认关）
+        "settings_default": False,
         "skills": True,
     },
     "hermes": {
@@ -195,6 +197,7 @@ def _ours(seat, path):
     spec = SEATS[seat]
     for mark in (POLICY_MARK, SKILL_MARK,
                  (MARK_BEGIN % seat), "workspace-profile:h=",
+                 "pojia:claude-output-style",     # 旧版 output style 的归属头
                  "cfg-v7:h=", "unlock-v6:h=", "最高优先级覆盖 版本"):
         if mark in text:
             return True
@@ -234,8 +237,9 @@ def sync_snapshot(seat, dry=False):
             j = text.find(e, i)
             text = text[i + len(b):j if j >= 0 else len(text)]
     text = text.strip("\n")
-    if spec.get("primary_fm") and not text.startswith("---"):
-        text = spec["primary_fm"].rstrip("\n") + "\n\n" + text
+    if spec.get("style_fm") and not text.startswith("---") and o.get("style"):
+        # 快照跟实际落点保持一致：开了 output style 就带上 frontmatter
+        text = spec["style_fm"].rstrip("\n") + "\n\n" + text
     if not text:
         return ""
     snap = snapshot_path(seat)
@@ -366,14 +370,26 @@ def body_with_mark(seat, name=""):
 
 
 def opts(seat):
+    """各落点开关。默认值以席位配置为准（Claude 的 outputStyle 指针默认关）。"""
     st = state(seat)
     on = st.get("pack_on") is not False
+    spec = SEATS[seat]
+    default_settings = spec.get("settings_default", True)
+
+    def flag(name, default=True):
+        v = st.get(name)
+        return default if v is None else v is not False
+
     return {
         "pack": pack_name(seat) if on else "",
-        "primary": st.get("primary") is not False,
-        "memory": st.get("memory") is not False,
-        "settings": st.get("settings") is not False,
-        "skills": st.get("skills") is not False,
+        "primary": flag("primary"),
+        "rules": flag("rules", bool(spec.get("rules"))),
+        # output style 与 settings 指针默认关：Astra 的 Claude 部署不碰这两层，
+        # 主通道走 CLAUDE.md + rules/。需要时在指令页单独拨开。
+        "style": flag("style", False),
+        "memory": flag("memory", bool(spec.get("memory"))),
+        "settings": flag("settings", default_settings),
+        "skills": flag("skills"),
     }
 
 
@@ -391,7 +407,8 @@ def set_pack(seat, name=None, on=True):
 def enable_all(seat):
     st = state(seat)
     st.update({"pack": st.get("pack") or pack_name(seat), "pack_on": True,
-               "primary": True, "memory": True, "settings": True, "skills": True})
+               "primary": True, "memory": True, "settings": True, "skills": True,
+               "rules": True, "style": True})
     for k in list(st):
         if k.startswith("seat:skill/") and st[k] is False:
             st[k] = True
@@ -494,7 +511,8 @@ def plan(seat, opts_override=None, full=False):
     if full:
         st0 = state(seat)
         o.update({"pack": st0.get("pack") or pack_name(seat),
-                  "primary": True, "memory": True, "settings": True, "skills": True})
+                  "primary": True, "rules": True, "style": True,
+                  "memory": True, "settings": True, "skills": True})
     name = o.get("pack") or ""
     body, h = body_with_mark(seat, name)
     writes = []
@@ -506,6 +524,17 @@ def plan(seat, opts_override=None, full=False):
         writes.append({"kind": spec["primary_kind"],
                        "path": os.path.join(home, spec["primary"]),
                        "role": "指令文件", "text": ptext, "hash": h})
+    # 规则层（Astra 的做法）：同一份正文整份写进 rules/<name>.md
+    if body and spec.get("rules") and o.get("rules"):
+        writes.append({"kind": "file", "path": os.path.join(home, spec["rules"]),
+                       "role": "规则文件", "text": body, "hash": h})
+    # output style 槽位：可选（默认关），开了才有 frontmatter 要求
+    if body and spec.get("style") and o.get("style"):
+        stext = body
+        if spec.get("style_fm") and not stext.startswith("---"):
+            stext = spec["style_fm"] + stext
+        writes.append({"kind": "file", "path": os.path.join(home, spec["style"]),
+                       "role": "output style", "text": stext, "hash": h})
     if body and spec.get("memory") and o.get("memory"):
         writes.append({"kind": "marked", "path": os.path.join(home, spec["memory"]),
                        "role": "记忆文件标记块", "text": body})
@@ -601,7 +630,8 @@ def deploy(seat, opts_override=None, dry=False):
     if o["pack"]:
         st["last_pack"] = o["pack"]
     st.update({"pack": o["pack"], "pack_on": bool(o["pack"]),
-               "primary": o["primary"], "memory": o["memory"],
+               "primary": o["primary"], "rules": o["rules"], "style": o["style"],
+               "memory": o["memory"],
                "settings": o["settings"], "skills": o["skills"],
                "deployedAt": time.strftime("%Y-%m-%d %H:%M:%S")})
     save_state(seat, st)
@@ -635,6 +665,20 @@ def _prune(seat, home, o, pack):
                         except OSError:
                             pass
             else:
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+    # 规则层 / output style 落点：关掉就删（它们整份都是我们写的）
+    for key, rel in (("rules", spec.get("rules")), ("style", spec.get("style"))):
+        if not rel or (o.get(key) and not no_pack):
+            continue
+        p = os.path.join(home, rel)
+        if os.path.isfile(p):
+            bak = _bak_path(home, p)
+            if os.path.isfile(bak) and not _ours(seat, bak):
+                _write_bytes(p, bak)
+            elif _ours(seat, p):
                 try:
                     os.remove(p)
                 except OSError:
@@ -752,8 +796,8 @@ def restore(seat):
         except OSError:
             pass
     st = state(seat)
-    st.update({"pack_on": False, "primary": False, "memory": False,
-               "settings": False, "skills": False,
+    st.update({"pack_on": False, "primary": False, "rules": False, "style": False,
+               "memory": False, "settings": False, "skills": False,
                "restoredAt": time.strftime("%Y-%m-%d %H:%M:%S")})
     for sid in mod.skill_dirs():
         st["seat:skill/%s" % sid] = False
@@ -787,12 +831,22 @@ def verify(seat):
     hit = (POLICY_MARK + h + " -->") in txt
     if sp["primary_kind"] == "marked":
         hit = hit or (MARK_BEGIN % seat) in txt
-    if sp.get("primary_fm"):
-        # output style 没有 frontmatter = Claude Code 读不了，等同于未就位
-        hit = hit and txt.lstrip().startswith("---")
     on = o.get("primary") and bool(o.get("pack"))
     add(p, "指令文件", hit if on else not hit, os.path.isfile(p),
         len(txt.encode("utf-8")))
+    # 规则层 / output style：整份文件，按哈希头判定
+    for key, role, rel in (("rules", "规则文件", sp.get("rules")),
+                           ("style", "output style", sp.get("style"))):
+        if not rel:
+            continue
+        pr = os.path.join(home, rel)
+        tr = _read(pr)
+        hr = (POLICY_MARK + h + " -->") in tr
+        if key == "style" and sp.get("style_fm"):
+            hr = hr and tr.lstrip().startswith("---")
+        onr = o.get(key) and bool(o.get("pack"))
+        add(pr, role, hr if onr else not hr, os.path.isfile(pr),
+            len(tr.encode("utf-8")))
     if sp.get("memory"):
         p2 = os.path.join(home, sp["memory"])
         t2 = _read(p2)

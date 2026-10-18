@@ -1130,10 +1130,15 @@ def card_seat_deploy(key):
                      spec["primary"],
                      "整份写入" if spec["primary_kind"] == "file" else "标记块合并")})
     for role, note in (("记忆文件标记块", "记忆文件标记块"),
-                       ("outputStyle 指针", "settings.json outputStyle")):
+                       ("规则文件", "规则层 rules/"),
+                       ("output style", "output style")):
         for c in by_role.get(role) or []:
             rows.append({"level": "ok" if c["ok"] else "warn", "path": c["path"],
                          "note": note})
+    if sd.opts(key).get("settings") is not False and (by_role.get("outputStyle 指针") or [{}])[0].get("ok"):
+        rows.append({"level": "ok",
+                     "path": (by_role.get("outputStyle 指针") or [{}])[0]["path"],
+                     "note": "settings.json outputStyle"})
     sks = by_role.get("SKILL.md") or []
     if sks:
         n_ok = sum(1 for c in sks if c["ok"])
@@ -1153,10 +1158,18 @@ def card_seat_deploy(key):
         mchk = (by_role.get("记忆文件标记块") or [{}])[0]
         metrics.append({"name": spec["memory"], "value": "已合并" if mchk.get("ok") else "未写入",
                         "ok": bool(mchk.get("ok"))})
+    if spec.get("rules"):
+        rchk = (by_role.get("规则文件") or [{}])[0]
+        metrics.append({"name": "规则文件", "value": "已写入" if rchk.get("ok") or (
+            sd.opts(key).get("rules") is False and not rchk.get("exists")) else "未写入",
+            "ok": bool(rchk.get("ok")) or sd.opts(key).get("rules") is False})
     if spec.get("settings"):
         schk = (by_role.get("outputStyle 指针") or [{}])[0]
-        metrics.append({"name": "outputStyle", "value": "pojia" if schk.get("ok") else "未设置",
-                        "ok": bool(schk.get("ok"))})
+        if sd.opts(key).get("settings") is False:
+            metrics.append({"name": "outputStyle", "value": "已关闭", "ok": True})
+        else:
+            metrics.append({"name": "outputStyle", "value": "pojia" if schk.get("ok") else "未设置",
+                            "ok": bool(schk.get("ok"))})
     if sks:
         n_ok = sum(1 for c in sks if c["ok"])
         metrics.append({"name": "SKILL.md", "value": "%d / %d" % (n_ok, len(sks)),
@@ -2406,6 +2419,40 @@ def _doc_scan_seat(agent, label):
                               "ok" if (mchk or {}).get("ok") else "muted")],
             "memo": notes.get("seat:%s/memory" % agent, ""),
         })
+    if spec.get("rules"):
+        rchk = next((c for c in v["checks"] if c["role"] == "规则文件"), None)
+        out.append({
+            "id": "seat:%s/rules" % agent,
+            "path": (rchk or {}).get("path") or os.path.join(home, spec["rules"]),
+            "name": spec["rules"], "cat": "config",
+            "size": (rchk or {}).get("bytes") or 0, "exists": bool(rchk),
+            "enabled": sd.opts(agent).get("rules") is not False,
+            "managed": True, "live": True,
+            "note": "规则层：同一份正文整份写入（Astra 的通用做法）",
+            "labels": [_label("规则文件", "info"),
+                       _label("已启用" if sd.opts(agent).get("rules") is not False else "已关闭",
+                              "ok" if sd.opts(agent).get("rules") is not False else "muted"),
+                       _label("已就位" if (rchk or {}).get("ok") else "待部署",
+                              "ok" if (rchk or {}).get("ok") else "muted")],
+            "memo": notes.get("seat:%s/rules" % agent, ""),
+        })
+    if spec.get("style"):
+        ychk = next((c for c in v["checks"] if c["role"] == "output style"), None)
+        out.append({
+            "id": "seat:%s/style" % agent,
+            "path": (ychk or {}).get("path") or os.path.join(home, spec["style"]),
+            "name": "output style", "cat": "config",
+            "size": (ychk or {}).get("bytes") or 0, "exists": bool(ychk),
+            "enabled": sd.opts(agent).get("style") is not False,
+            "managed": True, "live": True,
+            "note": "output-styles/pojia.md（可选通道，默认关）",
+            "labels": [_label("output style", "info"),
+                       _label("已启用" if sd.opts(agent).get("style") is not False else "已关闭",
+                              "ok" if sd.opts(agent).get("style") is not False else "muted"),
+                       _label("已就位" if (ychk or {}).get("ok") else "待部署",
+                              "ok" if (ychk or {}).get("ok") else "muted")],
+            "memo": notes.get("seat:%s/style" % agent, ""),
+        })
     if spec.get("settings"):
         schk = next((c for c in v["checks"] if c["role"] == "outputStyle 指针"), None)
         out.append({
@@ -2992,6 +3039,22 @@ def _wb_edit_path(doc_id):
                 return leaf, "SKILL.md 正文源（部署时投放到 <home>/skills/）"
             return "", "父类目内容由 content/routes/ 生成"
         return os.path.join(shome, spec["primary"]), "落点（只读展示）"
+    if rest == "rules" and spec.get("rules"):
+        p = os.path.join(home, spec["rules"])
+        txt = _read_text(p) if os.path.isfile(p) else ""
+        lines = ["# 规则文件（只读）", "",
+                 "`%s` 是规则层，部署时整份写入同一份指令正文。" % spec["rules"], "",
+                 "## 当前内容（%d 字符）" % len(txt), "", txt or "（文件不存在）"]
+        return {"ok": True, "id": doc_id, "path": p, "content": "\n".join(lines),
+                "editable": False, "live": True, "hint": "落点只读；正文在指令文件里改"}
+    if rest == "style" and spec.get("style"):
+        p = os.path.join(home, spec["style"])
+        txt = _read_text(p) if os.path.isfile(p) else ""
+        lines = ["# output style（只读）", "",
+                 "`%s` 是可选通道；开启时由 settings.json 的 outputStyle 指向它。" % spec["style"],
+                 "", "## 当前内容（%d 字符）" % len(txt), "", txt or "（文件不存在）"]
+        return {"ok": True, "id": doc_id, "path": p, "content": "\n".join(lines),
+                "editable": False, "live": True, "hint": "落点只读；正文在指令文件里改"}
     if doc_id.startswith("wb:skill/"):
         sid = doc_id[len("wb:skill/"):]
         leaf = os.path.join(ROOT, "content", "routes", "leaves", sid + ".md")
@@ -3114,6 +3177,10 @@ def cmd_doc_toggle(rel):
         st = sd.state(seat)
         if rest == "primary":
             return _seat_toggle(sd, seat, "primary", st.get("primary") is False)
+        if rest == "rules":
+            return _seat_toggle(sd, seat, "rules", sd.opts(seat).get("rules") is False)
+        if rest == "style":
+            return _seat_toggle(sd, seat, "style", sd.opts(seat).get("style") is False)
         if rest == "memory":
             return _seat_toggle(sd, seat, "memory", st.get("memory") is False)
         if rest == "settings":
@@ -3332,7 +3399,8 @@ def cmd_doc_read(rel):
     """整文件读出（编辑用）。ChatGPT 页的 id 折到项目里的源件。"""
     path, note = (_codex_edit_path(rel) if rel.startswith("codex:")
                   else _wb_edit_path(rel) if rel.startswith("wb:") else ("", ""))
-    if rel.startswith("seat:") and rel.split("/", 1)[1] in ("primary", "memory", "settings"):
+    if rel.startswith("seat:") and rel.split("/", 1)[1] in (
+            "primary", "memory", "settings", "rules", "style"):
         return _seat_read_landing(rel)
     if rel.startswith("wb:") and rel in ("wb:custom", "wb:templates"):
         return _wb_read_landing(rel)
