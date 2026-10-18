@@ -2456,12 +2456,34 @@ def _doc_scan_wb(label):
             "memo": notes.get(_doc_rel(p), ""),
         })
 
-    # 2) 自定义指令（settings.json / app-config.json，两处落点一行）
+    # 2) 自定义指令：WorkBuddy 的「注入正文落点」= ChatGPT 的指令文件。
+    #    一行对应一个可写的托管文件（项目里一份，部署时整份写进客户端的
+    #    personalization.customPrompt 与 32 份模板政策块）。
     body, _h = wd.body_with_mark(active) if active else ("", "")
+    custom_checks = [c for c in v["checks"] if c["role"] == "自定义指令"]
+    out.append({
+        "id": "wb:custom",
+        "path": os.path.join(home, "settings.json"),
+        "name": "自定义指令 · %s" % (active or "（未选指令源）"),
+        "cat": "config",
+        "title": "自定义指令",
+        "size": len(body.encode("utf-8")),
+        "exists": bool(custom_checks),
+        "enabled": st.get("custom") is not False,
+        "managed": True, "live": True,
+        "note": ("正文来自 %s，部署时写入客户端自定义指令" % active) if active
+                else "先在指令文件里选一份正文",
+        "labels": [_label("正文落点", "info"),
+                   _label("已启用" if st.get("custom") is not False else "已关闭",
+                          "ok" if st.get("custom") is not False else "muted"),
+                   _label("%d 处已就位" % len(custom_checks), "ok" if custom_checks else "muted")],
+        "memo": notes.get("wb:custom", ""),
+    })
+    # 3) 剩下的辅助落点：模板政策块 / 身份层。它们不承载独立正文，
+    #    只在总览里按组显示（细项进补丁总览），不再占指令页两行空壳。
     for cat, name, role, nid, flag in (
-            ("agents", "自定义指令", "自定义指令", "wb:custom", "custom"),
-            ("config", "模板政策块", "模板政策块", "wb:templates", "templates"),
-            ("agents", "身份层", "身份层", "wb:identity", "identity")):
+            ("agents", "身份层", "身份层", "wb:identity", "identity"),
+            ("config", "模板政策块", "模板政策块", "wb:templates", "templates")):
         checks = [c for c in v["checks"] if c["role"] == role]
         ok_n = sum(1 for c in checks if c["ok"])
         on = st.get(flag) is not False
@@ -2654,7 +2676,7 @@ def _wb_toggle(doc_id, want):
 
 
 def _wb_edit_path(doc_id):
-    """WorkBuddy 页落点的编辑目标：指令源折回项目源件，本机文件直接编辑。"""
+    """WorkBuddy 页落点的编辑目标：真正承载正文的才可写，落点本身只读展示。"""
     wd = _wb_deploy()
     home = wd.home_of() if wd else os.path.join(os.path.expanduser("~"), ".workbuddy")
     if doc_id.startswith("wb:skill/"):
@@ -2664,12 +2686,56 @@ def _wb_edit_path(doc_id):
             return leaf, "SKILL.md 正文源（部署时投放到 <data>/skills/）"
         return "", "父类目内容由 content/routes/ 生成"
     if doc_id == "wb:custom":
-        return os.path.join(home, "settings.json"), "WorkBuddy 自定义指令（部署时写入）"
+        return os.path.join(home, "settings.json"), "客户端里的注入落点（只读）"
     if doc_id == "wb:templates":
-        return "", "模板政策块是安装目录里的厂商文件，请在项目源件里改"
+        return "", "模板政策块是安装目录里的厂商文件（只读）"
     if doc_id == "wb:identity":
         return os.path.join(home, "SOUL.md"), "本机 SOUL.md（部署时整段写入）"
     return "", ""
+
+
+def _wb_read_landing(doc_id):
+    """落点类文档的只读展示：给出「这里是干什么的、现在写了什么」，不是裸 JSON。"""
+    wd = _wb_deploy()
+    if wd is None:
+        return {"ok": False, "error": "engine/workbuddy_deploy.py 缺失"}
+    home = wd.home_of()
+    if doc_id == "wb:custom":
+        lines = ["# 自定义指令落点（只读）", "",
+                 "WorkBuddy 通过 settings.json / app/app-config.json 的 "
+                 "personalization.customPrompt 接收注入正文。",
+                 "正文本身在「指令文件」页里编辑；下面显示实际写进去的那一份。", ""]
+        shown = False
+        for sp in wd._custom_spots(home):
+            try:
+                doc = json.loads(wd._read(sp))
+                cur = ((doc.get("personalization") or {}).get("customPrompt") or "")
+            except ValueError:
+                cur = ""
+            if not cur:
+                lines.append("## %s — 未写入" % os.path.relpath(sp, home))
+                continue
+            if shown:
+                lines.append("## %s — 同内容（%d 字符）" % (os.path.relpath(sp, home), len(cur)))
+                continue
+            shown = True
+            lines += ["## %s（%d 字符）" % (os.path.relpath(sp, home), len(cur)), "", cur, ""]
+        if not shown:
+            lines.append("（当前没有写入自定义指令）")
+        return {"ok": True, "id": doc_id, "path": os.path.join(home, "settings.json"),
+                "content": "\n".join(lines), "editable": False, "live": True,
+                "hint": "这是落点说明与已写入内容；正文请在「指令文件」里改"}
+    if doc_id == "wb:templates":
+        files = wd.policy_files()
+        lines = ["# 模板政策块落点（只读）", "",
+                 "WorkBuddy 安装目录里有 %d 份提示词模板带 <content_policy> 块：" % len(files),
+                 "部署时把同一份指令正文整块替换进去。正文在「指令文件」里编辑。", ""]
+        for p in files:
+            lines.append("- " + p)
+        return {"ok": True, "id": doc_id, "path": os.path.dirname(files[0]) if files else home,
+                "content": "\n".join(lines), "editable": False, "live": True,
+                "hint": "厂商文件，只读；正文在指令文件里改，部署时整块替换"}
+    return {"ok": False, "error": "未知落点"}
 
 
 def _codex_toggle(doc_id, want):
@@ -2932,6 +2998,8 @@ def cmd_doc_read(rel):
     """整文件读出（编辑用）。ChatGPT 页的 id 折到项目里的源件。"""
     path, note = (_codex_edit_path(rel) if rel.startswith("codex:")
                   else _wb_edit_path(rel) if rel.startswith("wb:") else ("", ""))
+    if rel.startswith("wb:") and rel in ("wb:custom", "wb:templates"):
+        return _wb_read_landing(rel)
     if rel.startswith("codex:") or rel.startswith("wb:"):
         if not path or not os.path.isfile(path):
             return {"ok": False, "error": note or "这份不可编辑"}
