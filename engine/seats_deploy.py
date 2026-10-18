@@ -42,6 +42,10 @@ SEATS = {
         "seed": os.path.join(SEAT_DIR, "claude.md"),
         "primary": os.path.join("output-styles", "pojia.md"),
         "primary_kind": "file",          # 整份写入（output style 是纯正文文件）
+        # Claude Code 要求 output style 带 YAML frontmatter（name 必须与槽位一致），
+        # 少这一段启动就会报错 —— 部署时必须原样带上。
+        "primary_fm": ("---\nname: pojia\ndescription: 本机工作区配置\n"
+                       "keep-coding-instructions: true\n---\n\n"),
         "memory": "CLAUDE.md",           # 标记块合并
         "settings": "settings.json",     # outputStyle 指针
         "skills": True,
@@ -226,6 +230,8 @@ def sync_snapshot(seat, dry=False):
             j = text.find(e, i)
             text = text[i + len(b):j if j >= 0 else len(text)]
     text = text.strip("\n")
+    if spec.get("primary_fm") and not text.startswith("---"):
+        text = spec["primary_fm"].rstrip("\n") + "\n\n" + text
     if not text:
         return ""
     snap = snapshot_path(seat)
@@ -489,9 +495,13 @@ def plan(seat, opts_override=None, full=False):
     body, h = body_with_mark(seat, name)
     writes = []
     if body and o.get("primary"):
+        spec_w = spec
+        ptext = body
+        if spec_w.get("primary_fm") and not body.startswith("---"):
+            ptext = spec_w["primary_fm"] + body
         writes.append({"kind": spec["primary_kind"],
                        "path": os.path.join(home, spec["primary"]),
-                       "role": "指令文件", "text": body, "hash": h})
+                       "role": "指令文件", "text": ptext, "hash": h})
     if body and spec.get("memory") and o.get("memory"):
         writes.append({"kind": "marked", "path": os.path.join(home, spec["memory"]),
                        "role": "记忆文件标记块", "text": body})
@@ -773,6 +783,9 @@ def verify(seat):
     hit = (POLICY_MARK + h + " -->") in txt
     if sp["primary_kind"] == "marked":
         hit = hit or (MARK_BEGIN % seat) in txt
+    if sp.get("primary_fm"):
+        # output style 没有 frontmatter = Claude Code 读不了，等同于未就位
+        hit = hit and txt.lstrip().startswith("---")
     on = o.get("primary") and bool(o.get("pack"))
     add(p, "指令文件", hit if on else not hit, os.path.isfile(p),
         len(txt.encode("utf-8")))

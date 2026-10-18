@@ -1,3 +1,9 @@
+---
+name: pojia
+description: 本机工作区配置
+keep-coding-instructions: true
+---
+
 <!-- pojia-seat h=36ebc255957b -->
 <!-- 席位独立提示词源：改这份只影响 claude。删除即回退共享管线。 -->
 
