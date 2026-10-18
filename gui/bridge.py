@@ -2349,8 +2349,32 @@ def _seat_deploy():
 _SEAT_DEPLOY_KEYS = ("claude", "hermes", "zcode")
 
 
+# 每个席位的落点分类：参考 ChatGPT 页「按部署会写到哪里分类」的逻辑，
+# 但用各席位自己的文件语义命名（不照搬 AGENTS.md / config.toml 这些名字）。
+_SEAT_CATS = {
+    "claude": [
+        ("instruction", "指令文件"),
+        ("memory", "CLAUDE.md"),
+        ("rules", "规则文件"),
+        ("style", "输出风格"),
+        ("config", "settings.json"),
+        ("skill", "SKILL.md"),
+    ],
+    "hermes": [
+        ("instruction", "指令文件"),
+        ("memory", "SOUL.md"),
+        ("skill", "SKILL.md"),
+    ],
+    "zcode": [
+        ("instruction", "指令文件"),
+        ("memory", "AGENTS.md"),
+        ("skill", "SKILL.md"),
+    ],
+}
+
+
 def _doc_scan_seat(agent, label):
-    """Claude / Hermes / ZCode 页 = 各自的三类落点（指令文件 / 记忆或指针 / SKILL.md）。"""
+    """Claude / Hermes / ZCode 页 = 各自落点，按「这个文件是干什么的」分类。"""
     sd = _seat_deploy()
     if sd is None:
         return {"ok": False, "error": "engine/seats_deploy.py 缺失"}
@@ -2361,10 +2385,13 @@ def _doc_scan_seat(agent, label):
     v = sd.verify(agent)
     st = sd.state(agent)
     notes = _doc_notes()
+    o = sd.opts(agent)
     out = []
     lib = sd.lib_dir(agent)
     active = ((st.get("pack") or sd.pack_name(agent))
               if st.get("pack_on") is not False else "")
+
+    # 1) 指令源候选（拨右 = 用它部署）
     for fn in sd.lib_files(agent):
         p = (spec["seed"] if fn == os.path.basename(spec["seed"])
              else os.path.join(spec["lib"], fn))
@@ -2382,93 +2409,49 @@ def _doc_scan_seat(agent, label):
                               "ok" if is_active else "muted")],
             "memo": notes.get(_doc_rel(p), ""),
         })
-    # 主落点本身（指令文件写到哪里）
-    prim = next((c for c in v["checks"] if c["role"] == "指令文件"), None)
-    prim_p = (prim or {}).get("path") or os.path.join(home, spec["primary"])
-    out.append({
-        "id": "seat:%s/primary" % agent,
-        "path": prim_p,
-        "name": "%s · %s" % (os.path.basename(spec["primary"]),
-                             "整份写入" if spec["primary_kind"] == "file" else "标记块"),
-        "cat": "config",
-        "title": "",
-        "size": (prim or {}).get("bytes") or 0,
-        "exists": bool(prim),
-        "enabled": st.get("primary") is not False, "managed": True, "live": True,
-        "note": ("正文来自 %s，部署时写进这里" % active) if active else "先在指令文件里选一份正文",
-        "labels": [_label("落点", "info"),
-                   _label("已启用" if st.get("primary") is not False else "已关闭",
-                          "ok" if st.get("primary") is not False else "muted"),
-                   _label("已就位" if (prim or {}).get("ok") else "待部署",
-                          "ok" if (prim or {}).get("ok") else "muted")],
-        "memo": notes.get("seat:%s/primary" % agent, ""),
-    })
-    if spec.get("memory"):
-        mchk = next((c for c in v["checks"] if c["role"] == "记忆文件标记块"), None)
-        mp = (mchk or {}).get("path") or os.path.join(home, spec["memory"])
+
+    # 2) 落点：标题用「文件是什么」，name 用相对路径
+    def find(role):
+        return next((c for c in v["checks"] if c["role"] == role), None)
+
+    def landing(cat, nid, rel, title, note, on, chk):
         out.append({
-            "id": "seat:%s/memory" % agent, "path": mp,
-            "name": spec["memory"], "cat": "agents",
-            "size": (mchk or {}).get("bytes") or 0, "exists": bool(mchk),
-            "enabled": st.get("memory") is not False, "managed": True, "live": True,
-            "note": "标记块合并，用户自己的内容保留",
-            "labels": [_label("记忆文件", "info"),
-                       _label("已启用" if st.get("memory") is not False else "已关闭",
-                              "ok" if st.get("memory") is not False else "muted"),
-                       _label("已就位" if (mchk or {}).get("ok") else "待部署",
-                              "ok" if (mchk or {}).get("ok") else "muted")],
-            "memo": notes.get("seat:%s/memory" % agent, ""),
+            "id": nid, "path": os.path.join(home, rel) if rel else home,
+            "name": rel or title, "cat": cat, "title": title,
+            "size": (chk or {}).get("bytes") or 0, "exists": bool(chk),
+            "enabled": on, "managed": True, "live": True,
+            "note": note,
+            "labels": [_label(title, "info"),
+                       _label("已启用" if on else "已关闭", "ok" if on else "muted"),
+                       _label("已就位" if (chk or {}).get("ok") else "待部署",
+                              "ok" if (chk or {}).get("ok") else "muted")],
+            "memo": notes.get(nid, ""),
         })
+
+    prim_title = ("%s（标记块）" % spec["primary"]) if spec["primary_kind"] == "marked" \
+        else ("%s（整份写入）" % spec["primary"])
+    # 这一行本身就是「文件名 + 形态」，title 留空避免出现「X · X」叠字
+    landing("memory", "seat:%s/primary" % agent, spec["primary"], "",
+            "标记块合并，你自己的内容保留" if spec["primary_kind"] == "marked"
+            else "整份覆盖成指令正文",
+            o.get("primary"), find("指令文件"))
+    if out:
+        out[-1]["name"] = prim_title
+        out[-1]["labels"][0] = _label(prim_title, "info")
     if spec.get("rules"):
-        rchk = next((c for c in v["checks"] if c["role"] == "规则文件"), None)
-        out.append({
-            "id": "seat:%s/rules" % agent,
-            "path": (rchk or {}).get("path") or os.path.join(home, spec["rules"]),
-            "name": spec["rules"], "cat": "config",
-            "size": (rchk or {}).get("bytes") or 0, "exists": bool(rchk),
-            "enabled": sd.opts(agent).get("rules") is not False,
-            "managed": True, "live": True,
-            "note": "规则层：同一份正文整份写入（Astra 的通用做法）",
-            "labels": [_label("规则文件", "info"),
-                       _label("已启用" if sd.opts(agent).get("rules") is not False else "已关闭",
-                              "ok" if sd.opts(agent).get("rules") is not False else "muted"),
-                       _label("已就位" if (rchk or {}).get("ok") else "待部署",
-                              "ok" if (rchk or {}).get("ok") else "muted")],
-            "memo": notes.get("seat:%s/rules" % agent, ""),
-        })
+        landing("rules", "seat:%s/rules" % agent, spec["rules"], "规则文件",
+                "同一份正文整份写入，客户端按规则层读取",
+                o.get("rules"), find("规则文件"))
     if spec.get("style"):
-        ychk = next((c for c in v["checks"] if c["role"] == "output style"), None)
-        out.append({
-            "id": "seat:%s/style" % agent,
-            "path": (ychk or {}).get("path") or os.path.join(home, spec["style"]),
-            "name": "output style", "cat": "config",
-            "size": (ychk or {}).get("bytes") or 0, "exists": bool(ychk),
-            "enabled": sd.opts(agent).get("style") is not False,
-            "managed": True, "live": True,
-            "note": "output-styles/pojia.md（可选通道，默认关）",
-            "labels": [_label("output style", "info"),
-                       _label("已启用" if sd.opts(agent).get("style") is not False else "已关闭",
-                              "ok" if sd.opts(agent).get("style") is not False else "muted"),
-                       _label("已就位" if (ychk or {}).get("ok") else "待部署",
-                              "ok" if (ychk or {}).get("ok") else "muted")],
-            "memo": notes.get("seat:%s/style" % agent, ""),
-        })
+        landing("style", "seat:%s/style" % agent, spec["style"], "输出风格",
+                "可选通道，需带 frontmatter；settings.json 指到它才生效",
+                o.get("style"), find("output style"))
     if spec.get("settings"):
-        schk = next((c for c in v["checks"] if c["role"] == "outputStyle 指针"), None)
-        out.append({
-            "id": "seat:%s/settings" % agent,
-            "path": (schk or {}).get("path") or sd.settings_path(agent),
-            "name": "outputStyle 指针", "cat": "config",
-            "size": (schk or {}).get("bytes") or 0, "exists": bool(schk),
-            "enabled": st.get("settings") is not False, "managed": True, "live": True,
-            "note": "settings.json 里 outputStyle = pojia",
-            "labels": [_label("配置指针", "info"),
-                       _label("已启用" if st.get("settings") is not False else "已关闭",
-                              "ok" if st.get("settings") is not False else "muted"),
-                       _label("已就位" if (schk or {}).get("ok") else "待部署",
-                              "ok" if (schk or {}).get("ok") else "muted")],
-            "memo": notes.get("seat:%s/settings" % agent, ""),
-        })
+        landing("config", "seat:%s/settings" % agent, spec["settings"],
+                "settings.json", "把 outputStyle 设为 pojia",
+                o.get("settings"), find("outputStyle 指针"))
+
+    # 3) SKILL.md
     try:
         routes = _routes_mod()
     except Exception:
@@ -2478,8 +2461,8 @@ def _doc_scan_seat(agent, label):
         nid = "seat:%s/skill/%s" % (agent, sid)
         on = sd.skill_on(agent, sid)
         chk = next((c for c in v["checks"]
-                    if c["role"] == "SKILL.md" and os.path.normcase(c["path"]) == os.path.normcase(p)),
-                   {})
+                    if c["role"] == "SKILL.md"
+                    and os.path.normcase(c["path"]) == os.path.normcase(p)), {})
         leaf_p = os.path.join(ROOT, "content", "routes", "leaves", sid + ".md")
         meta = routes.leaf_meta(sid) if (routes and os.path.isfile(leaf_p)) else None
         parent_key = next((k for k, vv in (routes.CATEGORIES if routes else {}).items()
@@ -2501,7 +2484,8 @@ def _doc_scan_seat(agent, label):
                               "ok" if chk.get("ok") else "muted")],
             "memo": notes.get(nid, ""),
         })
-    return _doc_finish(out, agent, label, home)
+    return _doc_finish(out, agent, label, home,
+                       cats=list(_SEAT_CATS.get(agent, [])))
 
 
 def _doc_scan(agent):
@@ -2819,8 +2803,15 @@ def _doc_scan_wb(label):
     return _doc_finish(out, "workbuddy", label, home)
 
 
-def _doc_finish(out, agent, label, home):
-    out.sort(key=lambda it: (_DOC_CAT_ORDER.get(it["cat"], 99), it["name"].lower()))
+def _doc_finish(out, agent, label, home, cats=None):
+    """收尾：排序 / 备注 / 分类统计。cats 给了就按该席位自己的分类顺序出 tab。"""
+    if cats:
+        order = {cid: i for i, (cid, _n) in enumerate(cats)}
+        names = dict(cats)
+    else:
+        order = _DOC_CAT_ORDER
+        names = _DOC_CAT_NAME
+    out.sort(key=lambda it: (order.get(it["cat"], 99), it["name"].lower()))
     notes = _doc_notes()
 
     def memo_of(it):
@@ -2855,13 +2846,22 @@ def _doc_finish(out, agent, label, home):
                             {"tag": "已启用" if it["enabled"] else "已停用",
                              "tone": "ok" if it["enabled"] else "muted"}]
         counts[it["cat"]] = counts.get(it["cat"], 0) + 1
-    cats = [{"id": cid, "name": _DOC_CAT_NAME[cid], "count": counts[cid]}
-            for cid, _n in DOC_CATS if counts.get(cid)]
-    # 其它 Agent 仍用旧分类（人格 / 席位源 / 路由 …）—— 没登记的也要给个 tab，
-    # 不然这些文档有数据却一个标签都不出现。
-    for cid, n in counts.items():
-        if cid not in _DOC_CAT_NAME:
-            cats.append({"id": cid, "name": _LEGACY_CAT_NAME.get(cid, cid), "count": n})
+    if cats:
+        out_cats = [{"id": cid, "name": n, "count": counts[cid]}
+                    for cid, n in cats if counts.get(cid)]
+        for cid, n in counts.items():
+            if cid not in names:
+                out_cats.append({"id": cid, "name": _LEGACY_CAT_NAME.get(cid, cid),
+                                 "count": n})
+        cats = out_cats
+    else:
+        cats = [{"id": cid, "name": _DOC_CAT_NAME[cid], "count": counts[cid]}
+                for cid, _n in DOC_CATS if counts.get(cid)]
+        # 其它 Agent 仍用旧分类（人格 / 席位源 / 路由 …）—— 没登记的也要给个 tab，
+        # 不然这些文档有数据却一个标签都不出现。
+        for cid, n in counts.items():
+            if cid not in _DOC_CAT_NAME:
+                cats.append({"id": cid, "name": _LEGACY_CAT_NAME.get(cid, cid), "count": n})
     on = sum(1 for it in out if it["enabled"])
     return {"ok": True, "agent": agent, "label": label, "root": ROOT,
             "categories": cats, "items": out, "home": home,
@@ -2998,15 +2998,34 @@ def _seat_read_landing(doc_id):
         return {"ok": True, "id": doc_id, "path": p, "content": "\n".join(lines),
                 "editable": False, "live": True,
                 "hint": "落点只读；正文在指令文件里改"}
-    if rest == "memory" and spec.get("memory"):
-        p = os.path.join(home, spec["memory"])
+    if rest == "memory":
+        # Claude 的「记忆文件」就是主落点（CLAUDE.md），走 primary 分支即可
+        p = os.path.join(home, spec["primary"] if spec["primary_kind"] == "marked"
+                         else spec.get("memory") or spec["primary"])
         txt = _read_text(p) if os.path.isfile(p) else ""
         lines = ["# 记忆文件（只读）", "",
-                 "`%s` 里我们只写一个标记块，用户自己的内容原样保留。" % spec["memory"],
+                 "`%s` 里我们只写一个标记块，你自己的内容原样保留。" % os.path.basename(p),
                  "下面显示整个文件。", "",
                  "## 当前内容（%d 字符）" % len(txt), "", txt or "（文件不存在）"]
         return {"ok": True, "id": doc_id, "path": p, "content": "\n".join(lines),
                 "editable": False, "live": True, "hint": "落点只读"}
+    if rest == "rules" and spec.get("rules"):
+        p = os.path.join(home, spec["rules"])
+        txt = _read_text(p) if os.path.isfile(p) else ""
+        lines = ["# 规则文件（只读）", "",
+                 "`%s` 是规则层，部署时整份写入同一份指令正文。" % spec["rules"], "",
+                 "## 当前内容（%d 字符）" % len(txt), "", txt or "（尚未写入）"]
+        return {"ok": True, "id": doc_id, "path": p, "content": "\n".join(lines),
+                "editable": False, "live": True, "hint": "落点只读；正文在指令文件里改"}
+    if rest == "style" and spec.get("style"):
+        p = os.path.join(home, spec["style"])
+        txt = _read_text(p) if os.path.isfile(p) else ""
+        lines = ["# 输出风格（只读）", "",
+                 "`%s` 是可选通道；开启时 settings.json 的 outputStyle 指向它。" % spec["style"],
+                 "未开启时这里显示「尚未写入」是正常的。", "",
+                 "## 当前内容（%d 字符）" % len(txt), "", txt or "（尚未写入）"]
+        return {"ok": True, "id": doc_id, "path": p, "content": "\n".join(lines),
+                "editable": False, "live": True, "hint": "落点只读；正文在指令文件里改"}
     if rest == "settings":
         p = sd.settings_path(seat)
         txt = _read_text(p) if os.path.isfile(p) else ""
@@ -3039,22 +3058,6 @@ def _wb_edit_path(doc_id):
                 return leaf, "SKILL.md 正文源（部署时投放到 <home>/skills/）"
             return "", "父类目内容由 content/routes/ 生成"
         return os.path.join(shome, spec["primary"]), "落点（只读展示）"
-    if rest == "rules" and spec.get("rules"):
-        p = os.path.join(home, spec["rules"])
-        txt = _read_text(p) if os.path.isfile(p) else ""
-        lines = ["# 规则文件（只读）", "",
-                 "`%s` 是规则层，部署时整份写入同一份指令正文。" % spec["rules"], "",
-                 "## 当前内容（%d 字符）" % len(txt), "", txt or "（文件不存在）"]
-        return {"ok": True, "id": doc_id, "path": p, "content": "\n".join(lines),
-                "editable": False, "live": True, "hint": "落点只读；正文在指令文件里改"}
-    if rest == "style" and spec.get("style"):
-        p = os.path.join(home, spec["style"])
-        txt = _read_text(p) if os.path.isfile(p) else ""
-        lines = ["# output style（只读）", "",
-                 "`%s` 是可选通道；开启时由 settings.json 的 outputStyle 指向它。" % spec["style"],
-                 "", "## 当前内容（%d 字符）" % len(txt), "", txt or "（文件不存在）"]
-        return {"ok": True, "id": doc_id, "path": p, "content": "\n".join(lines),
-                "editable": False, "live": True, "hint": "落点只读；正文在指令文件里改"}
     if doc_id.startswith("wb:skill/"):
         sid = doc_id[len("wb:skill/"):]
         leaf = os.path.join(ROOT, "content", "routes", "leaves", sid + ".md")

@@ -1145,6 +1145,155 @@ function createWindow() {
   }
 
 
+  // Claude Code 指令页实机点测：POJIA_CLAUDETEST=1
+  // 只点指令页 + 卡片滑块：六个分类逐个截图，核对行数与开关，再跑部署/还原。
+  if (process.env.POJIA_CLAUDETEST) {
+    mainWin.webContents.once('did-finish-load', async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const js = (s) => mainWin.webContents.executeJavaScript(s);
+      const save = async (name) => {
+        await mainWin.webContents.capturePage();
+        await sleep(160);
+        const img = await mainWin.webContents.capturePage();
+        fs.writeFileSync(path.join(ROOT, '状态', name), img.toPNG());
+      };
+      const R = { steps: [], shots: [] };
+      const ok = (name, cond, extra) => {
+        R.steps.push({ name, ok: !!cond, extra: cond ? '' : (extra === undefined ? '' : extra) });
+      };
+      const HOME = path.join(process.env.USERPROFILE || process.env.HOME, '.claude');
+      const rd = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch (_) { return ''; } };
+
+      const ui = () => js(`JSON.stringify((() => {
+        const rows = [...document.querySelectorAll('#pmGrid .pmrow')];
+        return {
+          cats: [...document.querySelectorAll('#pmCats .pmcat')].map(b => [b.dataset.cat, b.textContent.trim()]),
+          rows: rows.map(r => ({
+            id: r.dataset.id,
+            name: (r.querySelector('.pmcname') || {}).textContent || '',
+            on: !r.classList.contains('off-doc'),
+          })),
+          agent: (document.getElementById('pmAgentName') || {}).textContent || '',
+          log: (document.getElementById('logBody') || {}).textContent || '',
+        };
+      })())`);
+
+      const gotoClaude = async () => {
+        await js("document.querySelector('.snav[data-view=prompts]').click()");
+        await sleep(2400);
+        await js("document.querySelector('#pmAgents .pmagent[data-agent=claude]').click()");
+        const t0 = Date.now();
+        while (Date.now() - t0 < 40000) {
+          const st = JSON.parse(await js(`JSON.stringify({
+            name: (document.getElementById('pmAgentName') || {}).textContent || '',
+            rows: document.querySelectorAll('#pmGrid .pmrow').length })`));
+          if (/Claude/.test(st.name) && st.rows > 0) { await sleep(800); return; }
+          await sleep(600);
+        }
+      };
+      const pickCat = async (cat) => {
+        await js(`(() => { const b = document.querySelector('#pmCats .pmcat[data-cat="${cat}"]');
+                   if (b) b.click(); })()`);
+        await sleep(800);
+      };
+
+      try {
+        await sleep(9000);
+        await gotoClaude();
+        let s = JSON.parse(await ui());
+        R.cats = s.cats;
+        ok('进入 Claude Code 指令页', /Claude/.test(s.agent), s.agent);
+        ok('六个分类都在',
+          ['instruction', 'memory', 'rules', 'style', 'config', 'skill']
+            .every((c) => s.cats.some(([id]) => id === c)), s.cats);
+
+        for (const [cat, shot] of [
+          ['instruction', '_ct_claude_1_instruction.png'],
+          ['memory', '_ct_claude_2_memory.png'],
+          ['rules', '_ct_claude_3_rules.png'],
+          ['style', '_ct_claude_4_style.png'],
+          ['config', '_ct_claude_5_config.png'],
+          ['skill', '_ct_claude_6_skill.png'],
+        ]) {
+          await pickCat(cat);
+          s = JSON.parse(await ui());
+          R[cat] = s.rows.slice(0, 4);
+          ok('分类 ' + cat + ' 有内容', s.rows.length > 0, s.rows.length);
+          await save(shot);
+          R.shots.push(shot);
+        }
+
+        // 落点只读展示：点开「规则文件」看内容
+        await pickCat('rules');
+        await js(`(() => {
+          const r = document.querySelector('#pmGrid .pmrow[data-id="seat:claude/rules"]');
+          if (r) { const b = r.querySelector('.iconbtn[title*="编辑"], .iconbtn[title*="查看"]'); if (b) b.click(); }
+        })()`);
+        await sleep(2500);
+        const read = JSON.parse(await js(`JSON.stringify({
+          shown: !document.getElementById('pmFormWrap').classList.contains('off'),
+          area: (document.getElementById('pmArea') || {}).value || '',
+          title: (document.getElementById('pmFormTitle') || {}).textContent || '',
+        })`));
+        ok('规则文件能点开查看', read.shown === true, read.title);
+        ok('规则文件展示落点说明', /规则层|只读/.test(read.area.slice(0, 400)),
+          read.area.slice(0, 120));
+        await save('_ct_claude_7_rules_read.png');
+        R.shots.push('_ct_claude_7_rules_read.png');
+        await js("document.getElementById('btnPmClose').click()");
+        await sleep(800);
+
+        // 磁盘侧核对
+        const claudeMd = rd(path.join(HOME, 'CLAUDE.md'));
+        const rules = rd(path.join(HOME, 'rules', 'pojia.md'));
+        ok('CLAUDE.md 有标记块', claudeMd.includes('pojia:claude begin'));
+        ok('rules/pojia.md 已写入', rules.includes('pojia-seat h='));
+        ok('CLAUDE.md 用户内容保留', claudeMd.includes('工作区说明'));
+
+        // 部署 / 还原
+        await js("document.querySelector('.snav[data-view=deploy]').click()");
+        await sleep(1200);
+        await js("document.querySelector('.card[data-key=claude] .slider').click()");
+        const t1 = Date.now();
+        while (Date.now() - t1 < 90000) {
+          const busy = JSON.parse(await js(`JSON.stringify(!!(document.querySelector('.slider.busy')
+            || document.querySelector('#btnDeploy:disabled')))`));
+          if (!busy) break;
+          await sleep(600);
+        }
+        await sleep(1500);
+        let after = rd(path.join(HOME, 'CLAUDE.md'));
+        R.afterFirst = /pojia:claude begin/.test(after);
+        await save('_ct_claude_8_slider.png');
+        R.shots.push('_ct_claude_8_slider.png');
+        await js("document.querySelector('.card[data-key=claude] .slider').click()");
+        const t2 = Date.now();
+        while (Date.now() - t2 < 90000) {
+          const busy = JSON.parse(await js(`JSON.stringify(!!(document.querySelector('.slider.busy')
+            || document.querySelector('#btnDeploy:disabled')))`));
+          if (!busy) break;
+          await sleep(600);
+        }
+        await sleep(1500);
+        after = rd(path.join(HOME, 'CLAUDE.md'));
+        R.afterRevert = /pojia:claude begin/.test(after);
+        ok('滑块往返后回到部署态', R.afterRevert === true, after.slice(0, 60));
+        await save('_ct_claude_9_after.png');
+        R.shots.push('_ct_claude_9_after.png');
+      } catch (e) {
+        R.error = String(e && e.stack || e).slice(0, 800);
+      }
+      R.summary = {
+        total: R.steps.length,
+        pass: R.steps.filter((x) => x.ok).length,
+        fail: R.steps.filter((x) => !x.ok).length,
+      };
+      fs.writeFileSync(path.join(ROOT, '状态', '_gui_claude.json'),
+        JSON.stringify(R, null, 1), 'utf8');
+      app.quit();
+    });
+  }
+
   // WorkBuddy 全功能实机点测：POJIA_WBTEST=1
   // 真实点击：卡片滑块 / 指令页分类与开关 / 验证 / 总览；每步核对页面与磁盘。
   if (process.env.POJIA_WBTEST || process.env.POJIA_SEATTEST) {
