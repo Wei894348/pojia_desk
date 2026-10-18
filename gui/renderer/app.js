@@ -1371,11 +1371,16 @@ async function toggleMany(list, want) {
 function syncPmStatus() {
   const on = PM_DOCS.filter((x) => x.enabled).length;
   const off = PM_DOCS.length - on;
+  // 可停用的文档：指令源（deployable）由自己的滑块管，其余都计入总开关
   const sw = PM_DOCS.filter((x) => !x.deployable);
   const swOn = sw.filter((x) => x.enabled).length;
   $('pmDeployInput').checked = sw.length > 0 && swOn === sw.length;
   $('pmDot').classList.toggle('on', on > 0);
   $('pmAgentHint').textContent = '';
+  // 总开关的提示跟着数字走：WorkBuddy 页有 90 份，不再是「已启用 89 份」那种陈旧提示
+  $('pmDeploySwitch').title = on === 0
+    ? '全部文档已关闭：部署等于回官方原版（拨右全部启用）'
+    : '总开关：拨左停用全部可停用的文档，拨右全部启用（' + on + ' 启用 / ' + off + ' 停用）';
 }
 
 function paintPmBulk() {
@@ -1397,7 +1402,7 @@ async function applyInstr(name, it) {
   const cur = it || PM_DOCS.find((x) => x.name === name) || null;
   setBusy(true, '正在部署指令：' + name);
   let r = null;
-  try { r = await api.instrToggle('codex', name, true); }
+  try { r = await api.instrToggle(PM_AGENT, name, true); }
   catch (e) { r = { ok: false, error: String(e.message || e) }; }
   setBusy(false);
   if (!r || r.ok === false) {
@@ -1425,7 +1430,7 @@ async function applyInstr(name, it) {
 async function disableInstr(name) {
   setBusy(true, '正在关闭指令注入……');
   let r = null;
-  try { r = await api.instrToggle('codex', name, false); }
+  try { r = await api.instrToggle(PM_AGENT, name, false); }
   catch (e) { r = { ok: false, error: String(e.message || e) }; }
   setBusy(false);
   if (!r || r.ok === false) {

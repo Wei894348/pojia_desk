@@ -1145,6 +1145,353 @@ function createWindow() {
   }
 
 
+  // WorkBuddy 全功能实机点测：POJIA_WBTEST=1
+  // 真实点击：卡片滑块 / 指令页分类与开关 / 验证 / 总览；每步核对页面与磁盘。
+  if (process.env.POJIA_WBTEST) {
+    mainWin.webContents.once('did-finish-load', async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const js = (s) => mainWin.webContents.executeJavaScript(s);
+      const save = async (name) => {
+        await mainWin.webContents.capturePage();
+        await sleep(160);
+        const img = await mainWin.webContents.capturePage();
+        fs.writeFileSync(path.join(ROOT, '状态', name), img.toPNG());
+      };
+      const R = { steps: [], notes: [], shots: [] };
+      const ok = (name, cond, extra) => {
+        R.steps.push({ name, ok: !!cond, extra: cond ? '' : (extra === undefined ? '' : extra) });
+      };
+      const shot = async (n) => { await save(n); R.shots.push(n); };
+      const HOME = path.join(process.env.USERPROFILE || process.env.HOME, '.workbuddy');
+
+      const ui = () => js(`JSON.stringify((() => {
+        const card = [...document.querySelectorAll('.card')].find(c => c.dataset.key === 'wb');
+        const sl = card && card.querySelector('.slider');
+        const rows = [...document.querySelectorAll('#pmGrid .pmrow')];
+        const by = {};
+        for (const r of rows) by[r.dataset.id] = !r.classList.contains('off-doc');
+        return {
+          sliderOn: sl ? sl.classList.contains('on') : null,
+          sliderBusy: sl ? sl.classList.contains('busy') : null,
+          sliderState: (card && card.querySelector('.sliderstate') || {}).textContent || '',
+          cardStatus: (card && card.querySelector('.cstatus') || {}).textContent || '',
+          stats: card ? [...card.querySelectorAll('.cstat')].map(n => n.textContent.replace(/\\s+/g, ' ').trim()) : [],
+          rows, n: rows.length,
+          on: rows.filter(r => !r.classList.contains('off-doc')).length,
+          docOn: by,
+          cats: [...document.querySelectorAll('#pmCats .pmcat')].map(b => b.dataset.cat),
+          logTail: (document.getElementById('logBody') || {}).textContent || '',
+        };
+      })())`);
+
+      // 只数我们投放的 SKILL（用户自己的技能目录不算）
+      const ROUTE_IDS = (() => {
+        try {
+          const o = spawnSync(py.exe, (py.prefix || []).concat([
+            '-c',
+            'import sys;sys.path.insert(0,"engine");import workbuddy_deploy as a;' +
+            'print("\\n".join(sorted(a._routes().skill_dirs())))',
+          ]), { cwd: ROOT, env: cleanEnv(), encoding: 'utf8', windowsHide: true });
+          return String(o.stdout || '').split(/\s+/).filter(Boolean);
+        } catch (_) { return []; }
+      })();
+
+      const disk = () => {
+        const out = { home: HOME, soul: false, ident: false, user: false,
+                      ours: 0, custom: false, pol: 0, bak: 0, pack: [] };
+        const rd = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch (_) { return ''; } };
+        const soul = rd(path.join(HOME, 'SOUL.md'));
+        out.soul = soul.includes('pojia:wb-identity');
+        out.ident = rd(path.join(HOME, 'IDENTITY.md')).includes('pojia:wb-identity');
+        out.user = rd(path.join(HOME, 'USER.md')).includes('pojia:wb-usermd begin');
+        try {
+          const sd = path.join(HOME, 'skills');
+          out.ours = ROUTE_IDS.filter((id) => fs.existsSync(path.join(sd, id, 'SKILL.md'))).length;
+        } catch (_) { out.ours = -1; }
+        for (const sp of [path.join(HOME, 'settings.json'),
+                          path.join(HOME, 'app', 'app-config.json')]) {
+          try {
+            const d = JSON.parse(rd(sp) || '{}');
+            const cp = (d.personalization || {}).customPrompt || '';
+            if (cp.includes('pojia-wb-policy')) out.custom = true;
+          } catch (_) {}
+        }
+        // 模板政策块：数我们写进去的哈希头
+        const inst = 'F:\\Softstore\\WorkBuddy';
+        out.pol = 0;
+        try {
+          const tdir = path.join(inst, 'resources', 'app.asar.unpacked', 'resources', 'templates');
+          for (const fn of fs.readdirSync(tdir)) {
+            if (!fn.endsWith('.tpl')) continue;
+            if (rd(path.join(tdir, fn)).includes('pojia-wb-policy h=')) out.pol++;
+          }
+        } catch (_) {}
+        try { out.bak = fs.readdirSync(path.join(HOME, 'pojia-backups')).length; } catch (_) {}
+        return out;
+      };
+
+      const deployView = async () => {
+        await js("document.querySelector('.snav[data-view=deploy]').click()");
+        await sleep(900);
+      };
+      const waitIdle = async (ms) => {
+        const t0 = Date.now();
+        while (Date.now() - t0 < (ms || 60000)) {
+          const busy = JSON.parse(await js(`JSON.stringify(!!(
+            document.querySelector('.slider.busy')
+            || document.querySelector('#btnDeploy:disabled')
+            || document.querySelector('#btnTest:disabled')))`));
+          if (!busy) { await sleep(700); return true; }
+          await sleep(400);
+        }
+        return false;
+      };
+      const clickSlider = async () => {
+        await deployView();
+        await waitIdle();
+        await js("document.querySelector('.card[data-key=wb] .slider').click()");
+      };
+      const gotoDocs = async () => {
+        await js("document.querySelector('.snav[data-view=prompts]').click()");
+        await sleep(2600);
+        await js("document.querySelector('#pmAgents .pmagent[data-agent=workbuddy]').click()");
+        // 等这一页真的换成 WorkBuddy 的清单（切页 + 扫盘是异步的，
+        // 只按固定秒数睡会读到上一个席位的旧 DOM）
+        const t0 = Date.now();
+        while (Date.now() - t0 < 40000) {
+          const st = JSON.parse(await js(`JSON.stringify({
+            name: (document.getElementById('pmAgentName') || {}).textContent || '',
+            rows: document.querySelectorAll('#pmGrid .pmrow').length,
+          })`));
+          if (/WorkBuddy/.test(st.name) && st.rows > 0) { await sleep(600); return; }
+          await sleep(600);
+        }
+      };
+      const pickCat = async (cat) => {
+        await js(`(() => { const b = document.querySelector('#pmCats .pmcat[data-cat="${cat}"]');
+                   if (b) b.click(); })()`);
+        await sleep(700);
+      };
+      const clickRow = async (id) => js(`(() => {
+        const r = document.querySelector('#pmGrid .pmrow[data-id="${id}"]');
+        if (!r) return 'missing';
+        const inp = r.querySelector('.pmswitch input');
+        if (!inp) return 'no-input';
+        inp.click();
+        return 'clicked';
+      })()`);
+
+      try {
+        // 等 WorkBuddy 卡片扫完（首屏状态是 SCAN，滑块要等探测回来才有）
+        const t0 = Date.now();
+        while (Date.now() - t0 < 120000) {
+          const st = JSON.parse(await js(`JSON.stringify((() => {
+            const c = [...document.querySelectorAll('.card')].find(x => x.dataset.key === 'wb');
+            return { has: !!c, slider: !!(c && c.querySelector('.slider')),
+                     status: (c && c.querySelector('.cstatus') || {}).textContent || '' };
+          })())`));
+          if (st.slider && st.status && !/SCAN|扫描/.test(st.status)) break;
+          await sleep(1500);
+        }
+        await sleep(2500);
+        let s = JSON.parse(await ui());
+        let d = disk();
+        R.initial = { ui: s, disk: d };
+        const startedDeployed = s.sliderOn === true;
+        ok('WorkBuddy 卡片渲染', s.sliderOn !== null, s.cardStatus);
+        await shot('_wt_1_initial.png');
+
+        if (s.sliderOn) {
+          await clickSlider();
+          await waitIdle(90000);
+          await sleep(1500);
+          s = JSON.parse(await ui());
+          ok('初始为部署态 → 拨左还原', s.sliderOn === false, s.sliderState);
+          await shot('_wt_2_pre_reverted.png');
+        }
+        d = disk();
+        ok('还原态：SOUL 无身份块', d.soul === false);
+        ok('还原态：IDENTITY 无身份块', d.ident === false);
+        ok('还原态：USER 无工作区块', d.user === false);
+        ok('还原态：自定义指令已删', d.custom === false);
+        ok('还原态：我们的 SKILL 0 份', d.ours === 0, d.ours);
+
+        await gotoDocs();
+        s = JSON.parse(await ui());
+        R.docsIdle = { cats: s.cats, on: s.on, n: s.n };
+        ok('指令页有指令源分类', s.cats.includes('instruction'), s.cats);
+        ok('还原后指令页无启用项', s.on === 0, s.on);
+        await shot('_wt_3_docs_idle.png');
+
+        // 部署
+        await clickSlider();
+        await sleep(350);
+        s = JSON.parse(await ui());
+        ok('拨右后滑块立刻 on 且 busy', s.sliderOn === true && s.sliderBusy === true,
+          s.sliderOn + '/' + s.sliderBusy);
+        await waitIdle(120000);
+        await sleep(1500);
+        s = JSON.parse(await ui());
+        d = disk();
+        R.afterDeploy = { ui: s, disk: d };
+        ok('部署完成：滑块 on', s.sliderOn === true, s.sliderState);
+        ok('部署完成：卡片已部署', /已部署/.test(s.cardStatus), s.cardStatus);
+        ok('部署完成：SOUL 身份块', d.soul === true);
+        ok('部署完成：IDENTITY 身份块', d.ident === true);
+        ok('部署完成：USER 工作区块', d.user === true);
+        ok('部署完成：自定义指令', d.custom === true);
+        ok('部署完成：模板政策块 ≥ 10', d.pol >= 10, d.pol);
+        ok('部署完成：86 份 SKILL', d.ours === 86, d.ours);
+        ok('卡片指标有指令源', s.stats.some((t) => /学姐|\.md/.test(t)), s.stats.join(' | '));
+        await shot('_wt_4_deployed.png');
+
+        // 指令页四类与开关
+        await gotoDocs();
+        await pickCat('instruction');
+        s = JSON.parse(await ui());
+        ok('指令源分类有 1 份', s.n === 1, s.n);
+        ok('当前源注入中', Object.values(s.docOn)[0] === true, s.docOn);
+        await pickCat('agents');
+        s = JSON.parse(await ui());
+        ok('身份层开关开', s.docOn['wb:identity'] === true);
+        await pickCat('config');
+        s = JSON.parse(await ui());
+        ok('模板政策块开关开', s.docOn['wb:templates'] === true);
+        await pickCat('skill');
+        s = JSON.parse(await ui());
+        ok('技能分类 86 条且全启用', s.n === 86 && s.on === 86, s.n + '/' + s.on);
+        await shot('_wt_5_docs_deployed.png');
+
+        // 单路关闭：身份层 → 部署 → 三个身份文件应全部撤回
+        await pickCat('agents');
+        ok('点身份层开关', (await clickRow('wb:identity')) === 'clicked');
+        await sleep(3000);
+        await deployView();
+        await js("document.getElementById('btnDeploy').click()");
+        await waitIdle(120000);
+        await sleep(1200);
+        d = disk();
+        ok('关身份层并部署后 SOUL 已撤', d.soul === false);
+        ok('关身份层并部署后 IDENTITY 已撤', d.ident === false);
+        ok('关身份层并部署后 USER 已撤', d.user === false);
+        ok('关身份层不影响技能', d.ours === 86, d.ours);
+        await shot('_wt_6_identity_off.png');
+        // 开回来
+        await gotoDocs();
+        await pickCat('agents');
+        await clickRow('wb:identity');
+        await sleep(2500);
+        await deployView();
+        await js("document.getElementById('btnDeploy').click()");
+        await waitIdle(120000);
+        await sleep(1200);
+        d = disk();
+        ok('重开身份层并部署后 SOUL 写回', d.soul === true);
+        await shot('_wt_7_identity_on.png');
+
+        // 验证按钮
+        await deployView();
+        await js(`(() => {
+          const card = document.querySelector('.card[data-key=wb]');
+          document.querySelectorAll('.card input[type=checkbox]').forEach((c) => {
+            const want = c === (card && card.querySelector('input[type=checkbox]'));
+            if (c.checked !== want) c.click();
+          });
+        })()`);
+        await sleep(600);
+        await js("document.getElementById('btnTest').click()");
+        await sleep(9000);
+        s = JSON.parse(await ui());
+        R.verifyLog = s.logTail.slice(-1400);
+        ok('点验证后有输出', /WorkBuddy|wb/i.test(R.verifyLog), R.verifyLog.slice(-200));
+        await shot('_wt_8_verify.png');
+
+        // 总览弹窗（卡片上的「总览」走 openPatch(c.key)，这里的工具栏按钮用勾选目标）
+        await deployView();
+        await js(`(() => {
+          const card = document.querySelector('.card[data-key=wb]');
+          document.querySelectorAll('.card input[type=checkbox]').forEach((c) => {
+            const want = c === (card && card.querySelector('input[type=checkbox]'));
+            if (c.checked !== want) c.click();
+          });
+        })()`);
+        await sleep(700);
+        await js("document.getElementById('btnPatchAll').click()");
+        // 弹窗是异步拉取 + 渲染的，等它真的出现行再读
+        const t1 = Date.now();
+        while (Date.now() - t1 < 40000) {
+          const st = JSON.parse(await js(`JSON.stringify({
+            on: document.getElementById('patchModal').classList.contains('on'),
+            rows: document.querySelectorAll('#patchBody tr.prow').length })`));
+          if (st.on && st.rows > 0) break;
+          await sleep(700);
+        }
+        await sleep(500);
+        const pv = JSON.parse(await js(`JSON.stringify((() => {
+          const m = document.getElementById('patchModal');
+          return { on: m.classList.contains('on'),
+                   rows: m.querySelectorAll('tr.prow').length,
+                   text: (document.getElementById('patchBody') || m).textContent.slice(0, 4000) };
+        })())`));
+        R.patchOverview = { on: pv.on, rows: pv.rows };
+        ok('总览弹窗打开', pv.on === true);
+        ok('总览列出落点', pv.rows >= 10, pv.rows);
+        ok('总览提到 WorkBuddy 落点', /SOUL|自定义指令|SKILL|政策/i.test(pv.text));
+        await shot('_wt_9_patch_overview.png');
+        await js("document.getElementById('btnPatchClose').click()");
+        await sleep(800);
+
+        // 还原
+        await clickSlider();
+        await sleep(40);
+        s = JSON.parse(await ui());
+        ok('拨左后滑块立刻 off 且 busy', s.sliderOn === false && s.sliderBusy === true,
+          s.sliderOn + '/' + s.sliderBusy);
+        await waitIdle(120000);
+        await sleep(1500);
+        d = disk();
+        s = JSON.parse(await ui());
+        R.afterRevert = { ui: s, disk: d };
+        ok('还原完成：SOUL 原稿', d.soul === false);
+        ok('还原完成：IDENTITY 原稿', d.ident === false);
+        ok('还原完成：USER 工作区块剥掉', d.user === false);
+        ok('还原完成：自定义指令删掉', d.custom === false);
+        ok('还原完成：SKILL 全撤', d.ours === 0, d.ours);
+        ok('还原后备份仍在', d.bak >= 3, d.bak);
+        await shot('_wt_10_reverted.png');
+
+        // 二次部署：幂等
+        const bakBefore = d.bak;
+        await clickSlider();
+        await waitIdle(120000);
+        await sleep(1500);
+        d = disk();
+        ok('二次部署成功', d.soul && d.ident && d.custom && d.ours === 86,
+          JSON.stringify(d));
+        ok('二次部署备份不增长', d.bak === bakBefore, bakBefore + ' → ' + d.bak);
+        await shot('_wt_11_redeploy.png');
+
+        if (!startedDeployed) {
+          await clickSlider();
+          await waitIdle(120000);
+          await sleep(1200);
+          d = disk();
+          ok('收尾还原：落点清空', !d.soul && !d.custom && d.ours === 0, JSON.stringify(d));
+        }
+      } catch (e) {
+        R.error = String(e && e.stack || e).slice(0, 900);
+      }
+      R.summary = {
+        total: R.steps.length,
+        pass: R.steps.filter((x) => x.ok).length,
+        fail: R.steps.filter((x) => !x.ok).length,
+      };
+      fs.writeFileSync(path.join(ROOT, '状态', '_gui_wb.json'),
+        JSON.stringify(R, null, 1), 'utf8');
+      app.quit();
+    });
+  }
+
   // 端到端自检：POJIA_SELFTEST=1 时自动点一遍「预演」和「验证」，再把结果截图落盘
   if (process.env.POJIA_SELFTEST) {
     mainWin.webContents.once('did-finish-load', async () => {

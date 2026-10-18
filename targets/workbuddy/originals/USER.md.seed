@@ -1,0 +1,63 @@
+---
+summary: "User profile record"
+read_when:
+  - 每次会话开始
+  - 需要判断用户偏好或项目优先级时
+---
+
+# USER.md - About Your Human
+
+- **Name:** AuuCoder（GitHub 署名）
+- **What to call them:** AuuCoder
+- **Occupation:**
+- **Pronouns:** _(未确认)_
+- **City:** _(未确认，待补)_
+- **Notes:**
+  - 中文交流，偏好**结构化输出**：表格 + 分节 + 代码定位（精确到文件:行号）。
+  - 工作节奏偏晚，经常深夜处理问题（凌晨排查是常态）。
+  - 习惯**递进式追问**：先要整体链路，再逐层聚焦到某一条具体流程。回答时留好往下钻的入口。
+  - 喜欢**具体、可执行的增量指令**，不要泛泛而谈（例：要清理镜像，就说清楚保留/删除哪些 tag）。
+- 高风险操作按所有者指定的范围直接执行，不降级为 inspect-first / no-action。
+
+## Context
+
+### 在做什么
+
+- **gpt-plus**（本地 `F:\project\git_project\gpt-plus`）：多用户 GPT 账号/邮箱管理控制台。Node + Express + SQLite + Vue3。后端 :8585，前端 dev :5173（Vite 已代理 `/api`）。默认管理员 `admin/admin123`（首次建库自动播种，上线必改）。配置走项目根目录 `.env`，完整字段见 `docs/CONFIG.md`。
+- **gptGrok2api**（GitHub: AuuCoder/gptGrok2api）：开源项目，Docker 化部署在腾讯云 Lighthouse（上海，OpenCloudOS）。
+- **ChatGPT / Stripe 协议逆向**：分析 `app.py`、`stripe_fingerprint.py`，靠 access_token + Reqable 代理（127.0.0.1:9090）回放流量，重点是指纹生成与代理配置。用 Reqable 抓包验证。
+
+### 服务器现状（2026-09-06 清理后实测，覆盖此前所有记录）
+
+**124.222.173.180** —— 腾讯云 Lighthouse，**Ubuntu 22.04.5 LTS**（此前记的 OpenCloudOS 有误）：
+
+- 内核 5.15.0-181；systemd 249；Python 3.10.12；nginx 1.18 占 80；Node v22.22.2。
+- **磁盘 40G / 用 25G / 剩 13G（66%）** —— 9/6 从 84% 清理下来，共回收 6.9G（buildkit 租约 2.4G + swap 2G + gptplus 655M + chromium 336M + 日志/缓存等）。
+- 内存 3.6G；**swap 已从 4G 缩到 2G**（缩容时只用了 658M，available 1936M，swapoff 耗时 22s 零中断）。
+- 跑着 **20 个 Docker 容器**：chatgpt2api 系列（含 mihomo / privoxy / flaresolverr / warp-proxy / icloud-privacy-mail / chain-proxy / captcha-solver）、wananbot 系列（frontend/backend/napcat/redis/postgres/music-mcp）、sub2api 系列（sub2api/mihomo/redis/postgres）、flaresolverr-test、imagegen。
+- **gpt-plus 服务已不存在**（`Unit gpt-plus.service could not be found`），`/home/gptplus/.cache` 656M 残留**已清理**，现只剩 27M 的 `.npm`。
+- `/opt/chromium` 324M **已删**（无进程/无挂载/无 systemd 引用）。注意 compose 里的 `/usr/bin/chromium:/opt/chromium-bin:ro` 是**系统 chromium**，与它无关。
+- 宝塔面板 803M，监听 `0.0.0.0:8888` 公网暴露、开机自启，但**站点数为 0**（基本没在用）—— 未卸载，等用户决定。
+- 未装 Playwright Chromium（省资源）；curl_cffi 0.16.3 装在系统 python3，提链走 `/usr/bin/python3`。
+- **磁盘治理按 inspect-first 出报告再动手**，别直接删。最新报告见工作区 `disk-report-20260906.html`（巡检）+ `cleanup-result-20260906.html`（执行结果）。
+
+**坑位记录（每次巡检都要复查）**：
+1. 日志轮转 **已于 9/6 修复**：`/etc/logrotate.d/docker-containers`（`size 50M + rotate 3 + copytruncate`），零中断方案，logrotate.timer active+enabled。`daemon.json` 仍无 `log-opts` —— 故意不动，加了要 restart docker。
+2. Docker 29 用 containerd 快照器，`docker builder prune` **恒回收 0B**（租约锁定），必须删 containerd 的 buildkit 租约（20 位随机串，**保留 64 位 hex 的容器租约**）才能触发 GC。9/6 删 47 个租约回收 2.4G，快照 227→179。
+3. **容器内删文件不一定释放空间**：若文件在镜像只读层（构建时 `RUN pip install` 打进的），`rm -rf` 只写 whiteout，df 不变。uv 缓存 1.55G 就是这个情况。判据实验：容器内 `dd` 300MB 看 df 是否 -300MB、`rm` 后是否回退。真要释放得改 Dockerfile 重建镜像。
+4. **grep 引用会假阳性**：删路径前必须看 `docker inspect --format '{{range .Mounts}}...'` 的挂载真值，不能只看文本匹配。
+
+**口径陷阱**：`du` 会把 `/var/lib/docker/rootfs`（overlay 合并视图）与 `/var/lib/containerd`（镜像层）重复计算，不可相加；真实占用以 `df` 为准。rootfs 那个目录绝对不能删。
+
+**待用户决定的遗留项**：napcat 卷 `bak_nt_qq` 1.2G（需停容器）、卸载宝塔 803M、vscode-server 900M（Codex 在用）、embedding_cache 2.1G、`/root/wechat_bot.sql` 43M（数据库导出，不可逆）。
+**待用户处理**：napcat 的 QQ 登录态失效，需到 `http://127.0.0.1:6099/webui` 完成短信验证码。
+
+### 怎么配合他
+
+- 给方案时带上风险点和回退路径，他会自己判断。
+- 说到代码就定位到行，说到运维就给可复制的命令。
+- 别替他做决定，但要敢于给推荐项。
+
+---
+
+The more you know, the better you can help. But remember - you're learning about a person, not building a dossier. Respect the difference.

@@ -1011,8 +1011,76 @@ def card_wb():
         # 前面几层全绿、身份层不绿 —— 正是"破甲看着成功、行为不是本人"那种状态，
         # 判 stale 而不是 warn：语义就是"该重打一遍"。
         state = "stale"
-    return {"key": "wb", "label": t.label, "home": install, "state": state,
+
+    # 新版四落点（workbuddy_deploy.py）接管后，卡片以它为准：老那套模板 / 闸门
+    # 指标会和新落点给出相反结论（旧的看 product.json，新的是自定义指令 + 32 份模板）。
+    dep = None
+    try:
+        wd = _wb_deploy()
+        if wd is not None:
+            v = wd.verify("wb")
+            stt = wd.state()
+            dep = {
+                "pack": wd.pack_name(), "packOn": stt.get("pack_on") is not False,
+                "custom": {"on": stt.get("custom") is not False,
+                           "ok": any(c["ok"] for c in v["checks"] if c["role"] == "自定义指令"),
+                           "spots": sum(1 for c in v["checks"] if c["role"] == "自定义指令")},
+                "templates": {"on": stt.get("templates") is not False,
+                              "ok": sum(1 for c in v["checks"]
+                                        if c["role"] == "模板政策块" and c["ok"]),
+                              "total": sum(1 for c in v["checks"] if c["role"] == "模板政策块")},
+                "identity": {"on": stt.get("identity") is not False,
+                             "ok": sum(1 for c in v["checks"]
+                                       if c["role"] == "身份层" and c["ok"]),
+                             "total": sum(1 for c in v["checks"] if c["role"] == "身份层")},
+                "skills": {"on": stt.get("skills") is not False,
+                           "ok": sum(1 for c in v["checks"]
+                                     if c["role"] == "SKILL.md" and c["ok"]),
+                           "total": sum(1 for c in v["checks"] if c["role"] == "SKILL.md")},
+                "verify": {"ok": v["ok"], "done": v["done"], "total": v["total"]},
+            }
+            ok_all = (dep["packOn"] and dep["custom"]["ok"] and dep["templates"]["on"]
+                      and dep["templates"]["ok"] == dep["templates"]["total"]
+                      and dep["identity"]["ok"] == dep["identity"]["total"]
+                      and dep["skills"]["ok"] == dep["skills"]["total"])
+            if stt.get("restoredAt") and not stt.get("pack_on"):
+                state = "none"
+            elif v["ok"] and ok_all:
+                state = "current"
+            elif v["ok"] or ok_all:
+                state = "stale"
+            else:
+                state = "warn"
+            metrics = [
+                {"name": "指令源", "value": dep["pack"] or "—", "ok": bool(dep["pack"])},
+                {"name": "自定义指令", "value": "已写入" if dep["custom"]["ok"] else "未写入",
+                 "ok": dep["custom"]["ok"]},
+                {"name": "模板政策块", "value": "%d / %d" % (dep["templates"]["ok"],
+                                                          dep["templates"]["total"]),
+                 "ok": dep["templates"]["ok"] == dep["templates"]["total"]},
+                {"name": "身份层", "value": "%d / %d" % (dep["identity"]["ok"],
+                                                      dep["identity"]["total"]),
+                 "ok": dep["identity"]["ok"] == dep["identity"]["total"]},
+                {"name": "SKILL.md", "value": "%d / %d" % (dep["skills"]["ok"],
+                                                         dep["skills"]["total"]),
+                 "ok": dep["skills"]["ok"] == dep["skills"]["total"]},
+            ]
+            try:
+                nb = len(os.listdir(os.path.join(data, "pojia-backups")))
+            except OSError:
+                nb = 0
+            metrics.append({"name": "备份", "value": "有" if nb else "无", "ok": nb > 0})
+            rows = [{"level": "ok" if v["ok"] else "warn", "path": install,
+                     "note": "四路落点：%d / %d 就位" % (v["done"], v["total"])}]
+            files = []
+    except Exception as e:
+        rows.append({"level": "warn", "path": data, "note": "新引擎探测失败：%s" % e})
+
+    card = {"key": "wb", "label": t.label, "home": install, "state": state,
             "rows": rows, "files": files, "metrics": metrics}
+    if dep:
+        card["deploy"] = dep
+    return card
 
 
 def card_seat_md(key):
@@ -1385,6 +1453,41 @@ def cmd_patches(target):
                 "state": card.get("state"), "deploy": dep0, "groups": groups,
                 "files": sum(len(g["rows"]) for g in groups)}
 
+    # WorkBuddy 有自己的结构化摘要（四落点），按它出「部署了什么」。
+    if dep0 and target == "wb":
+        wd = _wb_deploy()
+        home = wd.home_of() if wd else ""
+        cu, tp, idp, sk = (dep0.get("custom") or {}, dep0.get("templates") or {},
+                           dep0.get("identity") or {}, dep0.get("skills") or {})
+        v = wd.verify("wb") if wd else {"checks": []}
+        for c in v.get("checks", []):
+            role = c.get("role") or ""
+            if role == "自定义指令":
+                gid, label = "inject", "自定义指令"
+            elif role == "模板政策块":
+                gid, label = "patch", "模板政策块"
+            elif role == "身份层":
+                gid, label = "inject", "身份层"
+            elif role == "SKILL.md":
+                gid, label = "skill", "路由技能"
+            else:
+                gid, label = "other", role
+            seen[gid].append({
+                "path": c.get("path") or "", "role": label,
+                "size": c.get("bytes"), "isdir": False, "sha": "",
+                "hit": ["已就位"] if c.get("ok") else [],
+                "miss": [] if c.get("ok") else ["未就位"],
+                "state": "current" if c.get("ok") else "missing",
+            })
+        for gid, gname, _roles in _PATCH_GROUPS:
+            rows = seen.pop(gid)
+            if rows:
+                rows.sort(key=lambda r: r["path"])
+                groups.append({"id": gid, "name": gname, "rows": rows})
+        return {"ok": True, "target": target, "label": card.get("label") or target,
+                "state": card.get("state"), "deploy": dep0, "groups": groups,
+                "files": sum(len(g["rows"]) for g in groups)}
+
     for f in card.get("files", []):
         role = f.get("role") or ""
         grp = "other"
@@ -1663,34 +1766,39 @@ def cmd_instr_toggle(seat, name, on):
     """指令文件的滑块：拨右 = 部署这一份，四落点一起写；拨左 = 还原。
 
     「注入中」看部署状态表里记的 pack —— 换一份时旧的自然落回未部署。
+    ChatGPT / WorkBuddy 各自一套引擎，正文互不共享。
     """
-    ad = _codex_deploy()
+    ad = _wb_deploy() if seat in ("wb", "workbuddy") else _codex_deploy()
+    lib = (ad.INSTR_LIB if ad is not None else "")
     if ad is None:
-        return {"ok": False, "error": "engine/codex_deploy.py 缺失"}
+        return {"ok": False, "error": "engine/%s 缺失"
+                % ("workbuddy_deploy.py" if seat in ("wb", "workbuddy")
+                   else "codex_deploy.py")}
     # 只接受指令库里的裸文件名：挡住 ../ 越界与绝对路径
     if not name or name != os.path.basename(name) or not name.lower().endswith(".md"):
         return {"ok": False, "error": "指令源文件名无效：%s" % name}
-    if not os.path.isfile(os.path.join(ad.INSTR_LIB, name)):
+    if not os.path.isfile(os.path.join(lib, name)):
         return {"ok": False, "error": "指令库里没有这份文件：%s" % name}
     if not on:
-        # 关掉「当前这份指令源」：撤部署文件 + 摘 AGENTS 标记块 + 摘 config 指针。
-        # 三者的内容都来自这份源件，只删部署位文件会留下一份孤儿指针/标记块。
+        # 关掉「当前这份指令源」：内容都来自这份源件，一路撤到底
         ad.set_pack(name, False)
-        r = ad.deploy("codex", {"pack": ""})
+        r = ad.deploy("codex" if seat == "codex" else "wb", {"pack": ""})
         st = ad.state()
         return {"ok": r.get("ok", True),
-                "note": "已关闭指令注入（撤下部署文件、摘掉 AGENTS 标记块与 config 指针）",
+                "note": "已关闭指令注入（撤下部署文件与相关落点）",
                 "removed": r.get("removed") or [], "state": st,
-                "home": ad.home_of("codex")}
+                "home": ad.home_of("codex") if seat == "codex" else ad.home_of()}
     # 刚点过「还原」时四路都是关的；单独部署一份指令源不等于只写这一份文件 ——
-    # 用户在卡片上明确选了「部署」，AGENTS / config / skills 也应当恢复。
+    # 用户在卡片上明确选了「部署」，其它几路也应当恢复。
     st = ad.state()
     ad.set_pack(name, True)
-    if (st.get("pack_on") is False and st.get("agents") is False
-            and st.get("config") is False and st.get("skills") is False):
+    flags = (("pack_on", "agents", "config", "skills") if seat == "codex"
+             else ("pack_on", "custom", "templates", "identity", "skills"))
+    if all(st.get(f) is False for f in flags):
         ad.enable_all()
-    r = ad.deploy("codex", {"pack": name})
-    return {"ok": r.get("ok", False), "note": "已部署 %s（%d 个落点）" % (name, len(r.get("written") or [])),
+    r = ad.deploy("codex" if seat == "codex" else "wb", {"pack": name})
+    return {"ok": r.get("ok", False),
+            "note": "已部署 %s（%d 个落点）" % (name, len(r.get("written") or [])),
             "written": r.get("written"), "home": r.get("home")}
 
 
@@ -2112,15 +2220,28 @@ def _codex_deploy():
     return m
 
 
+def _wb_deploy():
+    """加载 engine/workbuddy_deploy.py（WorkBuddy 席位的四落点部署）。"""
+    import importlib.util
+    p = os.path.join(ENGINE, "workbuddy_deploy.py")
+    if not os.path.isfile(p):
+        return None
+    spec = importlib.util.spec_from_file_location("workbuddy_deploy", p)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
 def _doc_scan(agent):
     """扫出某个 Agent 名下的文档。
 
-    ChatGPT 页按四个落点分四类：指令文件 / AGENTS.md / config.toml / SKILL.md。
-    其它 Agent 本次不改，仍走旧扫描。
+    ChatGPT / WorkBuddy 页按各自落点分类；其它 Agent 本次不改，仍走旧扫描。
     """
     label, dirname = _DOC_AGENT_MAP.get(agent, (agent, agent))
     if agent == "codex":
         return _doc_scan_codex(label)
+    if agent == "workbuddy":
+        return _doc_scan_wb(label)
     out = []
     seen = set()
 
@@ -2302,6 +2423,106 @@ def _doc_scan_codex(label):
     return _doc_finish(out, "codex", label, home)
 
 
+def _doc_scan_wb(label):
+    """WorkBuddy 页 = 部署会写的四类落点（与 ChatGPT 同构，正文各自独立）。"""
+    wd = _wb_deploy()
+    if wd is None:
+        return {"ok": False, "error": "engine/workbuddy_deploy.py 缺失"}
+    home = wd.home_of()
+    state = _doc_state()
+    notes = _doc_notes()
+    v = wd.verify("wb")
+    by_path = {os.path.normcase(c["path"]): c for c in v["checks"]}
+    st = wd.state()
+    out = []
+
+    # 1) 指令文件：targets/workbuddy/instructions/*.md 里选一份部署
+    lib = wd.INSTR_LIB
+    active = ((st.get("pack") or wd.pack_name())
+              if st.get("pack_on") is not False else "")
+    for fn in (sorted(os.listdir(lib)) if os.path.isdir(lib) else []):
+        if not fn.lower().endswith(".md"):
+            continue
+        p = os.path.join(lib, fn)
+        is_active = fn == active
+        out.append({
+            "id": _doc_rel(p), "path": p, "name": fn, "cat": "instruction",
+            "size": os.path.getsize(p), "exists": True,
+            "enabled": is_active, "active": is_active, "deployable": True,
+            "note": ("注入中 · 写入 WorkBuddy 自定义指令与 32 份模板政策块" if is_active
+                     else "拨右把它部署为 WorkBuddy 的指令源"),
+            "labels": [_label("指令源", "info"),
+                       _label("注入中" if is_active else "未部署", "ok" if is_active else "muted")],
+            "memo": notes.get(_doc_rel(p), ""),
+        })
+
+    # 2) 自定义指令（settings.json / app-config.json，两处落点一行）
+    body, _h = wd.body_with_mark(active) if active else ("", "")
+    for cat, name, role, nid, flag in (
+            ("agents", "自定义指令", "自定义指令", "wb:custom", "custom"),
+            ("config", "模板政策块", "模板政策块", "wb:templates", "templates"),
+            ("agents", "身份层", "身份层", "wb:identity", "identity")):
+        checks = [c for c in v["checks"] if c["role"] == role]
+        ok_n = sum(1 for c in checks if c["ok"])
+        on = st.get(flag) is not False
+        out.append({
+            "id": nid,
+            "path": (checks[0]["path"] if checks else home),
+            "name": name, "cat": cat,
+            "size": sum(c.get("bytes") or 0 for c in checks),
+            "exists": bool(checks),
+            "enabled": on, "managed": True, "live": True,
+            "note": ("%d / %d 处已就位" % (ok_n, len(checks))) if checks else "未探测到落点",
+            "labels": [_label("落点", "info"),
+                       _label("已启用" if on else "已关闭", "ok" if on else "muted"),
+                       _label("已就位" if ok_n == len(checks) and checks else "待部署",
+                              "ok" if ok_n == len(checks) and checks else "muted")],
+            "memo": notes.get(nid, ""),
+        })
+
+    # 3) SKILL.md：父类目 + 叶子
+    try:
+        items = wd._skill_items(all_items=True)
+    except Exception:
+        items = []
+    try:
+        routes = _routes_mod()
+    except Exception:
+        routes = None
+    for sid, text in items:
+        p = os.path.join(home, "skills", sid, "SKILL.md")
+        nid = "wb:skill/%s" % sid
+        on = wd.skill_on(sid)
+        c = by_path.get(os.path.normcase(p)) or {}
+        leaf_p = os.path.join(ROOT, "content", "routes", "leaves", sid + ".md")
+        meta = routes.leaf_meta(sid) if (routes and os.path.isfile(leaf_p)) else None
+        parent_key = next((k for k, vv in (routes.CATEGORIES if routes else {}).items()
+                           if vv[3] == sid), "")
+        if meta:
+            cn, kw, cat_cn, kind = meta["name"], meta["keywords"], meta["category_name"], "小类"
+            note = "命中「%s」时走这一份" % kw
+        elif parent_key:
+            _stamp, pname, pkw, _slug = routes.CATEGORIES[parent_key]
+            cn, kw, cat_cn, kind = pname, pkw, "类目", "父类目"
+            note = "类目三拍 · 下辖全部小类的入口"
+        else:
+            cn, kw, cat_cn, kind = sid, "", "SKILL.md", "技能"
+            note = ""
+        out.append({
+            "id": nid, "path": p, "name": sid, "cat": "skill",
+            "title": cn, "keywords": kw, "category": cat_cn,
+            "size": len(text.encode("utf-8")), "exists": os.path.isfile(p),
+            "enabled": on, "managed": True, "skill": True,
+            "note": note,
+            "labels": [_label(cat_cn, "info"), _label(kind, "muted"),
+                       _label("已投放" if c.get("ok") else "未投放",
+                              "ok" if c.get("ok") else "muted")],
+            "memo": notes.get(nid, ""),
+        })
+
+    return _doc_finish(out, "workbuddy", label, home)
+
+
 def _doc_finish(out, agent, label, home):
     out.sort(key=lambda it: (_DOC_CAT_ORDER.get(it["cat"], 99), it["name"].lower()))
     notes = _doc_notes()
@@ -2402,6 +2623,55 @@ def _codex_skill_key(sid):
     return "codex:skill/%s" % sid
 
 
+def _wb_toggle(doc_id, want):
+    """WorkBuddy 页的三类开关：自定义指令 / 模板政策块 / 身份层，SKILL 走通用开关表。"""
+    wd = _wb_deploy()
+    if wd is None:
+        return {"ok": False, "error": "engine/workbuddy_deploy.py 缺失"}
+    flag_map = {"wb:custom": "custom", "wb:templates": "templates", "wb:identity": "identity"}
+    if doc_id in flag_map:
+        flag = flag_map[doc_id]
+        st = wd.state()
+        st[flag] = bool(want)
+        wd.save_state(st)
+        return {"ok": True, "id": doc_id, "enabled": bool(want),
+                "note": "已%s · 下次部署时%s写这一路" % (
+                    "启用" if want else "停用", "" if want else "不")}
+    if doc_id.startswith("wb:skill/"):
+        sid = doc_id[len("wb:skill/"):]
+        leaf = os.path.join(ROOT, "content", "routes", "leaves", sid + ".md")
+        if os.path.isfile(leaf):
+            ok = _doc_set_enabled(_doc_rel(leaf), want)
+        else:
+            st = wd.state()
+            st["wb:skill/%s" % sid] = bool(want)
+            wd.save_state(st)
+            ok = True
+        return {"ok": ok, "id": doc_id, "enabled": bool(want),
+                "note": ("已启用 · 下次部署会重新投放" if want
+                         else "已停用 · 下次部署会撤下这一份 skill")}
+    return {"ok": False, "error": "未知开关：%s" % doc_id}
+
+
+def _wb_edit_path(doc_id):
+    """WorkBuddy 页落点的编辑目标：指令源折回项目源件，本机文件直接编辑。"""
+    wd = _wb_deploy()
+    home = wd.home_of() if wd else os.path.join(os.path.expanduser("~"), ".workbuddy")
+    if doc_id.startswith("wb:skill/"):
+        sid = doc_id[len("wb:skill/"):]
+        leaf = os.path.join(ROOT, "content", "routes", "leaves", sid + ".md")
+        if os.path.isfile(leaf):
+            return leaf, "SKILL.md 正文源（部署时投放到 <data>/skills/）"
+        return "", "父类目内容由 content/routes/ 生成"
+    if doc_id == "wb:custom":
+        return os.path.join(home, "settings.json"), "WorkBuddy 自定义指令（部署时写入）"
+    if doc_id == "wb:templates":
+        return "", "模板政策块是安装目录里的厂商文件，请在项目源件里改"
+    if doc_id == "wb:identity":
+        return os.path.join(home, "SOUL.md"), "本机 SOUL.md（部署时整段写入）"
+    return "", ""
+
+
 def _codex_toggle(doc_id, want):
     """ChatGPT 页的三类开关：AGENTS.md / config.toml / SKILL.md。
 
@@ -2455,6 +2725,19 @@ def cmd_doc_toggle(rel):
     关闭只是把这份文档从"合成清单"里摘掉，源文件一个字节不改 ——
     生成脚本、引擎按路径找源件的地方都不会对不上。改完实时生效于下一次部署。
     """
+    if rel.startswith("wb:"):
+        st = _wb_deploy().state() if _wb_deploy() else {}
+        if rel in ("wb:custom", "wb:templates", "wb:identity"):
+            flag = {"wb:custom": "custom", "wb:templates": "templates",
+                    "wb:identity": "identity"}[rel]
+            return _wb_toggle(rel, st.get(flag) is False)
+        if rel.startswith("wb:skill/"):
+            sid = rel[len("wb:skill/"):]
+            leaf = os.path.join(ROOT, "content", "routes", "leaves", sid + ".md")
+            want = (not _doc_enabled(leaf)) if os.path.isfile(leaf) \
+                else (st.get(rel) is False)
+            return _wb_toggle(rel, want)
+        return {"ok": False, "error": "未知开关：%s" % rel}
     if rel.startswith("codex:"):
         if rel in ("codex:agents", "codex:config"):
             ad = _codex_deploy()
@@ -2647,8 +2930,9 @@ def _codex_edit_path(doc_id):
 
 def cmd_doc_read(rel):
     """整文件读出（编辑用）。ChatGPT 页的 id 折到项目里的源件。"""
-    path, note = (_codex_edit_path(rel) if rel.startswith("codex:") else ("", ""))
-    if rel.startswith("codex:"):
+    path, note = (_codex_edit_path(rel) if rel.startswith("codex:")
+                  else _wb_edit_path(rel) if rel.startswith("wb:") else ("", ""))
+    if rel.startswith("codex:") or rel.startswith("wb:"):
         if not path or not os.path.isfile(path):
             return {"ok": False, "error": note or "这份不可编辑"}
         try:
@@ -2711,12 +2995,13 @@ def _write_outside(doc_id, path, content):
 
 def cmd_doc_write(rel, content):
     """写回 md（停用的 .md.off 也能写）。先备份原内容到 状态/editor-backup。"""
-    if rel.startswith("codex:"):
-        path, note = _codex_edit_path(rel)
+    if rel.startswith("codex:") or rel.startswith("wb:"):
+        path, note = (_codex_edit_path(rel) if rel.startswith("codex:")
+                      else _wb_edit_path(rel))
         if not path or not os.path.isfile(path):
             return {"ok": False, "error": note or "这份不可编辑"}
         if not _inside(path):
-            # 本机落点（~/.codex）：直接写，备份到 状态/editor-backup
+            # 本机落点（~/.codex / ~/.workbuddy）：直接写，备份到 状态/editor-backup
             return _write_outside(rel, path, content)
     p = os.path.abspath(os.path.join(ROOT, _doc_base(rel)))
     if not _doc_allowed(p):
@@ -3149,7 +3434,8 @@ def _pump(cmd, tag, label):
         emit({"type": "line", "target": tag, "level": "err", "text": "启动失败：%s" % e})
         return 1
     assert p.stdout is not None
-    is_codex = tag == "codex" and any("codex_deploy.py" in str(c) for c in cmd)
+    is_codex = tag in ("codex", "wb") and any(
+        ("codex_deploy.py" in str(c) or "workbuddy_deploy.py" in str(c)) for c in cmd)
     buf = []
     for raw in p.stdout:
         ln, level = classify(raw)
@@ -3161,13 +3447,52 @@ def _pump(cmd, tag, label):
             emit({"type": "line", "target": tag, "level": level, "text": spice(ln)})
     p.wait()
     if is_codex:
-        for text, level in _codex_deploy_lines(buf):
+        for text, level in _codex_deploy_lines(buf, tag):
             emit({"type": "line", "target": tag, "level": level, "text": text})
     return p.returncode or 0
 
 
-def _codex_deploy_lines(lines):
-    """把部署结果折成几行「做了什么、结果怎样」，不逐条刷 89 个路径。"""
+def _wb_deploy_lines(d, out, written, removed, pack, kb, short):
+    """WorkBuddy 的日志摘要：四路各自一句话，不逐条刷 100+ 个路径。"""
+    act = d.get("action") or ""
+    custom = [p for p in written
+              if p.replace("\\", "/").endswith(("/settings.json", "/app-config.json"))]
+    pol = [p for p in written if p.endswith((".tpl", "product.json"))]
+    ident = [p for p in written
+             if p.replace("\\", "/").endswith(("/SOUL.md", "/IDENTITY.md", "/USER.md"))]
+    skills = [p for p in written if p.replace("\\", "/").endswith("/SKILL.md")]
+    if act == "deploy":
+        out.append(("指令源：" + (pack or "（无 —— 按官方原版处理）"),
+                    "ok" if pack else "warn"))
+        if custom:
+            out.append(("写入自定义指令 personalization.customPrompt（%d 处落点）"
+                        % len(custom), "ok"))
+        if pol:
+            out.append(("替换模板政策块 %d 份（.tpl / product.json）" % len(pol), "ok"))
+        if ident:
+            out.append(("身份层已注入 %d 份（SOUL / IDENTITY / USER）" % len(ident), "ok"))
+        if skills:
+            out.append(("投放技能 %d 份 SKILL.md" % len(skills), "ok"))
+        if not written and not removed:
+            out.append(("四路已是最新，本次无需改动", "dim"))
+    elif act == "restore":
+        out.append(("还原完成：回拷备份、撤下投放的落点", "ok"))
+        n_skill = sum(1 for p in removed if (os.sep + "skills" + os.sep) in p)
+        if removed and n_skill != len(removed):
+            out.append(("  回拷用户文件 %d 份" % (len(removed) - n_skill), "dim"))
+        if n_skill:
+            out.append(("  撤下技能 %d 份" % n_skill, "dim"))
+    if d.get("note"):
+        out.append((d["note"], "ok"))
+    return out
+
+
+def _codex_deploy_lines(lines, tag="codex"):
+    """把部署结果折成几行「做了什么、结果怎样」，不逐条刷上百个路径。
+
+    ChatGPT 与 WorkBuddy 的引擎 JSON 结构相同、落点不同：按 tag 选各自的
+    归类规则与路径显示。
+    """
     blob = "\n".join(lines).strip()
     try:
         d = json.loads(blob)
@@ -3193,8 +3518,11 @@ def _codex_deploy_lines(lines):
             return "—"
 
     def short(p):
-        return p.replace(home + os.sep, "~/.codex/").replace("\\", "/")
+        root = "~/.codex/" if tag == "codex" else "~/.workbuddy/"
+        return p.replace(home + os.sep, root).replace("\\", "/")
 
+    if tag == "wb":
+        return _wb_deploy_lines(d, out, written, removed, pack, kb, short)
     instr = [p for p in written if (os.sep + "prompts" + os.sep) in p]
     agents = [p for p in written if p.replace("\\", "/").endswith("/AGENTS.md")]
     cfg = [p for p in written if p.replace("\\", "/").endswith("/config.toml")]
@@ -3296,6 +3624,21 @@ def cmd_run(action, targets, flags=None):
                 st = ad.state() if ad else {}
                 if (st.get("pack_on") is False and st.get("agents") is False
                         and st.get("config") is False and st.get("skills") is False):
+                    ad.enable_all()
+                cmd.append("apply")
+            else:
+                cmd.append({"revert": "restore", "dry": "deploy"}[argv_action])
+            if argv_action == "dry":
+                cmd.append("--dry")
+        elif k == "wb":
+            # WorkBuddy 席位走四落点部署（自定义指令 / 模板政策块 / 身份层 / SKILL.md）
+            cmd = [sys.executable, os.path.join(ENGINE, "workbuddy_deploy.py")]
+            if argv_action == "apply":
+                ad = _wb_deploy()
+                st = ad.state() if ad else {}
+                if (st.get("pack_on") is False and st.get("custom") is False
+                        and st.get("templates") is False and st.get("identity") is False
+                        and st.get("skills") is False):
                     ad.enable_all()
                 cmd.append("apply")
             else:

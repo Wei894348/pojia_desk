@@ -35,3 +35,7 @@ gui/.python-path
 targets/codex/originals/*.md
 targets/codex/originals/*.toml
 targets/codex/originals/*.bak
+
+# WorkBuddy 首次部署前抓下来的身份层原稿（含个人笔记），只留 seed 模板
+targets/workbuddy/originals/*.md
+targets/workbuddy/originals/*.toml
