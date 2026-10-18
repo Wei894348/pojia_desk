@@ -311,7 +311,7 @@ function buildCardBody(c) {
   const box = document.createElement('div');
   box.className = 'cbody';
 
-  // 角标行：席位编号 / SEAT + 勾选 + 状态灯（Astra 的 seat-top）
+  // 角标行：席位编号 / SEAT + 勾选 + 状态灯（席位卡顶部）
   const top = document.createElement('div');
   top.className = 'ctop';
   const idx = document.createElement('span');
@@ -351,7 +351,7 @@ function buildCardBody(c) {
   head.appendChild(name);
   head.appendChild(patchBtn);
 
-  // 简介：落点路径（Astra 的 seat-card p —— 一句话说明）
+  // 简介：落点路径（卡片一句话说明 —— 一句话说明）
   const home = document.createElement('div');
   home.className = 'cmeta';
   home.textContent = c.home || '(未探测到路径)';
@@ -449,7 +449,7 @@ function buildCardBody(c) {
     box.appendChild(optrow);
   }
 
-  // ── Astra 动作排：明细 · 路径 · 日志（各一行点击动作） ──
+  // ── 动作排：明细 · 路径 · 日志（各一行点击动作） ──
   const acts = document.createElement('div');
   acts.className = 'cactions';
   const mkAct = (label, fn, hot) => {
@@ -736,11 +736,11 @@ function revertAsk(tg) {
 // silent=true：滑块已经自己做了视觉反馈，不再弹确认框；滑块拨动本身就是授权。
 async function doSliderRevert(c) {
   if (state.busy) return;
-  // ChatGPT 走 Astra 四落点（指令文件 / AGENTS.md / config.toml / SKILL.md），
-  // 事务快照管的是项目内文件，对 ~/.codex 一无所知 —— 这一席直接走 Astra restore：
+  // ChatGPT 走 四落点（指令文件 / AGENTS.md / config.toml / SKILL.md），
+  // 事务快照管的是项目内文件，对 ~/.codex 一无所知 —— 这一席直接走完整还原：
   // 备份回拷 + 摘指针 + 撤 skill，并把四路开关与指令页文档全部置为停用。
   if (c.key === 'codex') {
-    logLine('dim', 'tx', 'ChatGPT 走 Astra 还原：回拷备份、撤下投放的四路落点');
+    logLine('dim', 'tx', 'ChatGPT 走四路还原：回拷备份、撤下投放的四路落点');
   } else {
     logLine('dim', 'tx', seatOf(c.key) + ' 走常规还原：剥离标记块 / 回拷备份，客户端自有改动不动');
   }
@@ -867,7 +867,7 @@ async function loadSkills() {
   });
 }
 
-/* ── 指令提示词管理视图（Codex-X 式：Agent 切换 + 分类标签 + 卡片网格）── */
+/* ── 指令提示词管理视图── */
 
 let PROMPTS_INITED = false;
 let PM_AGENT = 'codex';    // 当前 Agent
@@ -1006,7 +1006,7 @@ function paintPmGrid() {
   list.forEach((it) => box.appendChild(buildDocRow(it)));
 }
 
-// 一张卡 = 一份文档，照 Codex-X 的 cx-prompts-row：
+// 一张卡 = 一份文档，
 //   头部 = 图标 + 标题 + 右侧开关
 //   正文 = 说明（备注优先）
 //   底部 = 状态徽标 / 路径体积 + 图标操作
@@ -1138,7 +1138,7 @@ const PM_TAG_CLS = {
   muted: 'pmtag pmtag-muted',
 };
 
-// ── 图标（lucide 路径，描边 1.9，跟 Codex-X 一致）──
+// ── 图标（lucide 路径，描边 1.9，统一描边）──
 const ICONS = {
   pencil: '<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
   trash: '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
@@ -1375,9 +1375,7 @@ function syncPmStatus() {
   const swOn = sw.filter((x) => x.enabled).length;
   $('pmDeployInput').checked = sw.length > 0 && swOn === sw.length;
   $('pmDot').classList.toggle('on', on > 0);
-  $('pmAgentHint').textContent = !PM_DOCS.length ? '这个 Agent 名下还没有 Markdown 提示词。'
-    : (on === 0 ? '全部文档已关闭 —— 部署时按官方原版处理，不写入任何提示词。'
-                : '已启用 ' + on + ' 份 · 已停用 ' + off + ' 份。开关实时生效，部署后要重启客户端才算数。');
+  $('pmAgentHint').textContent = '';
 }
 
 function paintPmBulk() {
@@ -1571,9 +1569,7 @@ async function refreshDocs() {
   const on = PM_DOCS.filter((x) => x.enabled).length;
   const off = PM_DOCS.length - on;
   $('pmAgentName').textContent = d.label || PM_AGENT;
-  $('pmAgentHint').textContent = !PM_DOCS.length ? '这个 Agent 名下还没有 Markdown 提示词。'
-    : (on === 0 ? '全部文档已关闭 —— 部署时按官方原版处理，不写入任何提示词。'
-                : '已启用 ' + on + ' 份 · 已停用 ' + off + ' 份。开关实时生效，部署后要重启客户端才算数。');
+  $('pmAgentHint').textContent = '';
   $('pmCount').textContent = String(PM_DOCS.length);
   $('pmCustom').textContent = String(PM_DOCS.filter((x) => x.cat === 'custom').length);
   const sw = PM_DOCS.filter((x) => !x.deployable);
@@ -1765,16 +1761,51 @@ async function loadPatch() {
   const extNote = ext ? ' · 另有外来 ' + ext : '';
   const mets = document.createElement('div');
   mets.className = 'pmetrics';
-  mets.innerHTML =
-    '<div class="pmetric ' + stateTone + '"><b>' + cur + ' / ' + tracked + '</b>' +
-    '<span>部署文件 · ' + stateTxt + extNote + '</span></div>' +
-    '<div class="pmetric"><b style="font-size:13px">' +
-      '<span class="pill ' + (miss ? 'pill-miss' : 'pill-cur') + '">缺失 ' + miss + '</span> ' +
-      '<span class="pill ' + (stale ? 'pill-stale' : 'pill-cur') + '">旧版 ' + stale + '</span> ' +
-      '<span class="pill ' + (ext ? 'pill-ext' : 'pill-cur') + '">外来 ' + ext + '</span> ' +
-      '<span class="pill pill-cur">本版 ' + cur + '</span></b>' +
-    '<span>' + esc(dep.text || '部署状态：' + (d.state || '—')) + '</span></div>' +
-    '<div class="pmetric"><b>' + pct + '%</b><span>关键段命中率</span></div>';
+
+  // codex：先把「部署了什么」写成四行人话（注入了哪份、改了哪两个、投放了多少技能）
+  if (dep.instruction || dep.agents || dep.config || dep.skills) {
+    const ins = dep.instruction || {};
+    const ag = dep.agents || {};
+    const cfg = dep.config || {};
+    const sk = dep.skills || {};
+    const short = (p) => (p || '').split(/[\\/]/).filter(Boolean).pop() || '—';
+    const dirOf = (p) => (p || '').replace(/[\\/][^\\/]*$/, '');
+    const onBadge = (on) => on
+      ? '<span class="pill pill-cur">已写入</span>'
+      : '<span class="pill pill-miss">未写入</span>';
+    const skillNames = (sk.ids || []).slice(0, 10).join('、');
+    const more = (sk.ids || []).length > 10 ? ' 等 ' + (sk.ids || []).length + ' 份' : '';
+    mets.innerHTML =
+      '<div class="pmetric p-ok"><b>' + esc(dep.pack || '—') + '</b>' +
+        '<span>当前注入的指令源</span></div>' +
+      '<div class="pmetric"><b style="font-size:13px">' + onBadge(ins.on) +
+        ' <span class="mono">' + esc(short(ins.src)) + ' → ' + esc(ins.dst || '') + '</span></b>' +
+        '<span>指令文件 · 复制进 prompts/（' + (ins.bytes || 0) + ' 字节）</span></div>' +
+      '<div class="pmetric"><b style="font-size:13px">' + onBadge(ag.on) +
+        ' <span class="mono">' + esc(ag.path || '') + '</span></b>' +
+        '<span>AGENTS.md · 插入 POJIA-CODEX 标记块（' + (ag.bytes || 0) + ' 字节）</span></div>' +
+      '<div class="pmetric"><b style="font-size:13px">' + onBadge(cfg.on) +
+        ' <span class="mono">' + esc(short(cfg.path)) + '</span></b>' +
+        '<span>config.toml · ' + esc(cfg.value || '') + '</span></div>' +
+      '<div class="pmetric"><b style="font-size:13px">' + onBadge(sk.on) +
+        ' <span class="mono">' + (sk.ok || 0) + ' / ' + (sk.total || 0) + '</span></b>' +
+        '<span>SKILL.md · ' + esc(dirOf(sk.dir) + '/' + short(sk.dir)) + '</span></div>' +
+      ((sk.ids || []).length
+        ? '<div class="pmetric p-note"><b style="font-size:12px">' + esc(skillNames + more) + '</b>' +
+          '<span>已投放的路由技能（父类目 + 叶子）</span></div>'
+        : '');
+  } else {
+    mets.innerHTML =
+      '<div class="pmetric ' + stateTone + '"><b>' + cur + ' / ' + tracked + '</b>' +
+      '<span>部署文件 · ' + stateTxt + extNote + '</span></div>' +
+      '<div class="pmetric"><b style="font-size:13px">' +
+        '<span class="pill ' + (miss ? 'pill-miss' : 'pill-cur') + '">缺失 ' + miss + '</span> ' +
+        '<span class="pill ' + (stale ? 'pill-stale' : 'pill-cur') + '">旧版 ' + stale + '</span> ' +
+        '<span class="pill ' + (ext ? 'pill-ext' : 'pill-cur') + '">外来 ' + ext + '</span> ' +
+        '<span class="pill pill-cur">本版 ' + cur + '</span></b>' +
+      '<span>' + esc(dep.text || '部署状态：' + (d.state || '—')) + '</span></div>' +
+      '<div class="pmetric"><b>' + pct + '%</b><span>关键段命中率</span></div>';
+  }
   body.appendChild(mets);
   const bar = document.createElement('div');
   bar.className = 'pbar';

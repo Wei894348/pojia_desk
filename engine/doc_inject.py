@@ -28,9 +28,11 @@ def rel(path):
 
 
 def enabled(path):
-    """这份文件是否参与注入。文件不存在也算 False。"""
-    if not os.path.isfile(path):
-        return False
+    """这份文件是否参与注入。
+
+    文件不存在时按「缺键 = 注入」处理，与 CLI 用 id 查表（enabled_id）保持同一语义 ——
+    调用方若真要判存在性，自己 os.path.isfile()。
+    """
     return _table().get(rel(path)) is not False
 
 

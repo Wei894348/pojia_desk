@@ -1,16 +1,13 @@
-"""astra_deploy.py —— ChatGPT（Codex）席位的部署逻辑，照 gpt6-Astra 的 seat-runtime。
-
-参考实现：`F:\\project\\破甲提示词\\gpt6-Astra\\desktop\\src\\lib\\seat-runtime.js`
-（plan / deploy / verify / restore 四个动作，内容换成本项目自己的文件）。
+"""codex_deploy.py —— ChatGPT（Codex）席位的部署逻辑：四个落点同写、可逐路开关、可整体还原。
 
 只做四件事，写四个落点：
-  1. `~/.codex/prompts/cha-codex.md`  —— 选中的指令源整份写入（带 BEGIN/END 标记）
+  1. `~/.codex/prompts/<选中的文件名>.md`  —— 选中的指令源整份写入（带 BEGIN/END 标记）
   2. `~/.codex/AGENTS.md`             —— 同一份正文，插进标记块（保留用户原有内容）
   3. `~/.codex/config.toml`           —— `model_instructions_file` 指向上面的文件
   4. `~/.codex/skills/<id>/SKILL.md`  —— 6 个父类目 + 80 片叶子
 
 备份：写入前快照到 `<home>/pojia-backups/<三级路径>.bak`，只存一份（已存在不覆盖），
-和 Astra 的 `snapshotOnce()` 同义。状态表：`状态/_astra_codex.json`。
+每份只存一次，不覆盖。状态表：`状态/_codex_deploy.json`。
 """
 
 import json
@@ -30,7 +27,11 @@ END = "<!-- POJIA-CODEX:END -->"
 
 INSTR_LIB = os.path.join(TARGETS, "codex", "instructions")
 PROMPTS_DIR = "prompts"              # 部署位：~/.codex/prompts/<选中的文件名>
-STATE_FILE = os.path.join(STATE_DIR, "_astra_codex.json")
+STATE_FILE = os.path.join(STATE_DIR, "_codex_deploy.json")
+# 官方原稿库：首次部署前把 AGENTS.md / config.toml 原样存一份，只读留存，
+# 供指令页展示「官方原始」并在还原时作对照（还原只动指针行，不回拷整份）。
+ORIGIN_LIB = os.path.join(TARGETS, "codex", "originals")
+ORIGIN_FILES = ("AGENTS.md", "config.toml")
 
 
 def home_of(seat="codex"):
@@ -68,6 +69,55 @@ def _write_bytes(p, src):
     shutil.copyfile(src, p)
 
 
+def origin_path(name):
+    """官方原稿的留存位置（只读，不参与部署）。"""
+    return os.path.join(ORIGIN_LIB, name)
+
+
+def save_originals(home=None, seed=True):
+    """把接管前的 AGENTS.md / config.toml 原样存进 targets/codex/originals/。
+
+    每份只存一次（`*_once` 语义）：已经存过就不覆盖，这样多次 apply 不会把
+    后来被改过的现场当成"官方原稿"。返回本次新存的文件名列表。
+
+    seed=True：原稿目录为空时，先用同目录的 `*.seed` 打底（出厂参考稿，
+    在项目里入库），首次部署后再被实盘内容覆盖 —— 用户从没部署过也能在
+    指令页看到「官方原版」这两个文件。
+    """
+    home = home or home_of("codex")
+    saved = []
+    os.makedirs(ORIGIN_LIB, exist_ok=True)
+    for name in ORIGIN_FILES:
+        src = os.path.join(home, name)
+        dst = origin_path(name)
+        if os.path.isfile(dst):
+            continue
+        text = _read(src) if os.path.isfile(src) else ""
+        live_ok = bool(text) and not (
+            (name == "AGENTS.md" and BEGIN in text)
+            or (name == "config.toml" and "model_instructions_file" in text))
+        if live_ok:
+            _write_bytes(dst, src)
+            saved.append(name)
+        elif seed:
+            # 实盘不可用（不存在 / 已被我们改过）：用 seed 打底，但只写进
+            # 本次调用的「本次视图」，不落成 originals 里的正式原稿 ——
+            # 否则将来真正的原稿永远存不进来。
+            seed_p = dst + ".seed"
+            if os.path.isfile(seed_p):
+                # 返回值只用于日志，界面读的是正式原稿；正式原稿仍不存在
+                saved.append(name + ".seed")
+    return saved
+
+
+def origin_view(name):
+    """指令页要展示的「官方原版」：正式原稿优先，没有就用 seed 兜底。"""
+    for p in (origin_path(name), origin_path(name) + ".seed"):
+        if os.path.isfile(p):
+            return p
+    return ""
+
+
 def state():
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
@@ -86,9 +136,13 @@ def save_state(d):
 
 
 def pack_name():
-    """当前选中的指令源文件名（Argon.md / unlock.md …）。默认 Argon.md。"""
+    """当前选中的指令源文件名（Argon.md / unlock.md …）。默认 Argon.md。
+
+    用过就记住：state 里可能只剩 "pack": ""（还原把指令源也标成关了），
+    但用户点部署就是要部署 —— 这种「空字符串」按没记录处理，回到上次用过的那份。
+    """
     st = state()
-    name = st.get("pack") or ""
+    name = st.get("pack") or st.get("last_pack") or ""
     if name and os.path.isfile(os.path.join(INSTR_LIB, name)):
         return name
     cands = sorted(n for n in os.listdir(INSTR_LIB) if n.lower().endswith(".md")) \
@@ -116,7 +170,32 @@ def opts():
     }
 
 
-# ── 标记块（与 Astra 的 insertMarked / wipeMarked 同义）────────────────
+def _remember_pointer(home):
+    """部署前把 config.toml 里指针行的原值/位置记进状态表。
+
+    只记这一行，不存整份 config.toml —— 还原时把它换回去就够了。
+    没有指针行时记 `{}`（表示"原本就没有"），避免还原时误造一行。
+
+    只在"从未记录过"时写：换源 / 关闭指令这些后续部署会被记成新值，
+    那样还原就会把上一次部署的指针当成用户原稿。
+    """
+    st = state()
+    if st.get("toml_pointer") is not None:
+        return
+    cp = os.path.join(home, "config.toml")
+    if not os.path.isfile(cp):
+        return
+    lines = _read(cp).splitlines()
+    for i, ln in enumerate(lines):
+        if _ptr_line(ln):
+            st["toml_pointer"] = {"line": ln, "at": i}
+            save_state(st)
+            return
+    st["toml_pointer"] = {}
+    save_state(st)
+
+
+# ── 标记块（插入 / 剥离标记块）────────────────
 
 def insert_marked(previous, body):
     body = body if body.endswith("\n") else body + "\n"
@@ -138,12 +217,16 @@ def wipe_marked(text):
 
 
 def _bak_path(home, path):
-    """<home>/pojia-backups/<后三级路径>.bak —— Astra 的 bakName()。"""
+    """<home>/pojia-backups/<后三级路径>.bak 。"""
     parts = path.replace("\\", "/").split("/")[-3:]
     return os.path.join(home, "pojia-backups", "__".join(parts) + ".bak")
 
 
 def _snapshot(home, path):
+    """写入前留一份原样（每份只存一次，已存在不覆盖）。
+
+    幂等：同一路径反复部署只留最早那份，不会越积越多。
+    """
     bak = _bak_path(home, path)
     if os.path.isfile(bak) or not os.path.isfile(path):
         return ""
@@ -186,7 +269,14 @@ def _drop_stale_bak(home, path):
 
 
 def _backup_user(home, path):
-    """只在「盘上是用户自己的内容」时留底。"""
+    """写入前留底：只备份「用户自己的文件」，每份只存一次。
+
+    用户自己的文件 = AGENTS.md / config.toml 这类客户端原有文件。万一部署
+    逻辑出错把它们写坏，可以直接从 .bak 恢复。
+    我们自己写进去的文件（prompts/<源>.md、skills/<id>/SKILL.md）不备份：
+    它们本来就来自项目源件，丢了重新部署即可；存成 .bak 反而会让还原时
+    把注入内容当成"用户原稿"回拷回去。
+    """
     if _ours(path):
         _drop_stale_bak(home, path)
         return ""
@@ -237,24 +327,24 @@ def skill_on(sid):
     """某份 SKILL 当前是否应投放。
 
     · 叶子：看注入表（content/routes/leaves/<id>.md）；
-    · 父类目：看状态表里的 astra:skill/<id>（指令页父类目卡的开关）。
-    两处都缺省 = 投放。restore / enable_all 都靠这一个判据，避免两套口径。
+    · 父类目：默认投放，只有状态表里显式记了 codex:skill/<id> = false 才撤。
+    父类目没有同名叶子文件，不能拿"注入表缺键"当开关。
     """
     mod = _routes()
     leaf_p = os.path.join(mod.LEAVES_DIR, sid + ".md")
     if os.path.isfile(leaf_p):
         return _enabled_fn()(leaf_p)
-    return state().get("astra:skill/%s" % sid) is not False
+    return state().get("codex:skill/%s" % sid) is not False
 
 
 def _skill_items(all_items=False):
     """[(id, 文本)]：6 个父类目 + 80 片叶子。默认只回启用的那些。"""
     mod = _routes()
     out = []
+    # 父类目：6 份。它们没有同名叶子，不受注入表管；开关记在状态表
+    # （codex:skill/<id>），默认投放。
     for cat in mod.CAT_ORDER:
-        sid = mod.CATEGORIES[cat][3]
-        if all_items or skill_on(sid):
-            out.append((sid, mod.render_parent_skill(cat)))
+        out.append((mod.CATEGORIES[cat][3], mod.render_parent_skill(cat)))
     for leaf in mod.leaf_ids():
         p = os.path.join(mod.LEAVES_DIR, leaf + ".md")
         if not all_items and os.path.isfile(p) and not _enabled_fn()(p):
@@ -312,7 +402,18 @@ def sync_snapshot(live_path):
     if not live_path or not os.path.isfile(live_path):
         return ""
     text = _read(live_path).replace(chr(13) + chr(10), chr(10))
-    body = text.replace(BEGIN + chr(10), "").replace(END + chr(10), "").strip(chr(10))
+    # 部署位文件是 BEGIN/END 包着正文；旧版还会在正文末尾多一个换行。
+    # 按行剥：首行 BEGIN、末行 END 各去掉一次，不碰正文自身的内容。
+    lines = text.split(chr(10))
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if lines and lines[0].strip() == BEGIN:
+        lines.pop(0)
+    if lines and lines[-1].strip() == END:
+        lines.pop()
+    body = chr(10).join(lines).strip(chr(10))
     if not body:
         return ""
     new = body + chr(10)
@@ -322,14 +423,33 @@ def sync_snapshot(live_path):
     return SNAPSHOT
 
 def _upsert_toml(src, key, value):
+    """只替换 `key = ...` 那一行；没有就追加。
+
+    匹配用精确键名：整行去掉空白后以 `key` 开头、后面紧跟 `=` —— 之前用
+    startswith(key) 会把 `model_instructions_file_extra` 之类的键误替换。
+
+    幂等优先：指针行已存在且值正确、也没有重复行时，**原样返回**，
+    不重写文件。客户端（或别的工具）改写 config.toml 时常常顺手删注释、
+    调整空行，我们没必要每次部署都去"纠正"一遍 —— 多写一次就多一次
+    和运行中的 Codex 抢文件的机会。
+    """
     line = '%s = "%s"' % (key, value)
+    hits = [ln for ln in src.splitlines()
+            if ln.strip().startswith(key) and ln.strip()[len(key):].lstrip().startswith("=")]
+    if len(hits) == 1 and hits[0].strip() == line:
+        return src
+
     out, hit = [], False
     for ln in src.splitlines():
-        if ln.lstrip().startswith(key) and "=" in ln:
-            out.append(line)
-            hit = True
-        else:
-            out.append(ln)
+        s = ln.strip()
+        if s.startswith(key) and s[len(key):].lstrip().startswith("="):
+            if not hit:
+                out.append(line)
+                hit = True
+            continue                     # 重复的旧键行直接丢掉
+        if s == "# POJIA managed":
+            continue                     # 旧注释行不再堆积
+        out.append(ln)
     if not hit:
         if out and out[-1].strip():
             out.append("")
@@ -343,6 +463,7 @@ def set_pack(name=None, on=True):
     st = state()
     if on and name:
         st["pack"] = name
+        st["last_pack"] = name          # 还原后部署还要用得回来
         st["pack_on"] = True
     else:
         st["pack_on"] = False
@@ -368,7 +489,7 @@ def enable_all():
     st.update({"pack": st.get("pack") or pack_name(), "pack_on": True,
                "agents": True, "config": True, "skills": True})
     for k in list(st):
-        if k.startswith("astra:skill/") and st[k] is False:
+        if k.startswith("codex:skill/") and st[k] is False:
             st[k] = True
     save_state(st)
     try:
@@ -395,6 +516,13 @@ def deploy(seat="codex", opts_override=None, dry=False):
         r["note"] = "四路全关 —— 已按备份还原成官方原版"
         return r
     backups, written, skipped = [], [], []
+    if not dry:
+        # 首次部署前留一份官方原稿（只存一次，供指令页展示与还原对照）
+        saved = save_originals(home)
+    # 记住部署前 config.toml 里指针那一行的原值：还原时只需把这一行换回去，
+    # 其它配置（model / provider / MCP）一直留在原文件里，不存整份备份。
+    if not dry:
+        _remember_pointer(home)
     for w in spec["writes"]:
         p = w["path"]
         if w["kind"] == "toml":
@@ -403,10 +531,10 @@ def deploy(seat="codex", opts_override=None, dry=False):
             if dry:
                 skipped.append(p)
                 continue
-            b = _backup_user(home, p)
-            if b:
-                backups.append(b)
             if new != src:
+                b = _backup_user(home, p)
+                if b:
+                    backups.append(b)
                 _write(p, new)
                 written.append(p)
             else:
@@ -415,22 +543,17 @@ def deploy(seat="codex", opts_override=None, dry=False):
         if w["kind"] == "marked":
             old = _read(p)
             new = insert_marked(old, w["text"])
-            # 还原时只摘了标记块、没留备份：先存一份"无标记"的现状做基线，
-            # 下次部署把它写回去时还能回到用户自己的内容
-            bak0 = _bak_path(home, p)
-            if not os.path.isfile(bak0) and _read(p) == new and BEGIN not in old:
-                _write(bak0, old)
         else:
             new = w["text"]
         if dry:
             skipped.append(p)
             continue
-        b = _backup_user(home, p)
-        if b:
-            backups.append(b)
         if _read(p) == new:
             skipped.append(p)
             continue
+        b = _backup_user(home, p)
+        if b:
+            backups.append(b)
         _write(p, new)
         written.append(p)
     if not dry:
@@ -448,6 +571,9 @@ def deploy(seat="codex", opts_override=None, dry=False):
         o = spec["opts"]
         was_off = st.get("pack_on") is False and st.get("agents") is False \
             and st.get("config") is False and st.get("skills") is False
+        if o["pack"]:
+            # 记住这次用的来源：还原会把 pack 清空，下次部署要能选回同一份
+            st["last_pack"] = o["pack"]
         st.update({"pack": o["pack"], "pack_on": bool(o["pack"]),
                    "agents": o["agents"],
                    "config": o["config"], "skills": o["skills"],
@@ -459,7 +585,7 @@ def deploy(seat="codex", opts_override=None, dry=False):
             enable_all()
     return {"ok": True, "action": "deploy", "home": home, "pack": spec["pack"],
             "written": written, "backups": backups, "total": len(spec["writes"]),
-            "dry": dry}
+            "dry": dry, "originals": ([] if dry else saved)}
 
 
 def _prune(home, pack, o=None):
@@ -478,7 +604,7 @@ def _prune(home, pack, o=None):
         for fn in os.listdir(pdir):
             if fn.lower().endswith(".md") and fn != pack:
                 op = os.path.join(pdir, fn)
-                _snapshot(home, op)
+                # 部署位文件是我们自己写的，直接删；不备份自己写的东西
                 os.remove(op)
     except OSError:
         pass
@@ -488,7 +614,6 @@ def _prune(home, pack, o=None):
         if os.path.isfile(ap):
             cleaned, had = wipe_marked(_read(ap))
             if had:
-                _snapshot(home, ap)
                 if cleaned.strip():
                     _write(ap, cleaned + "\n")
                 else:
@@ -501,7 +626,6 @@ def _prune(home, pack, o=None):
         if os.path.isfile(cp):
             src = _read(cp)
             if "model_instructions_file" in src:
-                _snapshot(home, cp)
                 left = "\n".join(ln for ln in src.splitlines()
                                  if not ln.strip().startswith("model_instructions_file"))
                 _write(cp, left.rstrip("\n") + "\n")
@@ -520,7 +644,6 @@ def _prune(home, pack, o=None):
         for sid in mod.skill_dirs():
             sp = os.path.join(root, sid, "SKILL.md")
             if os.path.isfile(sp):
-                _backup_user(home, sp)
                 try:
                     os.remove(sp)
                     if not os.listdir(os.path.dirname(sp)):
@@ -528,13 +651,13 @@ def _prune(home, pack, o=None):
                 except OSError:
                     pass
         return
-    # 单项关掉的 SKILL：叶子看注入表，父类目看 astra:skill/<id>
-    for sid in mod.skill_dirs():
+    # 单项关掉的 SKILL：只有叶子受注入表管。父类目（6 份）永远投放，
+    # 它们是「类目入口」，关掉叶子就够细了。
+    for sid in mod.leaf_ids():
         if skill_on(sid):
             continue
         sp = os.path.join(root, sid, "SKILL.md")
         if os.path.isfile(sp):
-            _backup_user(home, sp)
             try:
                 os.remove(sp)
                 if not os.listdir(os.path.dirname(sp)):
@@ -595,6 +718,53 @@ def verify(seat="codex"):
             "done": sum(1 for c in checks if c["ok"])}
 
 
+def _ptr_line(ln, key="model_instructions_file"):
+    """这一行是不是 `key = ...`（允许前后空白）。"""
+    s = ln.strip()
+    return s.startswith(key) and s[len(key):].lstrip().startswith("=")
+
+
+def _restore_toml_pointer(home, path, key="model_instructions_file"):
+    """只还原指针那一行，不回拷整份 config.toml。
+
+    部署前那一行的原值记在状态表 `toml_pointer` 里；有就换回去，没有就摘掉。
+    部署后客户端自己改的其它配置（model / provider / MCP 段）原地保留。
+    清理部署时留下的 `# POJIA managed` 注释。返回是否有改动。
+    """
+    src = _read(path)
+    if not src:
+        return False
+    orig = (state().get("toml_pointer") or {}).get("line", "")
+    ins_at = (state().get("toml_pointer") or {}).get("at", None)
+    out, seen, changed = [], False, False
+    for ln in src.splitlines():
+        if _ptr_line(ln, key):
+            if not seen:
+                seen = True
+                if orig:
+                    out.append(orig)
+            changed = True
+            continue
+        out.append(ln)
+    # 指针行前面那条 "POJIA managed" 注释单独一行，连同紧邻空行一起收掉
+    cleaned = []
+    for ln in out:
+        if ln.strip() == "# POJIA managed":
+            changed = True
+            if cleaned and not cleaned[-1].strip():
+                cleaned.pop()
+            continue
+        cleaned.append(ln)
+    out = cleaned
+    if orig and not seen:
+        out.insert(min(ins_at if ins_at is not None else len(out), len(out)), orig)
+        changed = True
+    if not changed:
+        return False
+    _write(path, "\n".join(out).rstrip() + "\n")
+    return True
+
+
 def restore(seat="codex"):
     """还原成接管前的样子：先按备份回拷，没有备份就按标记块清理。
 
@@ -606,25 +776,20 @@ def restore(seat="codex"):
     restored, removed = [], []
     for w in spec["writes"]:
         p = w["path"]
-        bak = _usable_bak(home, p)
-        if bak:
-            _write_bytes(p, bak)
-            restored.append(p)
-            continue
-        if not os.path.isfile(p):
-            continue
+        # config.toml 特殊：只还原指针那一行（用户部署后
+        # 自己改的 model / provider / MCP 配置不能被整份回拷冲掉）。
+        # 例外：文件损坏（空 / 读不出来）时用备份兜底。
         if w["kind"] == "toml":
-            # 没备份的 config 不动内容，但要把我们写的指针摘掉
-            src = _read(p)
-            if "model_instructions_file" in src:
-                text = "\n".join(ln for ln in src.splitlines()
-                                 if not ln.strip().startswith("model_instructions_file"))
-                _write(p, text.rstrip("\n") + "\n")
+            bak = _usable_bak(home, p)
+            if bak and (not os.path.isfile(p) or not _read(p).strip()):
+                _write_bytes(p, bak)
+                restored.append(p)
+            elif os.path.isfile(p) and _restore_toml_pointer(home, p):
                 restored.append(p)
             continue
         if w["kind"] == "skill":
-            # 只在「盘上是我们写的那份」时才删；用户原有 SKILL 已在回拷分支处理
-            if not _ours(p):
+            # skill 只删我们投放的那一份，绝不做回拷
+            if not os.path.isfile(p) or not _ours(p):
                 continue
             try:
                 os.remove(p)
@@ -635,6 +800,8 @@ def restore(seat="codex"):
             except OSError:
                 pass
             continue
+        if not os.path.isfile(p):
+            continue
         if w["kind"] == "file":
             try:
                 os.remove(p)
@@ -643,8 +810,16 @@ def restore(seat="codex"):
                 pass
             continue
         if w["kind"] == "marked":
+            # 正常情况：剥掉标记块即可。若文件已损坏（被写空 / 标记块丢失），
+            # 用部署前留的 .bak 兜底，避免把用户整份 AGENTS.md 弄丢。
+            bak = _usable_bak(home, p)
             text = _read(p)
             cleaned, had = wipe_marked(text)
+            broken = not text.strip() or (not had and BEGIN not in text and bak)
+            if bak and broken:
+                _write_bytes(p, bak)
+                restored.append(p)
+                continue
             if had:
                 if cleaned:
                     _write(p, cleaned + "\n")
@@ -656,21 +831,16 @@ def restore(seat="codex"):
                         pass
                 restored.append(p)
 
-    # 兜底清理：prompts/ 里不属于官方原版的 md、skills/ 下我们投放过的目录
+    # 兜底清理：prompts/ 下投放过的指令文件全部删掉（都是我们写的）
     pdir = os.path.join(home, PROMPTS_DIR)
     if os.path.isdir(pdir):
         for fn in os.listdir(pdir):
             if not fn.lower().endswith(".md"):
                 continue
             op = os.path.join(pdir, fn)
-            bak = _usable_bak(home, op)
             try:
-                if bak:
-                    _write_bytes(op, bak)
-                    restored.append(op)
-                else:
-                    os.remove(op)
-                    removed.append(op)
+                os.remove(op)
+                removed.append(op)
             except OSError:
                 pass
     mod = _routes()
@@ -680,8 +850,8 @@ def restore(seat="codex"):
         sk = os.path.join(d, "SKILL.md")
         if not os.path.isdir(d):
             continue
-        # 部署前就存在、且不是我们自己写的 SKILL.md 已在备份回拷那一步还原过，不能再删
-        if _usable_bak(home, sk):
+        # 只删我们投放的；用户自己写的 SKILL.md 完整保留（不做回拷）
+        if os.path.isfile(sk) and not _ours(sk):
             continue
         try:
             shutil.rmtree(d)
@@ -691,6 +861,7 @@ def restore(seat="codex"):
 
     st = state()
     st.update({"pack_on": False, "agents": False, "config": False, "skills": False,
+               "toml_pointer": None,
                "restoredAt": time.strftime("%Y-%m-%d %H:%M:%S")})
     save_state(st)
 
@@ -708,7 +879,7 @@ def restore(seat="codex"):
             if sid in leaves:
                 table["content/routes/leaves/%s.md" % sid] = False
             else:
-                st["astra:skill/%s" % sid] = False   # 父类目开关在 Astra 状态表
+                st["codex:skill/%s" % sid] = False   # 父类目开关在部署状态表
         doc_inject.set_table(table)
         save_state(st)
     except Exception:
@@ -745,7 +916,15 @@ if __name__ == "__main__":
         res = verify()
     elif cmd == "restore":
         res = restore()
+    elif cmd == "save-originals":
+        res = {"ok": True, "action": "save-originals", "saved": save_originals(),
+               "dir": ORIGIN_LIB}
     elif cmd == "apply":
+        # 界面上的「部署」：即便刚还原过（四路全关），也要把开关拨回再写。
+        st = state()
+        if (st.get("pack_on") is False and st.get("agents") is False
+                and st.get("config") is False and st.get("skills") is False):
+            enable_all()
         res = deploy(dry=dry)
     elif cmd == "enable-all":
         res = enable_all()

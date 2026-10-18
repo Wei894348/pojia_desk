@@ -300,6 +300,41 @@ function createWindow() {
           "JSON.stringify(window.__pmDebug && window.__pmDebug())"));
         await sleep(900);          // 等一帧合成，否则截到的是分类栏出现前的画面
         await save('_shot_prompts.png');
+        // 总览弹窗：ChatGPT 的「部署了什么」四行人话
+        await mainWin.webContents.executeJavaScript(
+          "document.getElementById('btnPatchAll').click()");
+        await sleep(4000);
+        shots.push('patchsummary:' + await mainWin.webContents.executeJavaScript(`JSON.stringify({
+          target: document.getElementById('patchTarget').textContent,
+          metrics: [...document.querySelectorAll('#patchBody .pmetric')].map(m => ({
+            b: (m.querySelector('b') || {}).textContent || '',
+            s: (m.querySelector('span') || {}).textContent || '',
+          })),
+          groups: [...document.querySelectorAll('#patchBody .pgroup .ghead')].map(g => g.textContent),
+        })`));
+        await save('_shot_patch_summary.png');
+        await mainWin.webContents.executeJavaScript(
+          "document.getElementById('btnPatchClose').click()");
+        await sleep(600);
+        // 官方原版分类：两张只读卡（AGENTS.md / config.toml），开关必须禁用
+        await mainWin.webContents.executeJavaScript(`(() => {
+          const tabs = [...document.querySelectorAll('#pmCats .pmcat')];
+          const t = tabs.find(b => b.textContent.indexOf('官方原版') >= 0);
+          if (t) t.click();
+        })()`);
+        await sleep(1200);
+        const officialCard = await mainWin.webContents.executeJavaScript(`(() => {
+          const rows = [...document.querySelectorAll('#pmGrid .pmrow')];
+          return JSON.stringify(rows.map(r => ({
+            name: (r.querySelector('.pmcname') || {}).textContent,
+            tags: [...r.querySelectorAll('.pmtag')].map(t => t.textContent),
+            off: r.classList.contains('off-doc'),
+            switchDisabled: (r.querySelector('.pmswitch input') || {}).disabled,
+            editBtns: [...r.querySelectorAll('.iconbtn')].map(b => b.title),
+          })));
+        })()`);
+        shots.push('official:' + officialCard);
+        await save('_shot_official.png');
         // 日志行样式自检：时间戳 / 级别徽标 / 颜色分级都要在
         const logLook = await mainWin.webContents.executeJavaScript(`(() => {
           if (typeof logLine === 'function') {
@@ -704,6 +739,411 @@ function createWindow() {
       app.quit();
     });
   }
+  // ChatGPT 全功能实机点测：POJIA_CODEXTEST=1
+  // 全部通过真实 DOM 点击驱动（卡片滑块 / 指令页每行开关 / 工具栏按钮），
+  // 每步同时核对「页面显示」和「磁盘落点」两侧。
+  if (process.env.POJIA_CODEXTEST) {
+    mainWin.webContents.once('did-finish-load', async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const js = (s) => mainWin.webContents.executeJavaScript(s);
+      const save = async (name) => {
+        await mainWin.webContents.capturePage();
+        await sleep(160);
+        const img = await mainWin.webContents.capturePage();
+        fs.writeFileSync(path.join(ROOT, '状态', name), img.toPNG());
+      };
+      const R = { steps: [], notes: [], shots: [] };
+      const ok = (name, cond, extra) => {
+        R.steps.push({ name, ok: !!cond, extra: cond ? '' : (extra === undefined ? '' : extra) });
+      };
+      const note = (s) => R.notes.push(String(s));
+      const shot = async (n) => { await save(n); R.shots.push(n); };
+
+      // 页面侧状态一次读全（少踩 executeJavaScript 的往返时序）
+      const ui = () => js(`JSON.stringify((() => {
+        const card = [...document.querySelectorAll('.card')].find(c => c.dataset.key === 'codex');
+        const sl = card && card.querySelector('.slider');
+        const rows = [...document.querySelectorAll('#pmGrid .pmrow')];
+        const by = {};
+        for (const r of rows) by[r.dataset.id] = !r.classList.contains('off-doc');
+        return {
+          sliderOn: sl ? sl.classList.contains('on') : null,
+          sliderBusy: sl ? sl.classList.contains('busy') : null,
+          sliderState: (card && card.querySelector('.sliderstate') || {}).textContent || '',
+          cardStatus: (card && card.querySelector('.cstatus') || {}).textContent || '',
+          stats: card ? [...card.querySelectorAll('.cstat')].map(n => n.textContent.replace(/\\s+/g, ' ').trim()) : [],
+          rows, n: rows.length,
+          on: rows.filter(r => !r.classList.contains('off-doc')).length,
+          docOn: by,
+          cats: [...document.querySelectorAll('#pmCats .pmcat')].map(b => b.dataset.cat),
+          logTail: (document.getElementById('logBody') || {}).textContent || '',
+          status: (document.getElementById('sbMsg') || {}).textContent || '',
+        };
+      })())`);
+
+      // 我们投放的技能 id（80 叶子 + 6 父类目）。只用来数「我们写的」SKILL.md，
+      // 用户自己的技能目录（ctf-* / mature-fiction 等）不计入。
+      const ROUTE_IDS = (() => {
+        try {
+          const o = spawnSync(py.exe, (py.prefix || []).concat([
+            '-c',
+            'import sys;sys.path.insert(0,"engine");import codex_deploy as a;' +
+            'print("\\n".join(sorted(a._routes().skill_dirs())))',
+          ]), { cwd: ROOT, env: cleanEnv(), encoding: 'utf8', windowsHide: true });
+          return String(o.stdout || '').split(/\s+/).filter(Boolean);
+        } catch (_) { return []; }
+      })();
+
+      // 磁盘落点。skills 只数「我们投放的」—— 用户自己的技能目录不能算进来。
+      const disk = () => {
+        const home = path.join(process.env.USERPROFILE || process.env.HOME, '.codex');
+        const out = { home, prompts: [], agents: false, cfgPtr: '', cfg: false,
+                      ours: 0, bak: 0 };
+        try { out.prompts = fs.readdirSync(path.join(home, 'prompts')).sort(); } catch (_) {}
+        let ag = '';
+        try { ag = fs.readFileSync(path.join(home, 'AGENTS.md'), 'utf8'); } catch (_) {}
+        out.agents = ag.includes('POJIA-CODEX:BEGIN');
+        let cf = '';
+        try { cf = fs.readFileSync(path.join(home, 'config.toml'), 'utf8'); } catch (_) {}
+        out.cfg = /^\s*model_instructions_file\s*=/m.test(cf);
+        const m = cf.match(/^\s*model_instructions_file\s*=\s*"(.*)"/m);
+        out.cfgPtr = m ? m[1] : '';
+        try {
+          const sd = path.join(home, 'skills');
+          out.ours = ROUTE_IDS.length
+            ? ROUTE_IDS.filter((id) => fs.existsSync(path.join(sd, id, 'SKILL.md'))).length
+            : -1;
+        } catch (_) { out.ours = -1; }
+        try { out.bak = fs.readdirSync(path.join(home, 'pojia-backups')).length; } catch (_) {}
+        return out;
+      };
+
+      const deployView = async () => {
+        await js("document.querySelector('.snav[data-view=deploy]').click()");
+        await sleep(900);
+      };
+      // 等界面空闲：滑块 busy / 工具栏禁用 / 底部状态都是「有活儿在跑」的信号。
+      // 上一轮操作没结束时点下去会被 toast 吞掉，测试就会误判成功能坏了。
+      const waitIdle = async (ms) => {
+        const t0 = Date.now();
+        while (Date.now() - t0 < (ms || 45000)) {
+          const busy = JSON.parse(await js(`JSON.stringify(!!(
+            document.querySelector('.slider.busy')
+            || document.querySelector('#btnDeploy:disabled')
+            || document.querySelector('#btnTest:disabled')))`));
+          if (!busy) {
+            // 再等一次状态刷新回来，卡片与磁盘对齐
+            await sleep(700);
+            const busy2 = JSON.parse(await js(`JSON.stringify(!!(
+              document.querySelector('.slider.busy')
+              || document.querySelector('#btnDeploy:disabled')))`));
+            if (!busy2) return true;
+          }
+          await sleep(400);
+        }
+        return false;
+      };
+      const clickSlider = async () => {
+        await deployView();
+        await waitIdle();
+        await js("document.querySelector('.card[data-key=codex] .slider').click()");
+      };
+      const gotoDocs = async () => {
+        await js("document.querySelector('.snav[data-view=prompts]').click()");
+        await sleep(2600);
+        await js("document.querySelector('#pmAgents .pmagent[data-agent=codex]').click()");
+        await sleep(3200);
+      };
+      const pickCat = async (cat) => {
+        await js(`(() => { const b = document.querySelector('#pmCats .pmcat[data-cat="${cat}"]');
+                   if (b) b.click(); })()`);
+        await sleep(700);
+      };
+      const clickRow = async (id) => js(`(() => {
+        const r = document.querySelector('#pmGrid .pmrow[data-id="${id}"]');
+        if (!r) return 'missing';
+        const inp = r.querySelector('.pmswitch input');
+        if (!inp) return 'no-input';
+        inp.click();
+        return 'clicked';
+      })()`);
+      const rowName = async (id) => js(`(() => {
+        const r = document.querySelector('#pmGrid .pmrow[data-id="${id}"]');
+        return r ? (r.querySelector('.pmcname') || {}).textContent || '' : '';
+      })()`);
+
+      try {
+        await sleep(9000);
+        let s = JSON.parse(await ui());
+        let d = disk();
+        R.initial = { ui: s, disk: d };
+        const startedDeployed = s.sliderOn === true;
+        note('初始滑块=' + s.sliderOn + ' 状态=' + s.sliderState +
+             ' prompts=' + d.prompts.join(',') + ' 我们的技能=' + d.ours);
+        ok('卡片渲染出 ChatGPT', s.sliderOn !== null, s.cardStatus);
+        await shot('_ct_1_initial.png');
+
+        // 从干净态起跑
+        if (s.sliderOn) {
+          await clickSlider();
+          await waitIdle(60000);
+          await sleep(1200);
+          s = JSON.parse(await ui());
+          ok('初始为部署态 → 拨左还原', s.sliderOn === false, s.sliderState);
+          await shot('_ct_2_pre_reverted.png');
+        }
+        d = disk();
+        ok('还原态：prompts 空', d.prompts.length === 0, d.prompts);
+        ok('还原态：AGENTS 无标记块', d.agents === false);
+        ok('还原态：config 无我们的指针', !/prompts[\\/]/.test(d.cfgPtr), d.cfgPtr);
+        ok('还原态：我们的技能 0 份', d.ours === 0, d.ours);
+
+        // 指令页：分类与全关
+        await gotoDocs();
+        s = JSON.parse(await ui());
+        R.docsIdle = { cats: s.cats, on: s.on };
+        ok('指令页分类齐四类', s.cats.join(',') === 'instruction,agents,config,skill', s.cats);
+        ok('还原后指令页无启用项', s.on === 0, s.on);
+        await shot('_ct_3_docs_idle.png');
+
+        // 部署：卡片滑块拨右，视觉先行
+        await clickSlider();
+        await sleep(350);
+        s = JSON.parse(await ui());
+        ok('拨右后滑块立刻 on 且 busy', s.sliderOn === true && s.sliderBusy === true,
+          s.sliderOn + '/' + s.sliderBusy);
+        await waitIdle(60000);
+        await sleep(1200);
+        s = JSON.parse(await ui());
+        d = disk();
+        const pack = d.prompts[0] || '';
+        R.afterDeploy = { ui: s, disk: d };
+        ok('部署完成：滑块 on', s.sliderOn === true, s.sliderState);
+        ok('部署完成：卡片状态已部署', /已部署/.test(s.cardStatus), s.cardStatus);
+        ok('部署完成：prompts 恰一份', d.prompts.length === 1, d.prompts);
+        ok('部署完成：AGENTS 标记块', d.agents === true);
+        ok('部署完成：config 指针指向 prompts/', /prompts[\\/]/.test(d.cfgPtr), d.cfgPtr);
+        ok('部署完成：我们的技能 86 份', d.ours === 86, d.ours);
+        ok('部署完成：备份 2 份', d.bak === 2, d.bak);
+        ok('卡片指标里列出指令源', s.stats.some((t) => t.includes(pack)), s.stats.join(' | '));
+        await shot('_ct_4_deployed.png');
+
+        // 指令页：部署后的开关状态。
+        // 注意 pickCat 只切分类、不重新扫盘 —— 读开关前先刷新一次，别拿旧 DOM 判定。
+        await gotoDocs();
+        await pickCat('instruction');
+        const instrIds = JSON.parse(await js(`JSON.stringify([...document.querySelectorAll('#pmGrid .pmrow')]
+          .map(r => r.dataset.id))`));
+        s = JSON.parse(await ui());
+        ok('指令页指令源 3 条', instrIds.length === 3, instrIds);
+        ok('当前源显示注入中', s.docOn['targets/codex/instructions/' + pack] === true, pack);
+        ok('另外两份未部署',
+          instrIds.filter((id) => id !== 'targets/codex/instructions/' + pack)
+            .every((id) => s.docOn[id] === false), instrIds);
+        await pickCat('agents');
+        s = JSON.parse(await ui());
+        ok('AGENTS 开关开', s.docOn['codex:agents'] === true);
+        await pickCat('config');
+        s = JSON.parse(await ui());
+        ok('config 开关开', s.docOn['codex:config'] === true);
+        await pickCat('skill');
+        s = JSON.parse(await ui());
+        ok('技能分类 86 条且全启用', s.n === 86 && s.on === 86, s.n + '/' + s.on);
+        await shot('_ct_5_docs_deployed.png');
+
+        // 换源：点另一份指令源的开关
+        await pickCat('instruction');
+        const other = instrIds.find((id) => id !== 'targets/codex/instructions/' + pack);
+        const otherName = other ? (other.split('/').pop() || '') : '';
+        ok('存在第二份指令源', !!other, instrIds);
+        if (other) {
+          ok('换源点击已派发', (await clickRow(other)) === 'clicked');
+          await sleep(22000);
+          s = JSON.parse(await ui());
+          d = disk();
+          ok('换源后 prompts 只剩新源', d.prompts.length === 1 && d.prompts[0] === otherName, d.prompts);
+          ok('换源后 config 指向新源',
+            d.cfgPtr.indexOf(otherName.replace(/\.md$/, '')) >= 0, d.cfgPtr);
+          ok('旧源落回未注入', s.docOn['targets/codex/instructions/' + pack] === false);
+          ok('新源显示注入中', s.docOn[other] === true);
+          R.switchedTo = other;
+          await shot('_ct_6_source_switched.png');
+        }
+
+        // 单路关闭：AGENTS。开关本身只记状态，落点在「下一次部署」时撤 ——
+        // 这里点一下工具栏部署，验证联动是否真的生效。
+        const onlyCodex = async () => {
+          await deployView();
+          await js(`(() => {
+            const card = document.querySelector('.card[data-key=codex]');
+            document.querySelectorAll('.card input[type=checkbox]').forEach((c) => {
+              const want = c === (card && card.querySelector('input[type=checkbox]'));
+              if (c.checked !== want) c.click();
+            });
+          })()`);
+          await sleep(500);
+        };
+        await pickCat('agents');
+        ok('点 AGENTS 开关', (await clickRow('codex:agents')) === 'clicked');
+        await sleep(4000);
+        d = disk();
+        ok('关闭 AGENTS 后开关显示关闭',
+          JSON.parse(await ui()).docOn['codex:agents'] === false);
+        ok('关闭 AGENTS 后盘上暂未变（下次部署才撤）', d.agents === true);
+        await onlyCodex();
+        await js("document.getElementById('btnDeploy').click()");
+        await sleep(14000);
+        d = disk();
+        ok('部署后 AGENTS 标记块撤下', d.agents === false);
+        ok('关闭 AGENTS 不影响 prompts', d.prompts.length === 1, d.prompts);
+        ok('关闭 AGENTS 不影响技能', d.ours === 86, d.ours);
+        await shot('_ct_7_agents_off.png');
+        await gotoDocs();
+        await pickCat('agents');
+        await clickRow('codex:agents');
+        await sleep(3000);
+        await onlyCodex();
+        await js("document.getElementById('btnDeploy').click()");
+        await sleep(14000);
+        d = disk();
+        ok('重新开启并部署后标记块写回', d.agents === true);
+        await shot('_ct_8_agents_on.png');
+
+        // 关闭当前指令源：三处来源一起撤，技能不动
+        if (R.switchedTo) {
+          await pickCat('instruction');
+          ok('点当前源开关', (await clickRow(R.switchedTo)) === 'clicked');
+          await sleep(20000);
+          d = disk();
+          s = JSON.parse(await ui());
+          ok('关闭当前源后 prompts 清空', d.prompts.length === 0, d.prompts);
+          ok('关闭当前源后 AGENTS 标记块摘掉', d.agents === false);
+          ok('关闭当前源后 config 指针摘掉', !/prompts[\\/]/.test(d.cfgPtr), d.cfgPtr);
+          ok('关闭当前源后技能仍在', d.ours === 86, d.ours);
+          ok('指令页无启用指令源',
+            instrIds.every((id) => s.docOn[id] === false),
+            instrIds.map((id) => [id, s.docOn[id]]));
+          await shot('_ct_9_source_off.png');
+          // 恢复部署态：把这份源再拨回来（否则后面的滑块本来就在左边，
+          // 再点一下是「部署」而不是「还原」，整段断言都会错位）
+          ok('恢复指令源点击已派发', (await clickRow(R.switchedTo)) === 'clicked');
+          await waitIdle(60000);
+          await sleep(1200);
+          d = disk();
+          ok('恢复指令源后重新部署', d.prompts.length === 1 && d.agents &&
+            /prompts[\\/]/.test(d.cfgPtr),
+            JSON.stringify({ p: d.prompts, a: d.agents, c: d.cfgPtr }));
+        }
+
+        // 页面「验证」按钮（只勾 ChatGPT）
+        await deployView();
+        await js(`(() => {
+          const card = document.querySelector('.card[data-key=codex]');
+          document.querySelectorAll('.card input[type=checkbox]').forEach((c) => {
+            const want = c === (card && card.querySelector('input[type=checkbox]'));
+            if (c.checked !== want) c.click();
+          });
+        })()`);
+        await sleep(600);
+        await js("document.getElementById('btnTest').click()");
+        await sleep(8000);
+        s = JSON.parse(await ui());
+        R.verifyLog = s.logTail.slice(-1200);
+        ok('点「验证」后有体检输出', /体检|验证/.test(s.logTail), s.logTail.slice(-200));
+        ok('验证结果里出现 ChatGPT', /ChatGPT/.test(s.logTail), s.logTail.slice(-300));
+        await shot('_ct_10_verify.png');
+
+        // 总览弹窗
+        await js("document.getElementById('btnPatchAll').click()");
+        await sleep(5000);
+        const pv = JSON.parse(await js(`JSON.stringify((() => {
+          const m = document.getElementById('patchModal');
+          return { on: m.classList.contains('on'),
+                   rows: m.querySelectorAll('tr.prow').length,
+                   text: (document.getElementById('patchBody') || m).textContent.slice(0, 3000) };
+        })())`));
+        R.patchOverview = { on: pv.on, rows: pv.rows };
+        ok('总览弹窗打开', pv.on === true);
+        ok('总览列出落点', pv.rows >= 89, pv.rows);
+        ok('总览里有 AGENTS.md / config.toml', /AGENTS\.md/.test(pv.text) && /config\.toml/.test(pv.text));
+        await shot('_ct_11_patch_overview.png');
+        await js("document.getElementById('btnPatchClose').click()");
+        await sleep(800);
+
+        // 拨左还原
+        await clickSlider();
+        await sleep(40);
+        s = JSON.parse(await ui());
+        ok('拨左后滑块立刻 off 且 busy', s.sliderOn === false && s.sliderBusy === true,
+          s.sliderOn + '/' + s.sliderBusy);
+        R.revertAt = Date.now();
+        await shot('_ct_12a_reverting.png');
+        await waitIdle(60000);
+        await sleep(1200);
+        R.revertMs = Date.now() - R.revertAt;
+        s = JSON.parse(await ui());
+        d = disk();
+        R.afterRevert = { ui: s, disk: d };
+        ok('还原完成：滑块 off', s.sliderOn === false, s.sliderState);
+        ok('还原完成：prompts 清空', d.prompts.length === 0, d.prompts);
+        ok('还原完成：AGENTS 无标记块', d.agents === false);
+        ok('还原完成：config 无我们的指针', !/prompts[\\/]/.test(d.cfgPtr), d.cfgPtr);
+        ok('还原完成：我们的技能全部撤下', d.ours === 0,
+          'ours=' + d.ours + ' 用时 ' + R.revertMs + 'ms');
+        ok('还原后备份仍保留', d.bak === 2, d.bak);
+        await shot('_ct_12_reverted.png');
+
+        await gotoDocs();
+        s = JSON.parse(await ui());
+        ok('还原后指令页全部未启用', s.on === 0, s.on);
+        await shot('_ct_13_docs_after_revert.png');
+
+        // 二次部署：落点回来，备份不增长（幂等）
+        const bakBefore = d.bak;
+        await clickSlider();
+        await waitIdle(60000);
+        await sleep(1200);
+        d = disk();
+        ok('二次部署成功', d.prompts.length === 1 && d.agents && /prompts[\\/]/.test(d.cfgPtr),
+          JSON.stringify({ p: d.prompts, a: d.agents, c: d.cfgPtr }));
+        ok('二次部署备份不增长', d.bak === bakBefore, bakBefore + ' → ' + d.bak);
+        ok('二次部署技能 86 份', d.ours === 86, d.ours);
+        await shot('_ct_14_redeploy.png');
+
+        if (!startedDeployed) {
+          await clickSlider();
+          await waitIdle(60000);
+          await sleep(1200);
+          d = disk();
+          ok('收尾还原：落点清空', d.prompts.length === 0 && !d.agents && d.ours === 0,
+            JSON.stringify({ p: d.prompts, a: d.agents, o: d.ours }));
+        } else {
+          // 进场时是部署态：收尾把当时那份指令源重新部署回去，别把现场留在还原态。
+          // （还原会把注入表逐条写成 false，留着会让后续单测读到"全部停用"。）
+          const back = (R.initial.disk.prompts[0] || '');
+          if (back) {
+            await clickSlider();
+            await waitIdle(60000);
+            await sleep(1200);
+            d = disk();
+            ok('收尾恢复初始部署态', d.prompts.length === 1 && d.agents,
+              JSON.stringify({ p: d.prompts, a: d.agents, want: back }));
+          }
+        }
+      } catch (e) {
+        R.error = String(e && e.stack || e).slice(0, 900);
+      }
+      R.summary = {
+        total: R.steps.length,
+        pass: R.steps.filter((x) => x.ok).length,
+        fail: R.steps.filter((x) => !x.ok).length,
+      };
+      fs.writeFileSync(path.join(ROOT, '状态', '_gui_codex.json'),
+        JSON.stringify(R, null, 1), 'utf8');
+      app.quit();
+    });
+  }
+
 
   // 端到端自检：POJIA_SELFTEST=1 时自动点一遍「预演」和「验证」，再把结果截图落盘
   if (process.env.POJIA_SELFTEST) {

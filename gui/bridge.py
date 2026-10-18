@@ -300,13 +300,13 @@ def cmd_tx(argv):
 # ─────────────────────────── 状态 ───────────────────────────
 
 def card_codex():
-    """ChatGPT（Codex）席位：照 gpt6-Astra 的四落点 —— 指令文件 / AGENTS.md / config.toml / SKILL.md。"""
+    """ChatGPT（Codex）席位：四个落点 —— 指令文件 / AGENTS.md / config.toml / SKILL.md。"""
     m = mod()
     t = m.TARGETS["codex"]()
     import importlib.util
-    ad_p = os.path.join(ENGINE, "astra_deploy.py")
-    if os.path.isfile(ad_p):
-        spec = importlib.util.spec_from_file_location("astra_deploy", ad_p)
+    dep_p = os.path.join(ENGINE, "codex_deploy.py")
+    if os.path.isfile(dep_p):
+        spec = importlib.util.spec_from_file_location("codex_deploy", dep_p)
         ad = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(ad)
     else:
@@ -319,7 +319,7 @@ def card_codex():
                 "files": [], "metrics": []}
     if ad is None:
         return {"key": "codex", "label": t.label, "home": home, "state": "broken",
-                "rows": [{"level": "err", "path": ad_p, "note": "engine/astra_deploy.py 缺失"}],
+                "rows": [{"level": "err", "path": dep_p, "note": "engine/codex_deploy.py 缺失"}],
                 "files": [], "metrics": []}
 
     v = ad.verify("codex")
@@ -346,20 +346,77 @@ def card_codex():
                  "note": "当前选中的指令源：%s" % pk})
     st = ad.state()
     if st.get("deployedAt"):
-        rows.append({"level": "dim", "path": os.path.join(ROOT, "状态", "_astra_codex.json"),
+        rows.append({"level": "dim", "path": os.path.join(ROOT, "状态", "_codex_deploy.json"),
                      "note": "上次部署：%s" % st["deployedAt"]})
 
     done, total = v["done"], v["total"]
     # 指令这一路关掉 = 没注入指令文件 → 卡片报 none（AGENTS.md / SKILL 各有自己的开关）
     pack_on = ad.state().get("pack_on") is not False
     state = ("current" if v["ok"] else ("stale" if done else "none")) if pack_on else "none"
-    metrics = [{"name": "指令源", "value": pk, "ok": bool(v["pack"])},
-               {"name": "落点", "value": "%d / %d" % (done, total), "ok": v["ok"]},
+    # 指标里不放「落点 89/89」这种黑话，直接列出四路各自是什么
+    ag_on = st.get("agents") is not False
+    cfg_on = st.get("config") is not False
+    ag_ok = any(c["role"] == "AGENTS.md 标记块" and c["ok"] for c in v["checks"])
+    cfg_ok = any(c["role"] == "config.toml 指针" and c["ok"] for c in v["checks"])
+    # 指令文件这一路是否就位：prompts/<pack> 存在且带标记
+    instr_ok = bool(v["pack"]) and any(
+        c["role"] == "指令文件" and c["ok"] for c in v["checks"])
+    if pack_on and not instr_ok:
+        state = "stale"          # 四路开着但部署位丢了 —— 别谎报 current
+    metrics = [{"name": "指令源",
+                "value": (pk if instr_ok else (pk + "（缺失）" if v["pack"] else pk)),
+                "ok": instr_ok},
+               {"name": "AGENTS.md", "value": "已写入" if ag_ok else ("已关闭" if not ag_on else "未写入"),
+                "ok": ag_ok},
+               {"name": "config.toml", "value": "已写入" if cfg_ok else ("已关闭" if not cfg_on else "未写入"),
+                "ok": cfg_ok},
                {"name": "SKILL.md", "value": "%d / %d" % (s_ok, len(skills)), "ok": s_ok == len(skills)},
                {"name": "备份", "value": "有" if os.path.isdir(os.path.join(home, "pojia-backups")) else "无",
                 "ok": os.path.isdir(os.path.join(home, "pojia-backups"))}]
+    # ── 部署了什么：给总览弹窗用的人话摘要 ─────────────────────────
+    # 四路拆开说：注入了哪份指令源、AGENTS.md 的标记块、config.toml 的指针、
+    # 以及技能（列前几个 + 总数）。状态取 verify 的逐项结论。
+    def _chk(role):
+        return next((c for c in v["checks"] if c["role"] == role), None)
+
+    instr_c = _chk("指令文件")
+    agents_c = _chk("AGENTS.md 标记块")
+    config_c = _chk("config.toml 指针")
+    skill_ids = sorted({os.path.basename(os.path.dirname(c["path"]))
+                        for c in skills if c.get("path")})
+    skill_ok_ids = sorted({os.path.basename(os.path.dirname(c["path"]))
+                           for c in skills if c.get("ok")})
+    deploy = {
+        "pack": v["pack"] or "",
+        "packOn": bool(pack_on),
+        "instruction": {
+            "on": bool(instr_c and instr_c["ok"]),
+            "src": os.path.join(ROOT, "targets", "codex", "instructions", v["pack"] or ""),
+            "dst": (instr_c or {}).get("path", ""),
+            "bytes": (instr_c or {}).get("bytes", 0),
+        },
+        "agents": {
+            "on": bool(agents_c and agents_c["ok"]),
+            "path": (agents_c or {}).get("path", ""),
+            "bytes": (agents_c or {}).get("bytes", 0),
+        },
+        "config": {
+            "on": bool(config_c and config_c["ok"]),
+            "path": (config_c or {}).get("path", ""),
+            "value": "model_instructions_file = \"%s\"" % (
+                os.path.join(home, "prompts", v["pack"] or "").replace("\\", "/")),
+        },
+        "skills": {
+            "on": bool(skill_ids),
+            "ok": len(skill_ok_ids),
+            "total": len(skill_ids),
+            "dir": os.path.join(home, "skills"),
+            "ids": skill_ids,
+            "samples": skill_ok_ids[:8],
+        },
+    }
     return {"key": "codex", "label": t.label, "home": home, "state": state,
-            "rows": rows, "files": files, "metrics": metrics}
+            "rows": rows, "files": files, "metrics": metrics, "deploy": deploy}
 
 
 def card_zcode():
@@ -1153,6 +1210,8 @@ DEPLOY_MANIFEST = {
 
 def _augment_deploy_files(card):
     """把 DEPLOY_MANIFEST 里该席位的部署文件补进 files[]（已列过的不重复）。"""
+    if card.get("deploy"):
+        return          # 席位自己给了人话摘要（如 codex），不再按清单补空行
     manifest = DEPLOY_MANIFEST.get(card.get("key")) or []
     home = card.get("home") or ""
     if not manifest or not home or not os.path.isdir(home):
@@ -1272,6 +1331,60 @@ def cmd_patches(target):
         return {"ok": False, "error": "%s 检测出错：%s" % (target, e)}
     groups = []
     seen = {"inject": [], "patch": [], "output": [], "skill": [], "preset": [], "other": []}
+
+    # codex 有结构化摘要（card["deploy"]）：按四路直接出「部署了什么」，
+    # 比按角色猜分组准 —— 每条都写清楚源件 → 落点、或投放数量。
+    dep0 = card.get("deploy") or {}
+    if dep0 and target == "codex":
+        ins, ag, cfg, sk = (dep0.get("instruction") or {}, dep0.get("agents") or {},
+                            dep0.get("config") or {}, dep0.get("skills") or {})
+        seen["inject"].append({
+            "path": ins.get("dst") or "", "role": "指令文件（注入正文）",
+            "size": ins.get("bytes"), "isdir": False, "sha": "",
+            "hit": ["源件 " + os.path.basename(ins.get("src") or "")] if ins.get("on") else [],
+            "miss": [] if ins.get("on") else ["未注入"],
+            "state": "current" if ins.get("on") else "missing",
+        })
+        seen["inject"].append({
+            "path": ag.get("path") or "", "role": "AGENTS.md 标记块",
+            "size": ag.get("bytes"), "isdir": False, "sha": "",
+            "hit": ["POJIA-CODEX 标记块"] if ag.get("on") else [],
+            "miss": [] if ag.get("on") else ["标记块未写入"],
+            "state": "current" if ag.get("on") else "missing",
+        })
+        seen["inject"].append({
+            "path": cfg.get("path") or "", "role": "config.toml 指针",
+            "size": None, "isdir": False, "sha": "",
+            "hit": [cfg.get("value") or ""] if cfg.get("on") else [],
+            "miss": [] if cfg.get("on") else ["指针未写入"],
+            "state": "current" if cfg.get("on") else "missing",
+        })
+        ok_ids = set(sk.get("samples") or [])
+        all_ok = bool(sk.get("total")) and sk.get("ok") == sk.get("total")
+        for sid in (sk.get("ids") or []):
+            ok = all_ok or (sid in ok_ids)
+            sp = os.path.join(sk.get("dir") or "", sid, "SKILL.md")
+            size = None
+            try:
+                if os.path.isfile(sp):
+                    size = os.path.getsize(sp)
+            except OSError:
+                size = None
+            seen["skill"].append({
+                "path": sp,
+                "role": "路由技能", "size": size, "isdir": False, "sha": "",
+                "hit": ["已投放"] if ok else [], "miss": [] if ok else ["未投放"],
+                "state": "current" if ok else "missing",
+            })
+        for gid, gname, _roles in _PATCH_GROUPS:
+            rows = seen.pop(gid)
+            if rows:
+                rows.sort(key=lambda r: r["path"])
+                groups.append({"id": gid, "name": gname, "rows": rows})
+        return {"ok": True, "target": target, "label": card.get("label") or target,
+                "state": card.get("state"), "deploy": dep0, "groups": groups,
+                "files": sum(len(g["rows"]) for g in groups)}
+
     for f in card.get("files", []):
         role = f.get("role") or ""
         grp = "other"
@@ -1547,13 +1660,18 @@ def cmd_instr_disable(seat):
 
 
 def cmd_instr_toggle(seat, name, on):
-    """指令文件的滑块（Astra 逻辑）：拨右 = 部署这一份，四落点一起写；拨左 = 还原。
+    """指令文件的滑块：拨右 = 部署这一份，四落点一起写；拨左 = 还原。
 
-    「注入中」看 Astra 状态表里记的 pack —— 换一份时旧的自然落回未部署。
+    「注入中」看部署状态表里记的 pack —— 换一份时旧的自然落回未部署。
     """
-    ad = _astra()
+    ad = _codex_deploy()
     if ad is None:
-        return {"ok": False, "error": "engine/astra_deploy.py 缺失"}
+        return {"ok": False, "error": "engine/codex_deploy.py 缺失"}
+    # 只接受指令库里的裸文件名：挡住 ../ 越界与绝对路径
+    if not name or name != os.path.basename(name) or not name.lower().endswith(".md"):
+        return {"ok": False, "error": "指令源文件名无效：%s" % name}
+    if not os.path.isfile(os.path.join(ad.INSTR_LIB, name)):
+        return {"ok": False, "error": "指令库里没有这份文件：%s" % name}
     if not on:
         # 关掉「当前这份指令源」：撤部署文件 + 摘 AGENTS 标记块 + 摘 config 指针。
         # 三者的内容都来自这份源件，只删部署位文件会留下一份孤儿指针/标记块。
@@ -1752,7 +1870,7 @@ SEAT_MANAGED_SRC = {
     "workbuddy": {"workbuddy_user_md.md": "USER.md 托管块内容源（Windows 约束）"},
 }
 
-# 分类顺序即界面 tab 顺序 —— 就是 Astra 部署会写的那四类文件，不再拆人格 / 席位源 / 路由叶子。
+# 分类顺序即界面 tab 顺序 —— 就是部署会写的四类文件，不再拆人格 / 席位源 / 路由叶子。
 #   instruction 指令文件（部署到 prompts/<名字>.md）
 #   agents      AGENTS.md 标记块
 #   config      config.toml 指针
@@ -1766,7 +1884,7 @@ DOC_CATS = [
     ("custom", "自定义"),
 ]
 _DOC_CAT_ORDER = {cid: i for i, (cid, _n) in enumerate(DOC_CATS)}
-# 旧分类只给其它 Agent 兜底用（ChatGPT 页已经换成 Astra 的四类）。
+# 旧分类只给其它 Agent 兜底用（ChatGPT 页已经换成四类）。
 _LEGACY_CAT_NAME = {
     "persona": "人格", "seat": "席位源", "unlock": "破甲", "managed": "托管文档",
     "route": "路由", "leaf": "路由叶子",
@@ -1982,13 +2100,13 @@ def _read_text(p):
         return f.read().decode("utf-8-sig", "replace")
 
 
-def _astra():
-    """加载 engine/astra_deploy.py（ChatGPT 席位的四落点部署）。"""
+def _codex_deploy():
+    """加载 engine/codex_deploy.py（ChatGPT 席位的四落点部署）。"""
     import importlib.util
-    p = os.path.join(ENGINE, "astra_deploy.py")
+    p = os.path.join(ENGINE, "codex_deploy.py")
     if not os.path.isfile(p):
         return None
-    spec = importlib.util.spec_from_file_location("astra_deploy", p)
+    spec = importlib.util.spec_from_file_location("codex_deploy", p)
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
     return m
@@ -1997,12 +2115,12 @@ def _astra():
 def _doc_scan(agent):
     """扫出某个 Agent 名下的文档。
 
-    ChatGPT 页照 gpt6-Astra 的四个落点分四类：指令文件 / AGENTS.md / config.toml / SKILL.md。
+    ChatGPT 页按四个落点分四类：指令文件 / AGENTS.md / config.toml / SKILL.md。
     其它 Agent 本次不改，仍走旧扫描。
     """
     label, dirname = _DOC_AGENT_MAP.get(agent, (agent, agent))
     if agent == "codex":
-        return _doc_scan_astra(label)
+        return _doc_scan_codex(label)
     out = []
     seen = set()
 
@@ -2072,11 +2190,11 @@ def _label(tag, tone=""):
     return {"tag": tag, "tone": tone or ""}
 
 
-def _doc_scan_astra(label):
-    """ChatGPT 页 = Astra 会写的四类落点，不再拆人格 / 席位源 / 路由叶子。"""
-    ad = _astra()
+def _doc_scan_codex(label):
+    """ChatGPT 页 = 部署会写的四类落点，不再拆人格 / 席位源 / 路由叶子。"""
+    ad = _codex_deploy()
     if ad is None:
-        return {"ok": False, "error": "engine/astra_deploy.py 缺失"}
+        return {"ok": False, "error": "engine/codex_deploy.py 缺失"}
     home = ad.home_of("codex")
     state = _doc_state()
     notes = _doc_notes()
@@ -2089,6 +2207,7 @@ def _doc_scan_astra(label):
     lib = os.path.join(ROOT, "targets", "codex", "instructions")
     active = ((st.get("pack") or ad.pack_name())
               if st.get("pack_on") is not False else "")
+
     for fn in (sorted(os.listdir(lib)) if os.path.isdir(lib) else []):
         if not fn.lower().endswith(".md"):
             continue
@@ -2105,10 +2224,10 @@ def _doc_scan_astra(label):
             "memo": notes.get(_doc_rel(p), ""),
         })
 
-    # 2/3) AGENTS.md 标记块 + config.toml 指针：开关存 Astra 状态表
+    # 2/3) AGENTS.md 标记块 + config.toml 指针：开关存部署状态表
     for cat, name, role, nid, flag in (
-            ("agents", "AGENTS.md", "AGENTS.md 标记块", "astra:agents", "agents"),
-            ("config", "config.toml", "config.toml 指针", "astra:config", "config")):
+            ("agents", "AGENTS.md", "AGENTS.md 标记块", "codex:agents", "agents"),
+            ("config", "config.toml", "config.toml 指针", "codex:config", "config")):
         hit = next((c for c in v["checks"] if c["role"] == role), None)
         p = (hit or {}).get("path") or os.path.join(home, name)
         nbytes = 0
@@ -2141,8 +2260,8 @@ def _doc_scan_astra(label):
         routes = None
     for sid, body in items:
         p = os.path.join(home, "skills", sid, "SKILL.md")
-        nid = _astra_skill_key(sid)
-        on = _astra_skill_on(sid)
+        nid = _codex_skill_key(sid)
+        on = _codex_skill_on(sid)
         c = by_path.get(p) or {}
         leaf_p = os.path.join(ROOT, "content", "routes", "leaves", sid + ".md")
         meta = routes.leaf_meta(sid) if (routes and os.path.isfile(leaf_p)) else None
@@ -2188,7 +2307,7 @@ def _doc_finish(out, agent, label, home):
     notes = _doc_notes()
 
     def memo_of(it):
-        """按 id 找备注；再按旧键兜底（astra:skill/<id> ↔ leaves/<id>.md）。"""
+        """按 id 找备注；再按旧键兜底（codex:skill/<id> ↔ leaves/<id>.md）。"""
         iid = it.get("id") or ""
         if not iid:
             return ""
@@ -2197,10 +2316,10 @@ def _doc_finish(out, agent, label, home):
         sid = ""
         if iid.startswith("content/routes/leaves/"):
             sid = os.path.basename(iid)[:-3]
-        elif iid.startswith("astra:skill/"):
-            sid = iid[len("astra:skill/"):]
+        elif iid.startswith("codex:skill/"):
+            sid = iid[len("codex:skill/"):]
         if sid:
-            for alt in ("astra:skill/" + sid, "content/routes/leaves/%s.md" % sid):
+            for alt in ("codex:skill/" + sid, "content/routes/leaves/%s.md" % sid):
                 if notes.get(alt):
                     return notes[alt]
         return ""
@@ -2246,13 +2365,13 @@ def _inside(p):
 def cmd_doc_memo(rel, memo):
     """给某份文档写一句备注（存 状态/_doc_notes.json，不碰源件）。
 
-    Astra 页的 id（astra:agents / astra:config / astra:skill/<id>）直接用 id 当键 ——
+    ChatGPT 页的 id（codex:agents / codex:config / codex:skill/<id>）直接用 id 当键 ——
     备注是本地元数据，不需要文件落在项目里；本机落点（~/.codex）同理。
     """
     text = (memo or "").strip()
     if len(text) > 200:
         return {"ok": False, "error": "备注最多 200 字"}
-    if rel.startswith("astra:"):
+    if rel.startswith("codex:"):
         key = rel
     else:
         p = os.path.abspath(os.path.join(ROOT, _doc_base(rel)))
@@ -2275,35 +2394,35 @@ def cmd_doc_memo(rel, memo):
     return {"ok": True, "id": key, "memo": text}
 
 
-def _astra_skill_key(sid):
-    """SKILL 开关的键：有同名叶子就用叶子路径，否则用 astra:skill/<id>。"""
+def _codex_skill_key(sid):
+    """SKILL 开关的键：有同名叶子就用叶子路径，否则用 codex:skill/<id>。"""
     leaf = "content/routes/leaves/%s.md" % sid
     if os.path.isfile(os.path.join(ROOT, leaf)):
         return leaf
-    return "astra:skill/%s" % sid
+    return "codex:skill/%s" % sid
 
 
-def _astra_toggle(doc_id, want):
-    """Astra 页的三类开关：AGENTS.md / config.toml / SKILL.md。
+def _codex_toggle(doc_id, want):
+    """ChatGPT 页的三类开关：AGENTS.md / config.toml / SKILL.md。
 
-    AGENTS.md 与 config.toml 记在 状态/_astra_codex.json（astra_deploy 的 opts）；
+    AGENTS.md 与 config.toml 记在 状态/_codex_deploy.json（codex_deploy 的 opts）；
     SKILL.md 复用通用开关表（叶子键 content/routes/leaves/<id>.md）。
     """
-    ad = _astra()
+    ad = _codex_deploy()
     if ad is None:
-        return {"ok": False, "error": "engine/astra_deploy.py 缺失"}
-    if doc_id in ("astra:agents", "astra:config"):
-        flag = "agents" if doc_id == "astra:agents" else "config"
+        return {"ok": False, "error": "engine/codex_deploy.py 缺失"}
+    if doc_id in ("codex:agents", "codex:config"):
+        flag = "agents" if doc_id == "codex:agents" else "config"
         st = ad.state()
         st[flag] = bool(want)
         ad.save_state(st)
         return {"ok": True, "id": doc_id, "enabled": bool(want),
                 "note": "已%s · 下次部署时%s写这一路" % (
                     "启用" if want else "停用", "" if want else "不")}
-    if doc_id.startswith("astra:skill/"):
-        sid = doc_id[len("astra:skill/"):]
-        key = _astra_skill_key(sid)
-        if key.startswith("astra:"):
+    if doc_id.startswith("codex:skill/"):
+        sid = doc_id[len("codex:skill/"):]
+        key = _codex_skill_key(sid)
+        if key.startswith("codex:"):
             st = ad.state()
             st[key] = bool(want)
             ad.save_state(st)
@@ -2321,10 +2440,10 @@ def _astra_toggle(doc_id, want):
             "note": ("已启用 · 下次部署会重新投放" if want else "已停用 · 下次部署会撤下这一份 skill")}
 
 
-def _astra_skill_on(sid):
-    ad = _astra()
-    key = _astra_skill_key(sid)
-    if key.startswith("astra:"):
+def _codex_skill_on(sid):
+    ad = _codex_deploy()
+    key = _codex_skill_key(sid)
+    if key.startswith("codex:"):
         st = ad.state() if ad else {}
         return st.get(key) is not False
     return _doc_enabled(os.path.join(ROOT, key))
@@ -2336,15 +2455,15 @@ def cmd_doc_toggle(rel):
     关闭只是把这份文档从"合成清单"里摘掉，源文件一个字节不改 ——
     生成脚本、引擎按路径找源件的地方都不会对不上。改完实时生效于下一次部署。
     """
-    if rel.startswith("astra:"):
-        if rel in ("astra:agents", "astra:config"):
-            ad = _astra()
+    if rel.startswith("codex:"):
+        if rel in ("codex:agents", "codex:config"):
+            ad = _codex_deploy()
             st = ad.state() if ad else {}
-            flag = "agents" if rel == "astra:agents" else "config"
-            return _astra_toggle(rel, st.get(flag) is False)
-        if rel.startswith("astra:skill/"):
-            sid = rel[len("astra:skill/"):]
-            return _astra_toggle(rel, not _astra_skill_on(sid))
+            flag = "agents" if rel == "codex:agents" else "config"
+            return _codex_toggle(rel, st.get(flag) is False)
+        if rel.startswith("codex:skill/"):
+            sid = rel[len("codex:skill/"):]
+            return _codex_toggle(rel, not _codex_skill_on(sid))
         return {"ok": False, "error": "未知开关：%s" % rel}
     p = os.path.abspath(os.path.join(ROOT, _doc_base(rel)))
     if not _doc_allowed(p):
@@ -2380,18 +2499,18 @@ def cmd_doc_toggle_many(items, on):
     for it in items:
         rel = (it or {}).get("id") if isinstance(it, dict) else it
         want = bool((it or {}).get("on", on)) if isinstance(it, dict) else bool(on)
-        if isinstance(rel, str) and rel.startswith("astra:"):
-            if rel.startswith("astra:skill/"):
-                rel = _astra_skill_key(rel[len("astra:skill/"):])
-                if not rel.startswith("astra:"):
-                    # 折成叶子路径后走通用表，别再按 astra: 处理
+        if isinstance(rel, str) and rel.startswith("codex:"):
+            if rel.startswith("codex:skill/"):
+                rel = _codex_skill_key(rel[len("codex:skill/"):])
+                if not rel.startswith("codex:"):
+                    # 折成叶子路径后走通用表，别再按 codex: 处理
                     p2 = os.path.abspath(os.path.join(ROOT, rel))
                     ok2 = _doc_set_enabled(rel, want) if _doc_allowed(p2) else False
                     (done if ok2 else failed).append(
                         {"id": rel, "enabled": want} if ok2
                         else {"id": rel, "error": "写盘失败"})
                     continue
-            r = _astra_toggle(rel, want)
+            r = _codex_toggle(rel, want)
             (done if r.get("ok") else failed).append(
                 {"id": rel, "enabled": want} if r.get("ok")
                 else {"id": rel, "error": r.get("error") or "失败"})
@@ -2495,41 +2614,41 @@ def _doc_scan_all():
             "offCount": sum(1 for it in out if not it["enabled"])}
 
 
-def _astra_doc_keywords(doc_id):
-    """Astra 页文档的命中关键词（编辑页顶部要看得见，方便照着改）。"""
+def _codex_deploy_doc_keywords(doc_id):
+    """ChatGPT 页文档的命中关键词（编辑页顶部要看得见，方便照着改）。"""
     routes = _routes_mod()
-    if doc_id.startswith("astra:skill/"):
-        sid = doc_id[len("astra:skill/"):]
+    if doc_id.startswith("codex:skill/"):
+        sid = doc_id[len("codex:skill/"):]
         parent = next((k for k, v in routes.CATEGORIES.items() if v[3] == sid), "")
         return routes.CATEGORIES[parent][2] if parent else ""
-    if doc_id == "astra:agents":
+    if doc_id == "codex:agents":
         return "本机 AGENTS.md 标签块（部署时写入）"
-    if doc_id == "astra:config":
+    if doc_id == "codex:config":
         return "model_instructions_file · model_provider · model"
     return ""
 
 
-def _astra_edit_path(doc_id):
-    """Astra 页落点的编辑目标：AGENTS.md / config.toml 就是本机实盘文件。"""
-    ad = _astra()
+def _codex_edit_path(doc_id):
+    """ChatGPT 页落点的编辑目标：AGENTS.md / config.toml 就是本机实盘文件。"""
+    ad = _codex_deploy()
     home = ad.home_of("codex") if ad else os.path.join(os.path.expanduser("~"), ".codex")
-    if doc_id == "astra:agents":
+    if doc_id == "codex:agents":
         return os.path.join(home, "AGENTS.md"), "本机 AGENTS.md（部署时同步标记块）"
-    if doc_id == "astra:config":
+    if doc_id == "codex:config":
         return os.path.join(home, "config.toml"), "本机 config.toml（部署时改写 model_instructions_file）"
-    if doc_id.startswith("astra:skill/"):
-        sid = doc_id[len("astra:skill/"):]
-        key = _astra_skill_key(sid)
-        if key.startswith("astra:"):
+    if doc_id.startswith("codex:skill/"):
+        sid = doc_id[len("codex:skill/"):]
+        key = _codex_skill_key(sid)
+        if key.startswith("codex:"):
             return "", "父类目内容由 content/routes/ 生成"
         return os.path.join(ROOT, key), "SKILL.md 正文源（部署时投放到 ~/.codex/skills/）"
     return "", ""
 
 
 def cmd_doc_read(rel):
-    """整文件读出（编辑用）。Astra 页的 id 折到项目里的源件。"""
-    path, note = (_astra_edit_path(rel) if rel.startswith("astra:") else ("", ""))
-    if rel.startswith("astra:"):
+    """整文件读出（编辑用）。ChatGPT 页的 id 折到项目里的源件。"""
+    path, note = (_codex_edit_path(rel) if rel.startswith("codex:") else ("", ""))
+    if rel.startswith("codex:"):
         if not path or not os.path.isfile(path):
             return {"ok": False, "error": note or "这份不可编辑"}
         try:
@@ -2540,7 +2659,7 @@ def cmd_doc_read(rel):
         return {"ok": True, "id": rel, "path": path, "content": content,
                 "size": os.path.getsize(path), "editable": True,
                 "enabled": True, "generated": False, "live": True, "hint": note,
-                "keywords": _astra_doc_keywords(rel)}
+                "keywords": _codex_deploy_doc_keywords(rel)}
     p = os.path.abspath(os.path.join(ROOT, rel))
     if not _doc_allowed(p):
         p = os.path.abspath(os.path.join(ROOT, _doc_base(rel)))
@@ -2592,8 +2711,8 @@ def _write_outside(doc_id, path, content):
 
 def cmd_doc_write(rel, content):
     """写回 md（停用的 .md.off 也能写）。先备份原内容到 状态/editor-backup。"""
-    if rel.startswith("astra:"):
-        path, note = _astra_edit_path(rel)
+    if rel.startswith("codex:"):
+        path, note = _codex_edit_path(rel)
         if not path or not os.path.isfile(path):
             return {"ok": False, "error": note or "这份不可编辑"}
         if not _inside(path):
@@ -2852,10 +2971,10 @@ def _test_impl(targets):
         add("dim", "  体量：%d 字符" % len(m.ROUTE_SECTION))
 
     if "codex" in targets:
-        ad = _astra()
+        ad = _codex_deploy()
         if ad is None:
             ok = False
-            add("err", "  [FAIL] engine/astra_deploy.py 缺失")
+            add("err", "  [FAIL] engine/codex_deploy.py 缺失")
         else:
             v = ad.verify("codex")
             add("info", "【ChatGPT】%s" % v["home"])
@@ -3019,7 +3138,7 @@ def _clean_env():
 def _pump(cmd, tag, label):
     """跑一条命令并把输出转成 NDJSON 行事件。返回退出码。
 
-    astra_deploy.py 只吐一段 JSON（没有逐行日志），这里把它翻译成人话，
+    codex_deploy.py 只吐一段 JSON（没有逐行日志），这里把它翻译成人话，
     让「指令提示页开关 → 部署」链路在日志里看得见。
     """
     try:
@@ -3030,25 +3149,25 @@ def _pump(cmd, tag, label):
         emit({"type": "line", "target": tag, "level": "err", "text": "启动失败：%s" % e})
         return 1
     assert p.stdout is not None
-    astra = tag == "codex" and any("astra_deploy.py" in str(c) for c in cmd)
+    is_codex = tag == "codex" and any("codex_deploy.py" in str(c) for c in cmd)
     buf = []
     for raw in p.stdout:
         ln, level = classify(raw)
         if not ln.strip():
             continue
-        if astra:
+        if is_codex:
             buf.append(ln)                 # JSON 原文不进日志，下面翻译成人话
         else:
             emit({"type": "line", "target": tag, "level": level, "text": spice(ln)})
     p.wait()
-    if astra:
-        for text, level in _astra_lines(buf):
+    if is_codex:
+        for text, level in _codex_deploy_lines(buf):
             emit({"type": "line", "target": tag, "level": level, "text": text})
     return p.returncode or 0
 
 
-def _astra_lines(lines):
-    """把 astra_deploy 的 JSON 结果拆成日志行：谁写了、谁撤了、当前是哪个源。"""
+def _codex_deploy_lines(lines):
+    """把部署结果折成几行「做了什么、结果怎样」，不逐条刷 89 个路径。"""
     blob = "\n".join(lines).strip()
     try:
         d = json.loads(blob)
@@ -3059,19 +3178,54 @@ def _astra_lines(lines):
     out = []
     act = d.get("action") or ""
     if d.get("dry"):
-        out.append(("[预演] 不写盘：" + (d.get("note") or "检查四路落点"), "dim"))
+        out.append(("[预演] 不写盘 · 检查四路落点", "dim"))
         return out
+
+    written = d.get("written") or []
+    removed = d.get("removed") or []
     pack = d.get("pack") or ""
+    home = d.get("home") or ""
+
+    def kb(p):
+        try:
+            return "%d 字节" % os.path.getsize(p)
+        except OSError:
+            return "—"
+
+    def short(p):
+        return p.replace(home + os.sep, "~/.codex/").replace("\\", "/")
+
+    instr = [p for p in written if (os.sep + "prompts" + os.sep) in p]
+    agents = [p for p in written if p.replace("\\", "/").endswith("/AGENTS.md")]
+    cfg = [p for p in written if p.replace("\\", "/").endswith("/config.toml")]
+    skills = [p for p in written if (os.sep + "skills" + os.sep) in p]
+
     if act == "deploy":
-        out.append(("指令源：" + (pack or "（无 —— 按官方原版处理）"), "ok" if pack else "warn"))
+        out.append(("指令源：" + (pack or "（无 —— 按官方原版处理）"),
+                    "ok" if pack else "warn"))
+        if instr:
+            out.append(("写入指令文件 %s（%s）" % (short(instr[0]), kb(instr[0])), "ok"))
+        if agents:
+            out.append(("修改 AGENTS.md：插入标记块（%s）" % kb(agents[0]), "ok"))
+        if cfg:
+            out.append(("修改 config.toml：model_instructions_file → prompts/%s" % pack, "ok"))
+        if skills:
+            out.append(("投放技能 %d 份 SKILL.md → %s" % (len(skills), short(os.path.dirname(skills[0]))), "ok"))
+        if not written and not removed:
+            out.append(("四路已是最新，本次无需改动", "dim"))
     elif act == "restore":
-        out.append(("已还原成官方原版：四路落点全部撤回", "ok"))
-    for p in (d.get("written") or []):
-        out.append(("  写入 " + p, "ok"))
-    for p in (d.get("removed") or []):
-        out.append(("  撤下 " + p, "dim"))
-    if act == "deploy" and not d.get("written") and not d.get("removed"):
-        out.append(("  四路落点都已是最新，本次无需改动", "dim"))
+        out.append(("还原完成：撤回指令文件、AGENTS 标记块、config 指针与投放的技能", "ok"))
+        for p in removed:
+            if (os.sep + "skills" + os.sep) in p:
+                continue
+            out.append(("  撤下 " + short(p), "dim"))
+        n_skill = sum(1 for p in removed if (os.sep + "skills" + os.sep) in p)
+        if n_skill:
+            out.append(("  撤下技能 %d 份" % n_skill, "dim"))
+
+    for p in removed:
+        if act != "restore":
+            out.append(("  撤下 " + short(p), "dim"))
     if d.get("note"):
         out.append((d["note"], "ok"))
     return out
@@ -3133,12 +3287,12 @@ def cmd_run(action, targets, flags=None):
     for k in targets:
         emit({"type": "step", "target": k, "action": label})
         if k == "codex":
-            # ChatGPT 席位走 Astra 那套四落点部署（指令文件 / AGENTS.md / config.toml / SKILL.md）
-            cmd = [sys.executable, os.path.join(ENGINE, "astra_deploy.py")]
+            # ChatGPT 席位走四落点部署（指令文件 / AGENTS.md / config.toml / SKILL.md）
+            cmd = [sys.executable, os.path.join(ENGINE, "codex_deploy.py")]
             if argv_action == "apply":
                 # 滑块拨右 = 部署。用户刚点过「还原」的话，先把还原时置 false 的
                 # 四路开关拨回来；否则四路全关又会被 deploy() 判成「回官方原版」。
-                ad = _astra()
+                ad = _codex_deploy()
                 st = ad.state() if ad else {}
                 if (st.get("pack_on") is False and st.get("agents") is False
                         and st.get("config") is False and st.get("skills") is False):

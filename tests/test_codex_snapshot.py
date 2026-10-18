@@ -207,7 +207,7 @@ class LiveSnapshotTests(unittest.TestCase):
         live = os.path.normpath(os.path.join(os.path.dirname(cfg), mm.group(1)))
         if not os.path.isfile(live):
             self.skipTest("实盘指令文件不存在")
-        # Astra 部署位带 BEGIN/END 包装行，快照只记注入正文 —— 比之前先剥包装
+        # 部署位带 BEGIN/END 包装行，快照只记注入正文 —— 比之前先剥包装
         def norm(path):
             with open(path, "rb") as f:
                 raw = f.read().decode("utf-8", "replace")

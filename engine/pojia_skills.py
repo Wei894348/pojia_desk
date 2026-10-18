@@ -124,23 +124,26 @@ def plan(seat: str, home: str = "") -> list:
     return out
 
 
+def _load_doc_inject():
+    """加载 doc_inject（脚本目录不一定在 sys.path，别裸 import）。"""
+    if "doc_inject" in sys.modules:
+        return sys.modules["doc_inject"]
+    here = os.path.dirname(os.path.abspath(__file__))
+    spec = importlib.util.spec_from_file_location(
+        "doc_inject", os.path.join(here, "doc_inject.py"))
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["doc_inject"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def _leaf_on(name):
     """叶子 / 类目的注入开关（状态/_doc_inject.json，键 = content/routes/leaves/<id>.md）。"""
     p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                      "content", "routes", "leaves", name + ".md")
     if not os.path.isfile(p):
         return True                      # 父类目没有同名叶子文件：不受开关约束
-    try:
-        from doc_inject import enabled
-    except ImportError:
-        import importlib.util
-        here = os.path.dirname(os.path.abspath(__file__))
-        spec = importlib.util.spec_from_file_location(
-            "doc_inject", os.path.join(here, "doc_inject.py"))
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        enabled = mod.enabled
-    return enabled(p)
+    return _load_doc_inject().enabled(p)
 
 
 def install(seat: str, write_fn, home: str = "", make_dirs: bool = True,

@@ -30,3 +30,8 @@ targets/codex/切换创作通道.py
 # 本地虚拟环境 与 GUI 的解释器缓存（各机器不同，不入库）
 .venv/
 gui/.python-path
+
+# 首次部署时从用户机器抓下来的官方原稿（含本机路径/凭证），只留 seed 模板
+targets/codex/originals/*.md
+targets/codex/originals/*.toml
+targets/codex/originals/*.bak

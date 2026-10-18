@@ -19,6 +19,7 @@
 全程在临时目录里跑，不碰真实目标。
 """
 import importlib.util
+import json
 import os
 
 # 席位独立源会让单测读到仓库里的 content/seats/ —— 测试一律走共享管线
@@ -57,6 +58,12 @@ class SkillsBase(unittest.TestCase):
         p2 = mock.patch.object(self.m, "say", lambda *a, **k: None)
         p2.start()
         self.addCleanup(p2.stop)
+        # 注入开关表是全局状态文件：跑过界面测试后它可能是「全停用」，
+        # 这组测试要的是「全部投放」的基线。换成空表（缺键 = 注入），跑完还原。
+        self._doc_inject = self.S._load_doc_inject()
+        self._table0 = json.loads(json.dumps(self._doc_inject._table()))
+        self._doc_inject.set_table({})
+        self.addCleanup(self._doc_inject.set_table, self._table0)
 
 
 class WritePortTests(SkillsBase):
