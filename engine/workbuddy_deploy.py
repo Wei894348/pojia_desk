@@ -356,14 +356,18 @@ def enable_all():
 
 
 def _doc_inject():
-    if "doc_inject" in sys.modules:
-        return sys.modules["doc_inject"]
+    """加载 doc_inject；sys.modules 里的半成品模块要重新加载（见 codex_deploy 同名函数）。"""
+    m = sys.modules.get("doc_inject")
+    if m is not None and all(hasattr(m, a) for a in ("enabled", "_table", "set_table", "rel")):
+        return m
     import importlib.util
     p = os.path.join(HERE, "doc_inject.py")
     spec = importlib.util.spec_from_file_location("doc_inject", p)
     m = importlib.util.module_from_spec(spec)
     sys.modules["doc_inject"] = m
     spec.loader.exec_module(m)
+    if not hasattr(m, "enabled"):                     # pragma: no cover
+        raise RuntimeError("engine/doc_inject.py 加载异常：缺少 enabled()")
     return m
 
 

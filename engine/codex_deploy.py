@@ -312,15 +312,14 @@ def _routes():
 
 
 def _enabled_fn():
-    try:
-        import doc_inject
-        return doc_inject.enabled
-    except ImportError:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("doc_inject", os.path.join(HERE, "doc_inject.py"))
-        di = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(di)
-        return di.enabled
+    """doc_inject.enabled。
+
+    这里以前写的是「import doc_inject 成功就直接取 .enabled」—— 但 sys.modules 里
+    这个名字可能已经被别人塞进一个**半成品**模块（加载中 / 加载失败留下的空壳），
+    那样拿到的模块没有 enabled，报 `module 'doc_inject' has no attribute 'enabled'`。
+    统一走 _doc_inject()：它按文件路径显式加载并做完整性校验。
+    """
+    return _doc_inject().enabled
 
 
 def skill_on(sid):
@@ -471,15 +470,24 @@ def set_pack(name=None, on=True):
 
 
 def _doc_inject():
-    """加载 doc_inject（engine/ 不一定在 sys.path 里，别用裸 import）。"""
-    if "doc_inject" in sys.modules:
-        return sys.modules["doc_inject"]
+    """加载 doc_inject（engine/ 不一定在 sys.path 里，别用裸 import）。
+
+    sys.modules 里那份可能是**半成品**（加载失败留下的空壳 / 别的模块塞进来的
+    同名对象），必须校验它真的有 `enabled` 与 `_table`，否则就按路径重新加载。
+    之前没校验，直接 `import doc_inject` 后取 `.enabled`，报过
+    `module 'doc_inject' has no attribute 'enabled'`。
+    """
+    m = sys.modules.get("doc_inject")
+    if m is not None and all(hasattr(m, a) for a in ("enabled", "_table", "set_table", "rel")):
+        return m
     import importlib.util
     p = os.path.join(HERE, "doc_inject.py")
     spec = importlib.util.spec_from_file_location("doc_inject", p)
     m = importlib.util.module_from_spec(spec)
     sys.modules["doc_inject"] = m
     spec.loader.exec_module(m)
+    if not hasattr(m, "enabled"):                     # pragma: no cover
+        raise RuntimeError("engine/doc_inject.py 加载异常：缺少 enabled()")
     return m
 
 
@@ -588,6 +596,10 @@ def deploy(seat="codex", opts_override=None, dry=False):
             "dry": dry, "originals": ([] if dry else saved)}
 
 
+# 旧版 _prune 里直接 `import doc_inject`，可能拿到 sys.modules 里的半成品模块
+# （见 _enabled_fn 的说明）。统一走 _doc_inject()。
+
+
 def _prune(home, pack, o=None):
     """部署后清理：prompts/ 只留当前这份；关掉的落点从盘上撤下。
 
@@ -629,14 +641,6 @@ def _prune(home, pack, o=None):
                 left = "\n".join(ln for ln in src.splitlines()
                                  if not ln.strip().startswith("model_instructions_file"))
                 _write(cp, left.rstrip("\n") + "\n")
-    try:
-        from doc_inject import enabled as _en
-    except ImportError:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("doc_inject", os.path.join(HERE, "doc_inject.py"))
-        di = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(di)
-        _en = di.enabled
     root = os.path.join(home, "skills")
     mod = _routes()
     # skills 整路关掉：我们投放过的目录全撤（用户自建的不在 skill_dirs 里）
@@ -868,7 +872,7 @@ def restore(seat="codex"):
     # 指令页联动：停用 = 该文档不再注入。往注入表里逐条写 false，
     # 而不是清空整表（清空等于"缺键 = 注入"，会把刚关掉的又全打开）。
     try:
-        import doc_inject
+        doc_inject = _doc_inject()
         table = doc_inject._table()
         for name in sorted(os.listdir(INSTR_LIB)) if os.path.isdir(INSTR_LIB) else []:
             if name.lower().endswith(".md"):

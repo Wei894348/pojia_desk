@@ -125,15 +125,23 @@ def plan(seat: str, home: str = "") -> list:
 
 
 def _load_doc_inject():
-    """加载 doc_inject（脚本目录不一定在 sys.path，别裸 import）。"""
-    if "doc_inject" in sys.modules:
-        return sys.modules["doc_inject"]
+    """加载 doc_inject（脚本目录不一定在 sys.path，别裸 import）。
+
+    sys.modules 里同名模块可能是半成品（加载失败留下的空壳），必须校验
+    真的有 enabled() 再用 —— 否则调用方会拿到
+    `module 'doc_inject' has no attribute 'enabled'`。
+    """
+    m = sys.modules.get("doc_inject")
+    if m is not None and hasattr(m, "enabled"):
+        return m
     here = os.path.dirname(os.path.abspath(__file__))
     spec = importlib.util.spec_from_file_location(
         "doc_inject", os.path.join(here, "doc_inject.py"))
     mod = importlib.util.module_from_spec(spec)
     sys.modules["doc_inject"] = mod
     spec.loader.exec_module(mod)
+    if not hasattr(mod, "enabled"):                   # pragma: no cover
+        raise RuntimeError("engine/doc_inject.py 加载异常：缺少 enabled()")
     return mod
 
 
