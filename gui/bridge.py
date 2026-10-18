@@ -2378,7 +2378,7 @@ def _doc_scan_seat(agent, label):
         "name": "%s · %s" % (os.path.basename(spec["primary"]),
                              "整份写入" if spec["primary_kind"] == "file" else "标记块"),
         "cat": "config",
-        "title": "指令文件落点",
+        "title": "",
         "size": (prim or {}).get("bytes") or 0,
         "exists": bool(prim),
         "enabled": st.get("primary") is not False, "managed": True, "live": True,
@@ -2691,7 +2691,7 @@ def _doc_scan_wb(label):
     out.append({
         "id": "wb:custom",
         "path": os.path.join(home, "settings.json"),
-        "name": "自定义指令 · %s" % (active or "（未选指令源）"),
+        "name": (active or "（未选指令源）"),
         "cat": "config",
         "title": "自定义指令",
         "size": len(body.encode("utf-8")),

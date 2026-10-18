@@ -1027,7 +1027,10 @@ function buildDocRow(it) {
   icon.textContent = 'MD';
   const title = document.createElement('div');
   title.className = 'pmcname';
-  title.textContent = it.title ? it.title + ' · ' + it.name : it.name;
+  // 标题与文件名相同时只显示一次（别出现「自定义指令 · 自定义指令 · x.md」这类叠字）
+  const tTxt = it.title ? it.title + ' · ' + it.name : it.name;
+  const dupName = it.title && (it.title === it.name || it.title.endsWith('· ' + it.name));
+  title.textContent = dupName ? it.title : tTxt;
   title.title = it.path;
   heading.appendChild(icon);
   heading.appendChild(title);
