@@ -105,7 +105,11 @@ def with_mark(text: str) -> str:
 
 
 def plan(seat: str, home: str = "") -> list:
-    """返回 [(绝对路径, 文本)]；seat 无通道或配置根不存在时返回 []。"""
+    """返回 [(绝对路径, 文本)]；seat 无通道或配置根不存在时返回 []。
+
+    走的叶子被指令页关掉了就不投放 —— 叶子正文只从这份 SKILL.md 到模型手里，
+    「关掉」必须真的不写盘，否则开关只是个摆设。
+    """
     root = skill_root(seat, home)
     if not root:
         return []
@@ -114,14 +118,44 @@ def plan(seat: str, home: str = "") -> list:
         return []
     out = []
     for name, text in R.all_skills():
+        if not _leaf_on(name):
+            continue
         out.append((os.path.join(root, name, "SKILL.md"), with_mark(text)))
     return out
 
 
-def install(seat: str, write_fn, home: str = "", make_dirs: bool = True) -> dict:
-    """投放。write_fn(path, data_or_text, make_dirs=...) 由调用方给（事务感知）。"""
+def _leaf_on(name):
+    """叶子 / 类目的注入开关（状态/_doc_inject.json，键 = content/routes/leaves/<id>.md）。"""
+    p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     "content", "routes", "leaves", name + ".md")
+    if not os.path.isfile(p):
+        return True                      # 父类目没有同名叶子文件：不受开关约束
+    try:
+        from doc_inject import enabled
+    except ImportError:
+        import importlib.util
+        here = os.path.dirname(os.path.abspath(__file__))
+        spec = importlib.util.spec_from_file_location(
+            "doc_inject", os.path.join(here, "doc_inject.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        enabled = mod.enabled
+    return enabled(p)
+
+
+def install(seat: str, write_fn, home: str = "", make_dirs: bool = True,
+            remove_fn=None) -> dict:
+    """投放。write_fn(path, data_or_text, make_dirs=...) 由调用方给（事务感知）。
+
+    remove_fn 给了的话，指令页关掉的叶子会顺带把已投放的那份撤掉 ——
+    否则"关了还在客户端里"等于没关。
+    """
     items = plan(seat, home)
-    written, skipped = [], []
+    root = skill_root(seat, home)
+    want = {os.path.normcase(p) for p, _t in items}
+    # 只有"叶子 + 叶子被关"的组合才允许撤；父类目与未登记目录永远留着。
+    off_ids = {n for n in R.leaf_ids() if not _leaf_on(n)}
+    written, skipped, removed = [], [], []
     for path, text in items:
         old = ""
         if os.path.isfile(path):
@@ -135,7 +169,26 @@ def install(seat: str, write_fn, home: str = "", make_dirs: bool = True) -> dict
             continue
         write_fn(path, text, make_dirs=make_dirs)
         written.append(path)
-    return {"seat": seat, "written": written, "skipped": skipped, "total": len(items)}
+    if remove_fn is not None:
+        for name in our_ids():
+            skill = os.path.join(root, name, "SKILL.md")
+            if os.path.normcase(skill) in want or not os.path.isfile(skill):
+                continue
+            # 只删"我们投的 + 这次被开关关掉的"；父类目与未登记目录继续留着
+            if name not in off_ids:
+                continue
+            try:
+                with open(skill, "r", encoding="utf-8", errors="replace") as f:
+                    if MARK not in f.read()[-600:]:
+                        continue          # 不是我们投的，不动
+                remove_fn(skill)
+                removed.append(name)
+                if not os.listdir(os.path.dirname(skill)):
+                    os.rmdir(os.path.dirname(skill))
+            except OSError:
+                pass
+    return {"seat": seat, "written": written, "skipped": skipped,
+            "removed": removed, "total": len(items)}
 
 
 def status(seat: str, home: str = "") -> dict:

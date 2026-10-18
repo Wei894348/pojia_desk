@@ -22,12 +22,14 @@ DSH 的破甲模式**没有独立卡片**了 —— 它是 DSH 卡片的体检�
 targets 里的 `pojia` 是命令行专用的伪目标 —— 只用来 `status pojia` 看快照，
 不会被透传给 console.py（那样会变成"未知目标"），也不进 `all`。
 """
+import base64
 import contextlib
 import importlib.util
 import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -37,6 +39,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 ENGINE = os.path.join(ROOT, "engine")
 CONTENT = os.path.join(ROOT, "content")
+TARGETS = os.path.join(ROOT, "targets")
 SRC = os.path.join(ENGINE, "破甲一键通.py")
 CONSOLE = os.path.join(ENGINE, "console.py")
 # 界面卡列表（不是命令行目标列表）。DSH 拆两张：npm/Web 版（dsh）与
@@ -52,6 +55,7 @@ PSEUDO = ("pojia",)
 # DSH 桌面版和 npm 版共用同一套 apply / preset 流程（preset 一次就写 web + desktop
 # 两份 profile），所以它不是一个独立的命令行目标，只是界面上的一张卡。
 CARD_ONLY = {"dsh-desktop": "dsh"}
+
 
 
 def has_dsh(targets):
@@ -296,111 +300,64 @@ def cmd_tx(argv):
 # ─────────────────────────── 状态 ───────────────────────────
 
 def card_codex():
+    """ChatGPT（Codex）席位：照 gpt6-Astra 的四落点 —— 指令文件 / AGENTS.md / config.toml / SKILL.md。"""
     m = mod()
     t = m.TARGETS["codex"]()
-    home = t.resolve_home("")
-    cfg_p, inst_p, st_p, bak = t.paths(home)
-    ag_p = t.agents_path(home)
-    keys = list(CODEX_KEYS) + ["沉浸优先", "表演规则"]
-    rows, files, state = [], [], "none"
-
+    import importlib.util
+    ad_p = os.path.join(ENGINE, "astra_deploy.py")
+    if os.path.isfile(ad_p):
+        spec = importlib.util.spec_from_file_location("astra_deploy", ad_p)
+        ad = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ad)
+    else:
+        ad = None
+    home = ad.home_of("codex") if ad else t.resolve_home("")
+    rows, files = [], []
     if not os.path.isdir(home):
         return {"key": "codex", "label": t.label, "home": home, "state": "broken",
-                "rows": [{"level": "err", "path": cfg_p, "note": "目录不存在（Codex 未安装？）"}],
+                "rows": [{"level": "err", "path": home, "note": "目录不存在（客户端未安装？）"}],
+                "files": [], "metrics": []}
+    if ad is None:
+        return {"key": "codex", "label": t.label, "home": home, "state": "broken",
+                "rows": [{"level": "err", "path": ad_p, "note": "engine/astra_deploy.py 缺失"}],
                 "files": [], "metrics": []}
 
-    cfg = m.read_text_safe(cfg_p) or ""
-    target = ""
-    try:
-        target = t.current_instr(cfg)
-    except Exception as e:
-        rows.append({"level": "err", "path": cfg_p, "note": "配置解析失败：%s" % e})
-    inst_path = os.path.abspath(os.path.join(home, target)) if target else ""
-    is_ours = bool(inst_path) and os.path.normcase(inst_path) == os.path.normcase(os.path.abspath(inst_p))
+    v = ad.verify("codex")
+    for c in v["checks"]:
+        role = c["role"]
+        if role == "SKILL.md":
+            continue                    # skill 单独汇总，别把 86 行摊进明细
+        rows.append({"level": "ok" if c["ok"] else "warn",
+                     "path": c["path"],
+                     "note": ("%s · 已就位" % role) if c["ok"] else ("%s · 缺失或指向不对" % role)})
+        if role in ("指令文件", "AGENTS.md 标记块", "config.toml 指针"):
+            files.append({"path": c["path"], "exists": c["exists"], "size": c["bytes"],
+                          "role": role, "hit": [], "miss": []})
+    skills = [c for c in v["checks"] if c["role"] == "SKILL.md"]
+    s_ok = sum(1 for c in skills if c["ok"])
+    if skills:
+        rows.append({"level": "ok" if s_ok == len(skills) else "warn",
+                     "path": os.path.join(home, "skills"),
+                     "note": "SKILL.md %d / %d 已投放" % (s_ok, len(skills))})
+        files.append({"path": os.path.join(home, "skills"), "exists": True, "size": None,
+                      "isdir": True, "role": "技能目录", "hit": [], "miss": []})
+    pk = v["pack"] or "—"
+    rows.append({"level": "dim", "path": os.path.join(ROOT, "targets", "codex", "instructions", pk),
+                 "note": "当前选中的指令源：%s" % pk})
+    st = ad.state()
+    if st.get("deployedAt"):
+        rows.append({"level": "dim", "path": os.path.join(ROOT, "状态", "_astra_codex.json"),
+                     "note": "上次部署：%s" % st["deployedAt"]})
 
-    if is_ours:
-        exist, sz, hit, miss = probe(inst_p, keys)
-        files.append({"path": inst_p, "exists": exist, "size": sz, "sha": sha_of(inst_p),
-                      "hit": hit, "miss": miss, "role": "指令文件"})
-        if not exist or sz == 0:
-            state = "stale"
-            rows.append({"level": "warn", "path": inst_p, "note": "配置指过去了，但指令文件不存在或为空"})
-        elif not miss:
-            state = "current"
-            rows.append({"level": "ok", "path": inst_p, "note": "指令文件 · 本脚本版本"})
-        else:
-            state = "stale"
-            rows.append({"level": "warn", "path": inst_p, "note": "已部署但缺关键段：%s" % "、".join(miss)})
-        rows.append({"level": "ok", "path": cfg_p,
-                     "note": "顶层 model_instructions_file → %s（新会话加载）" % target})
-    elif target:
-        state = "foreign"
-        rows.append({"level": "warn", "path": cfg_p,
-                     "note": "model_instructions_file = %s（不是本工具的）" % target})
-    elif m.MARK_BEGIN in cfg:
-        state = "stale"
-        rows.append({"level": "warn", "path": cfg_p,
-                     "note": "部署块不在 TOML 顶层，Codex 不会加载；重新部署修复"})
-    else:
-        state = "none"
-        rows.append({"level": "dim", "path": cfg_p, "note": "未部署"})
-
-    # ── AGENTS.md 第二注入位（config.toml 被桌面端回写时的备用线）──
-    want = m.seat_want("codex", m.load_user_persona("")[0] or "")
-    ag_txt = m.read_text_safe(ag_p)
-    ag_lv = t.agents_state(ag_txt or "", want)
-    if ag_txt is None:
-        rows.append({"level": "dim", "path": ag_p, "note": "AGENTS.md 不存在（部署时新建）"})
-    elif ag_lv == "current":
-        files.append({"path": ag_p, "exists": True, "size": size_of(ag_p), "sha": sha_of(ag_p),
-                      "hit": [], "miss": [], "role": "第二注入位 · 标记块"})
-        if not is_ours:
-            # 只有半条线：AGENTS.md 在，config.toml 那侧没指过来。这正是桌面端
-            # 回写 config.toml 的形态，不能报"已部署 · 本版"。
-            state = "stale"
-            rows.append({"level": "warn", "path": ag_p,
-                         "note": "AGENTS.md 标记块 · 本版（config.toml 未引用指令文件，"
-                                 "可能被桌面端回写；重新部署修复）"})
-        else:
-            rows.append({"level": "ok", "path": ag_p, "note": "AGENTS.md 标记块 · 本版"})
-    elif ag_lv == "other":
-        rows.append({"level": "warn", "path": ag_p, "note": "AGENTS.md 标记块哈希旧（部署自动升级）"})
-    else:
-        _ag_src = m.read_text_safe(m.CODEX_AGENTS_MD_SRC) or ""
-        if _ag_src.strip() and os.path.isfile(ag_p):
-            if (m.read_text_safe(ag_p) or "").strip() == _ag_src.strip():
-                rows.append({"level": "ok", "path": ag_p,
-                             "note": "AGENTS.md · 托管 · 与席位源一致（Windows 约束）"})
-            else:
-                rows.append({"level": "warn", "path": ag_p,
-                             "note": "AGENTS.md 与席位源不一致（apply 按源覆盖）"})
-        else:
-            rows.append({"level": "ok" if os.path.isfile(ag_p) else "dim", "path": ag_p,
-                         "note": ("AGENTS.md 无标记块（用户内容 %d B 保留）"
-                                  % os.path.getsize(ag_p)) if os.path.isfile(ag_p)
-                                 else "AGENTS.md 不存在（去双份下的正确状态）"})
-
-    st = {}
-    try:
-        st = t.load_state(home) or {}
-    except Exception:
-        pass
-    if st:
-        rows.append({"level": "dim", "path": st_p,
-                     "note": "上次 %s @ %s" % (st.get("last_action", "?"), st.get("last_apply_time", "?"))})
-
-    metrics = [{"name": "配置", "value": os.path.basename(cfg_p), "ok": os.path.isfile(cfg_p)},
-               {"name": "指令文件", "value": ("%d B" % size_of(inst_p)) if is_ours else "—", "ok": is_ours},
-               # 去双份（CODEX_DUAL_LEG=False）后 AGENTS.md 本来就不带标记块：
-               # 文件还在（用户内容）→ 显示字节数而非"—"；标记块再出现反而是问题。
-               {"name": "AGENTS.md", "value":
-                    ("%d B" % size_of(ag_p)) if ag_lv else
-                    ("托管·一致" if os.path.isfile(ag_p) else "—"),
-                "ok": ag_lv == "current" or (not ag_lv and os.path.isfile(ag_p))},
-               {"name": "备份目录", "value": "有" if os.path.isdir(bak) else "无", "ok": os.path.isdir(bak)}]
-    if is_ours and files and files[0].get("role") == "指令文件":
-        metrics.append({"name": "关键段", "value": "%d/%d" % (len(files[0]["hit"]), len(keys)),
-                        "ok": not files[0]["miss"]})
+    done, total = v["done"], v["total"]
+    # 指令这一路关掉 = 没注入指令文件 → 卡片报 none（AGENTS.md / SKILL 各有自己的开关）
+    pack_on = ad.state().get("pack_on") is not False
+    state = ("current" if v["ok"] else ("stale" if done else "none")) if pack_on else "none"
+    metrics = [{"name": "指令源", "value": pk, "ok": bool(v["pack"])},
+               {"name": "落点", "value": "%d / %d" % (done, total), "ok": v["ok"]},
+               {"name": "SKILL.md", "value": "%d / %d" % (s_ok, len(skills)), "ok": s_ok == len(skills)},
+               {"name": "备份", "value": "有" if os.path.isdir(os.path.join(home, "pojia-backups")) else "无",
+                "ok": os.path.isdir(os.path.join(home, "pojia-backups"))}]
     return {"key": "codex", "label": t.label, "home": home, "state": state,
             "rows": rows, "files": files, "metrics": metrics}
 
@@ -1218,6 +1175,1600 @@ def _augment_deploy_files(card):
              "role": role, "hit": [], "miss": []})
 
 
+# ─────────────────────────── 补丁总览（purge 式表）───────────────────────────
+
+# files[] 里的 role → 补丁表分组。没有列进的 role 归「其它」。
+_PATCH_GROUPS = [
+    ("inject", "注入内容", ("指令文件", "第二注入位", "角色档", "第二注入位 · 标记块",
+                            "AGENTS.md", "CLAUDE.md", "SOUL.md")),
+    ("patch", "补丁后文件", ("补丁后文件", "闸门脚本", "补丁层", "标记块")),
+    ("output", "输出通道", ("output-styles/pojia.md",)),
+    ("skill", "技能投放", ("技能目录（路由三拍 + mature-fiction）", "技能目录")),
+    ("preset", "破甲模式", ("破甲模式",)),
+]
+
+# 状态判定：与部署面的 want 对齐 = 本版；有标记/存在 = 已装；否则未装。
+def _patch_state(f, card_state):
+    if not f.get("exists"):
+        return "missing"
+    miss = f.get("miss") or []
+    if not miss and f.get("hit"):
+        return "current"
+    if not miss and f.get("size"):          # 有的席位不记 hit/miss，只看存在
+        return "current" if card_state == "current" else "stale"
+    if miss:
+        return "stale"
+    return "stale" if card_state in ("stale", "warn") else "current"
+
+
+def _skill_rows(skills_root, card_state):
+    """把技能目录展开成逐技能行：每个子目录一行，SKILL.md 在且带路由标记 = 本版。
+
+    三态：带 pojia-route-skill 标记 = current；SKILL.md 在但没标记 = external
+    （外来技能 —— ctf-*、mature-fiction 这类别的来源装的，不是部署产物，
+    判「旧版」是误导）；连 SKILL.md 都没有 = missing。
+    """
+    rows = []
+    if not skills_root or not os.path.isdir(skills_root):
+        return rows
+    try:
+        names = sorted(os.listdir(skills_root))
+    except OSError:
+        return rows
+    ours = 0
+    for name in names:
+        d = os.path.join(skills_root, name)
+        if not os.path.isdir(d):
+            continue
+        sk = os.path.join(d, "SKILL.md")
+        has_sk = os.path.isfile(sk)
+        marked = False
+        if has_sk:
+            try:
+                with open(sk, "rb") as sf:
+                    marked = b"pojia-route-skill" in sf.read()[-600:]
+            except OSError:
+                marked = False
+        if marked:
+            ours += 1
+        if marked:
+            st, miss = "current", []
+        elif has_sk:
+            st, miss = "external", ["外来技能（非本工具投放）"]
+        else:
+            st, miss = "missing", ["无 SKILL.md"]
+        rows.append({
+            "path": sk if has_sk else d + "\\",
+            "role": ("SKILL.md" if has_sk else "目录（无 SKILL.md）"),
+            "size": os.path.getsize(sk) if has_sk else None,
+            "isdir": not has_sk,
+            "sha": sha_of(sk) if marked else "",
+            "hit": ["pojia-route-skill"] if marked else [],
+            "miss": miss,
+            "state": st,
+        })
+    if rows:
+        # 目录行本身留在最前，报总数
+        rows.insert(0, {
+            "path": skills_root, "role": "技能目录 · %d 个（含路由 %d）" % (len(rows), ours),
+            "size": None, "isdir": True, "sha": "",
+            "hit": ["%d" % ours] if ours else [], "miss": [] if ours else ["空目录"],
+            "state": "current" if ours else "stale",
+        })
+    return rows
+
+
+def cmd_patches(target):
+    """按 purge 的 PatchGroups 画法出一张补丁总览：分组 → 行（路径/角色/大小/状态）。
+
+    数据全部来自各席位卡片本来的 files[] + rows[]，不另起一套探测 —— 卡片明细
+    与补丁表永远同源，不会一个说有一个说没有。
+    """
+    m = mod()
+    try:
+        card = CARD_FN[target]()
+        _augment_deploy_files(card)
+    except Exception as e:
+        return {"ok": False, "error": "%s 检测出错：%s" % (target, e)}
+    groups = []
+    seen = {"inject": [], "patch": [], "output": [], "skill": [], "preset": [], "other": []}
+    for f in card.get("files", []):
+        role = f.get("role") or ""
+        grp = "other"
+        for gid, _g, roles in _PATCH_GROUPS:
+            if role in roles:
+                grp = gid
+                break
+        else:
+            # role 没登记但路径是 skills 目录 → 技能投放
+            p = (f.get("path") or "").replace("\\", "/").rstrip("/").lower()
+            if p.endswith("/skills") or "/skills/" in p:
+                grp = "skill"
+        if grp == "skill" and f.get("isdir"):
+            # 技能目录整包展开成逐技能行，别只留一行路径
+            seen["skill"].extend(_skill_rows(f.get("path"), card.get("state")))
+            continue
+        st = _patch_state(f, card.get("state"))
+        seen[grp].append({
+            "path": f.get("path") or "",
+            "role": role or "未归类",
+            "size": f.get("size"),
+            "isdir": bool(f.get("isdir")),
+            "sha": f.get("sha") or "",
+            "hit": f.get("hit") or [],
+            "miss": f.get("miss") or [],
+            "state": st,
+        })
+    for gid, gname, _roles in _PATCH_GROUPS:
+        rows = seen.pop(gid)
+        if rows:
+            rows.sort(key=lambda r: r["path"])
+            groups.append({"id": gid, "name": gname, "rows": rows})
+    if seen["other"]:
+        seen["other"].sort(key=lambda r: r["path"])
+        groups.append({"id": "other", "name": "其它落点", "rows": seen["other"]})
+    # 检测明细（卡片 rows[]）：体检注记、「未知」标记、环境提示 —— 总览里也要看得到
+    det = []
+    for r in card.get("rows", []):
+        lv = r.get("level") or "dim"
+        det.append({
+            "path": r.get("path") or "",
+            "role": r.get("note") or (lv if lv != "dim" else ""),
+            "size": None, "isdir": False, "sha": "",
+            "hit": [], "miss": [r.get("note")] if r.get("note") and lv in ("warn", "err") else [],
+            "state": {"ok": "current", "err": "missing", "warn": "stale"}.get(lv, "external"),
+        })
+    if det:
+        groups.append({"id": "rows", "name": "检测明细", "rows": det})
+    return {"ok": True, "target": target, "label": card.get("label") or target,
+            "state": card.get("state"), "deploy": card.get("deploy") or {},
+            "groups": groups}
+
+
+# ─────────────────────────── 指令提示词管理 ───────────────────────────
+
+# 指令库根：targets/<seat>/instructions/ 下每份 .md 都是一个候选指令。
+INSTR_LIB_DIR = lambda seat: os.path.join(ROOT, "targets", seat, "instructions")
+
+# 候选指令的说明（文件名 → 描述）。没有登记的名字用通用描述。
+INSTR_DESC = {
+    "unlock.md": "原版 unlock 指令（本脚本生成的强化版政策）",
+    "Argon.md": "Argon Operating Policy（条款式部署政策）",
+}
+
+
+def _instr_lib(seat):
+    """列出某席位指令库里的候选指令。"""
+    d = INSTR_LIB_DIR(seat)
+    out = []
+    if os.path.isdir(d):
+        for fn in sorted(os.listdir(d)):
+            if fn.lower().endswith(".md"):
+                out.append({"name": fn,
+                            "desc": INSTR_DESC.get(fn, "自定义指令"),
+                            "size": os.path.getsize(os.path.join(d, fn))})
+    return out
+
+
+def _active_instr(seat):
+    """读出当前部署的指令：返回 (文件名, 内容哈希前8, 字节数) 或 None。"""
+    dep = _deployed_instr_path(seat)
+    if not dep or not os.path.isfile(dep):
+        return None
+    with open(dep, "rb") as f:
+        data = f.read()
+    return {"file": os.path.basename(dep),
+            "sha": sha_of(dep)[:8],
+            "size": len(data)}
+
+
+def _deployed_instr_path(seat):
+    """各席位部署后的指令落点（当前只支持 codex）。
+
+    以 config.toml 的 model_instructions_file 指针为准 —— 指令换名部署后
+    指针跟着文件名走，固定常量 CODEX_INSTR 只在指针缺失时兜底。
+    """
+    if seat != "codex":
+        return None
+    m_ = mod()
+    t = m_.TARGETS["codex"]()
+    home = t.resolve_home("")
+    cfg_p = t.paths(home)[0]
+    mm = re.search(
+        r"^[ \t]*model_instructions_file[ \t]*=[ \t]*[\"']\.?/?([^\"'\n]+)[\"']",
+        m_.read_text_safe(cfg_p) or "", re.M)
+    fn = mm.group(1).strip() if mm else m_.CODEX_INSTR
+    return os.path.join(home, fn)
+
+
+def cmd_instr_list(seat):
+    """指令库清单：候选指令 + 当前部署状态。"""
+    dep = _deployed_instr_path(seat)
+    dep_txt = ""
+    if dep and os.path.isfile(dep):
+        with open(dep, "rb") as f:
+            dep_txt = f.read().decode("utf-8-sig", "replace")
+    items = []
+    for it in _instr_lib(seat):
+        p = os.path.join(INSTR_LIB_DIR(seat), it["name"])
+        with open(p, "rb") as f:
+            lib_txt = f.read().decode("utf-8-sig", "replace")
+        active = bool(dep_txt) and lib_txt.strip() == dep_txt.strip()
+        items.append(dict(it, active=active))
+    return {"ok": True, "seat": seat, "lib": INSTR_LIB_DIR(seat),
+            "active": _active_instr(seat), "items": items}
+
+
+def cmd_instr_apply(seat, name):
+    """把选中的指令直接部署：清掉旧指令文件，把候选文件原样拷到部署位。
+
+    文件名跟着候选走（Argon.md → ~/.codex/Argon.md），config.toml 的
+    model_instructions_file 指针同步改写 —— 不是只换内容。
+    """
+    m_ = mod()
+    if seat != "codex":
+        return {"ok": False, "error": "暂只支持 codex 席位的指令部署"}
+    lib_p = os.path.join(INSTR_LIB_DIR(seat), name)
+    if not name or not os.path.isfile(lib_p) or not name.lower().endswith(".md"):
+        return {"ok": False, "error": "指令库中没有这份文件：%s" % name}
+    t = m_.TARGETS["codex"]()
+    home = t.resolve_home("")
+    if not os.path.isdir(home):
+        return {"ok": False, "error": "未找到 Codex 目录：%s" % home}
+    dep_old = os.path.join(home, m_.CODEX_INSTR)
+    dep_new = os.path.join(home, name)
+    # config 现指针指向的文件也是"旧指令"，换部署时一并清理
+    cfg_p0, _i0, _s0, _b0 = t.paths(home)
+    m0 = re.search(
+        r"^[ \t]*model_instructions_file[ \t]*=[ \t]*[\"']\.?/?([^\"'\n]+)[\"']",
+        m_.read_text_safe(cfg_p0) or "", re.M)
+    old_ptr = os.path.join(home, m0.group(1).strip()) if m0 else None
+
+    # 1. 清掉旧指令文件（先备份到 editor-backup）
+    removed = []
+    stale = []
+    for old_p in (dep_old, old_ptr):
+        if not old_p or not os.path.isfile(old_p):
+            continue
+        if os.path.normcase(old_p) == os.path.normcase(dep_new):
+            continue
+        if os.path.normcase(old_p) in {os.path.normcase(x) for x in stale}:
+            continue
+        try:
+            with open(old_p, "rb") as f:
+                old = f.read()
+            bak = _backup_path(old_p)
+            if not (os.path.isfile(bak) and open(bak, "rb").read() == old):
+                with open(bak, "wb") as f:
+                    f.write(old)
+        except OSError:
+            pass
+        try:
+            os.remove(old_p)
+            removed.append(os.path.basename(old_p))
+            stale.append(old_p)
+        except OSError as e:
+            return {"ok": False, "error": "清理旧指令失败：%s" % e}
+
+    # 2. 候选文件原样拷到部署位
+    with open(lib_p, "rb") as f:
+        data = f.read()
+    try:
+        with open(dep_new, "wb") as f:
+            f.write(data)
+    except OSError as e:
+        return {"ok": False, "error": "部署指令失败：%s" % e}
+
+    # 3. config.toml 的 model_instructions_file 指针改写为新文件名
+    cfg_p, _inst, _st, _bak = t.paths(home)
+    cfg = m_.read_text_safe(cfg_p) or ""
+    changed_cfg = False
+    out_lines = []
+    for ln in cfg.splitlines():
+        if re.match(r"^[ \t]*model_instructions_file[ \t]*=", ln):
+            out_lines.append('model_instructions_file = "./%s"' % name)
+            changed_cfg = True
+        else:
+            out_lines.append(ln)
+    new_cfg = "\n".join(out_lines)
+    if not changed_cfg:
+        new_cfg = new_cfg.rstrip() + ('\nmodel_instructions_file = "./%s"\n' % name)
+        changed_cfg = True
+    if new_cfg != cfg:
+        try:
+            t.backup(home, cfg_p, "before-instr-switch")
+            m_.write_text(cfg_p, new_cfg)
+        except Exception as e:
+            return {"ok": False, "error": "改写 config 失败：%s" % e}
+
+    # 4. 项目快照同步（内容 = 新指令，名字走快照路径常量不变；静默引擎的 stdout 日志）
+    try:
+        with open(os.devnull, "w", encoding="utf-8") as _dn:
+            _so, sys.stdout = sys.stdout, _dn
+            try:
+                t.sync_snapshot(data.decode("utf-8-sig", "replace").replace("\r\n", "\n"))
+            finally:
+                sys.stdout = _so
+    except Exception:
+        pass
+    _inject_meta_update(seat=seat, last="instr")
+    return {"ok": True, "seat": seat, "file": name, "deployed": dep_new,
+            "removed": removed, "config_updated": changed_cfg,
+            "note": "部署完成 —— 对运行中的旧 Codex 会话无效，需新开会话"}
+
+
+def cmd_instr_disable(seat):
+    """关闭当前部署的指令：删掉部署位文件，并从 config.toml 摘掉指针。
+
+    与 cmd_instr_apply 对称 —— 对应界面上那张开关拨回左边。
+    删除前先把文件和 config 备份到 editor-backup。
+    """
+    m_ = mod()
+    if seat != "codex":
+        return {"ok": False, "error": "暂只支持 codex 席位的指令部署"}
+    t = m_.TARGETS["codex"]()
+    home = t.resolve_home("")
+    if not os.path.isdir(home):
+        return {"ok": False, "error": "未找到 Codex 目录：%s" % home}
+    cfg_p, _i, _s, _b = t.paths(home)
+    cfg = m_.read_text_safe(cfg_p) or ""
+    mm = re.search(
+        r"^[ \t]*model_instructions_file[ \t]*=[ \t]*[\"']\.?/?([^\"'\n]+)[\"']",
+        cfg, re.M)
+    if not mm:
+        _inject_meta_update(seat=seat, last="instr")
+        return {"ok": True, "removed": [], "config_updated": False,
+                "note": "当前没有启用指令，无需关闭"}
+    dep = os.path.join(home, mm.group(1).strip())
+    removed = []
+    if os.path.isfile(dep):
+        try:
+            with open(dep, "rb") as f:
+                old = f.read()
+            bak = _backup_path(dep)
+            if not (os.path.isfile(bak) and open(bak, "rb").read() == old):
+                with open(bak, "wb") as f:
+                    f.write(old)
+            os.remove(dep)
+            removed.append(os.path.basename(dep))
+        except OSError as e:
+            return {"ok": False, "error": "删除部署文件失败：%s" % e}
+
+    out_lines = [ln for ln in cfg.splitlines()
+                 if not re.match(r"^[ \t]*model_instructions_file[ \t]*=", ln)]
+    new_cfg = "\n".join(out_lines).rstrip() + "\n"
+    try:
+        t.backup(home, cfg_p, "before-instr-disable")
+        m_.write_text(cfg_p, new_cfg)
+    except Exception as e:
+        return {"ok": False, "error": "改写 config 失败：%s" % e}
+    return {"ok": True, "seat": seat, "removed": removed, "config_updated": True,
+            "note": "已关闭指令注入 —— 对运行中的旧 Codex 会话无效，需新开会话"}
+
+
+def cmd_instr_toggle(seat, name, on):
+    """指令文件的滑块（Astra 逻辑）：拨右 = 部署这一份，四落点一起写；拨左 = 还原。
+
+    「注入中」看 Astra 状态表里记的 pack —— 换一份时旧的自然落回未部署。
+    """
+    ad = _astra()
+    if ad is None:
+        return {"ok": False, "error": "engine/astra_deploy.py 缺失"}
+    if not on:
+        # 关掉「当前这份指令源」：撤部署文件 + 摘 AGENTS 标记块 + 摘 config 指针。
+        # 三者的内容都来自这份源件，只删部署位文件会留下一份孤儿指针/标记块。
+        ad.set_pack(name, False)
+        r = ad.deploy("codex", {"pack": ""})
+        st = ad.state()
+        return {"ok": r.get("ok", True),
+                "note": "已关闭指令注入（撤下部署文件、摘掉 AGENTS 标记块与 config 指针）",
+                "removed": r.get("removed") or [], "state": st,
+                "home": ad.home_of("codex")}
+    # 刚点过「还原」时四路都是关的；单独部署一份指令源不等于只写这一份文件 ——
+    # 用户在卡片上明确选了「部署」，AGENTS / config / skills 也应当恢复。
+    st = ad.state()
+    ad.set_pack(name, True)
+    if (st.get("pack_on") is False and st.get("agents") is False
+            and st.get("config") is False and st.get("skills") is False):
+        ad.enable_all()
+    r = ad.deploy("codex", {"pack": name})
+    return {"ok": r.get("ok", False), "note": "已部署 %s（%d 个落点）" % (name, len(r.get("written") or [])),
+            "written": r.get("written"), "home": r.get("home")}
+
+
+# 页内编辑的指令文件登记表：id → (路径, 分类, 标签)。
+PROMPT_FILES = [
+    ("seat-codex", os.path.join(CONTENT, "seats", "codex.md"),
+     "注入指令", "席位指令源 · Codex"),
+    ("seat-claude", os.path.join(CONTENT, "seats", "claude.md"),
+     "注入指令", "席位指令源 · Claude Code"),
+    ("seat-dsh", os.path.join(CONTENT, "seats", "dsh.md"),
+     "注入指令", "席位指令源 · DSH"),
+    ("seat-workbuddy", os.path.join(CONTENT, "seats", "workbuddy.md"),
+     "注入指令", "席位指令源 · WorkBuddy"),
+    ("seat-zcode", os.path.join(CONTENT, "seats", "zcode.md"),
+     "注入指令", "席位指令源 · ZCode"),
+    ("seat-hermes", os.path.join(CONTENT, "seats", "hermes.md"),
+     "注入指令", "席位指令源 · Hermes"),
+    # 人格与路由
+    ("persona", os.path.join(CONTENT, "persona.md"),
+     "人格与路由", "人格源件 persona.md（全部席位共用）"),
+    ("route-layer", os.path.join(CONTENT, "route-layer.md"),
+     "人格与路由", "任务路由层 route-layer.md（生成产物）"),
+    # 托管文档
+    ("codex-agents", os.path.join(CONTENT, "seats", "codex_agents_md.md"),
+     "托管文档", "Codex AGENTS.md 托管源"),
+    ("claude-md", os.path.join(CONTENT, "seats", "claude_md.md"),
+     "托管文档", "Claude CLAUDE.md 托管源"),
+    ("workbuddy-user-md", os.path.join(CONTENT, "seats", "workbuddy_user_md.md"),
+     "托管文档", "WorkBuddy 用户文档托管源"),
+]
+
+
+def _prompt_entry(pid):
+    for pid_, path, _cat, label in PROMPT_FILES + _custom_prompts():
+        if pid_ == pid:
+            return path, label
+    return None, None
+
+
+def _custom_prompt_dir():
+    return os.path.join(CONTENT, "seats")
+
+
+def _custom_prompts():
+    """扫描用户自建的指令：content/seats/custom_*.md → id = custom-<stem>，归「自定义指令」。"""
+    out = []
+    try:
+        for fn in sorted(os.listdir(_custom_prompt_dir())):
+            m = re.fullmatch(r"custom_([A-Za-z0-9_\-]+)\.md", fn)
+            if m:
+                out.append(("custom-" + m.group(1),
+                            os.path.join(_custom_prompt_dir(), fn),
+                            "自定义指令", "自定义指令 · " + m.group(1)))
+    except OSError:
+        pass
+    return out
+
+
+def _prompt_entry(pid):
+    for pid_, path, _cat, label in PROMPT_FILES + _custom_prompts():
+        if pid_ == pid:
+            return path, label
+    return None, None
+
+
+def cmd_prompts():
+    """指令清单（带分类）：路径 + 体积 + 是否存在。"""
+    items = []
+    for pid, path, cat, label in PROMPT_FILES + _custom_prompts():
+        items.append({"id": pid, "path": path, "label": label, "cat": cat,
+                      "exists": os.path.isfile(path),
+                      "size": os.path.getsize(path) if os.path.isfile(path) else 0})
+    return {"ok": True, "items": items}
+
+
+def cmd_prompt_read(pid):
+    """整文件读出（编辑用），上限 2 MB，与 cmd_read 同一档。"""
+    p, label = _prompt_entry(pid)
+    if not p:
+        return {"ok": False, "error": "未登记的提示词 id：%s" % pid}
+    if not os.path.isfile(p):
+        return {"ok": False, "error": "文件不存在：%s" % p, "path": p, "label": label}
+    out = {"ok": True, "id": pid, "path": p, "label": label, "content": "", "editable": False}
+    try:
+        sz = os.path.getsize(p)
+        if sz > 2 * 1024 * 1024:
+            out["error"] = "文件超过 2 MB，请直接用编辑器改：%s" % p
+            return out
+        with open(p, "rb") as f:
+            out["content"] = f.read().decode("utf-8-sig", "replace")
+        out["size"] = sz
+        out["editable"] = True
+    except OSError as e:
+        out["error"] = str(e)
+    return out
+
+
+def cmd_prompt_write(pid, content):
+    """写回提示词源件。写之前备份原内容到 状态/editor-backup/。"""
+    p, _label = _prompt_entry(pid)
+    if not p:
+        return {"ok": False, "error": "未登记的提示词 id：%s" % pid}
+    if not os.path.isfile(p):
+        return {"ok": False, "error": "文件不存在：%s" % p}
+    try:
+        with open(p, "rb") as f:
+            old = f.read()
+        bak = _backup_path(p)
+        if not (os.path.isfile(bak) and open(bak, "rb").read() == old):
+            with open(bak, "wb") as f:
+                f.write(old)
+        new = content.encode("utf-8")
+        if old == new:
+            return {"ok": True, "path": p, "written": False, "note": "内容没变，不写盘"}
+        with open(p, "wb") as f:
+            f.write(new)
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "path": p, "written": True, "backup": bak,
+            "size": len(new), "note": "已写回 · 备份在 状态/editor-backup · 改完记得重新部署"}
+
+
+def _prompt_pid_ok(name):
+    """自定义提示词名的合法字符：字母数字下划线连字符。"""
+    return bool(re.fullmatch(r"[A-Za-z0-9_\-]{1,40}", name or ""))
+
+
+def cmd_prompt_new(name):
+    """新建一份自定义提示词：content/seats/custom_<name>.md。"""
+    if not _prompt_pid_ok(name):
+        return {"ok": False, "error": "名称只允许字母 / 数字 / _ / -（1-40 字符）：%r" % name}
+    p = os.path.join(_custom_prompt_dir(), "custom_%s.md" % name)
+    if os.path.exists(p):
+        return {"ok": False, "error": "同名提示词已存在：%s" % name}
+    try:
+        with open(p, "wb") as f:
+            f.write(("<!-- 自定义提示词：%s -->\n\n" % name).encode("utf-8"))
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "id": "custom-" + name, "path": p}
+
+
+def cmd_prompt_delete(pid):
+    """删除一份自定义提示词（只允许删 custom- 前缀的）。"""
+    if not pid.startswith("custom-"):
+        return {"ok": False, "error": "内置提示词不能在这里删：%s" % pid}
+    p, _label = _prompt_entry(pid)
+    if not p or not os.path.isfile(p):
+        return {"ok": False, "error": "文件不存在"}
+    try:
+        os.remove(p)
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "id": pid, "path": p}
+
+
+# ───────────────── 指令提示词库（按 Agent × 分类管理 md） ─────────────────
+
+# 指令提示词页的 Agent 列表：(key, 显示名, 目标目录名)。content/seats/<key>.md
+# 与 targets/<目录>/ 下的 .md 都归到该 Agent 名下。
+DOC_AGENTS = [
+    ("codex", "ChatGPT", "codex"),
+    ("claude", "Claude Code", "claude"),
+    ("dsh", "DSH", "dsh"),
+    ("workbuddy", "WorkBuddy", "workbuddy"),
+    ("zcode", "ZCode (Z.ai)", "zcode"),
+    ("hermes", "Hermes Agent", "hermes"),
+]
+_DOC_AGENT_MAP = {k: (label, d) for k, label, d in DOC_AGENTS}
+
+# 各席位挂在客户端里的托管块内容源：文件 → 界面上的一句话。
+# 这些不是「席位正文」，但照样参与注入（写进 CLAUDE.md / AGENTS.md / USER.md 的
+# 标记块），所以也要在指令页露出来、也要接到注入开关上。
+SEAT_MANAGED_SRC = {
+    "codex": {"codex_agents_md.md": "AGENTS.md 托管内容源（Windows 约束）"},
+    "claude": {"claude_md.md": "CLAUDE.md 托管内容源（工作区说明）"},
+    "workbuddy": {"workbuddy_user_md.md": "USER.md 托管块内容源（Windows 约束）"},
+}
+
+# 分类顺序即界面 tab 顺序 —— 就是 Astra 部署会写的那四类文件，不再拆人格 / 席位源 / 路由叶子。
+#   instruction 指令文件（部署到 prompts/<名字>.md）
+#   agents      AGENTS.md 标记块
+#   config      config.toml 指针
+#   skill       SKILL.md（6 个父类目 + 80 片叶子）
+#   custom      用户自建指令
+DOC_CATS = [
+    ("instruction", "指令文件"),
+    ("agents", "AGENTS.md"),
+    ("config", "config.toml"),
+    ("skill", "SKILL.md"),
+    ("custom", "自定义"),
+]
+_DOC_CAT_ORDER = {cid: i for i, (cid, _n) in enumerate(DOC_CATS)}
+# 旧分类只给其它 Agent 兜底用（ChatGPT 页已经换成 Astra 的四类）。
+_LEGACY_CAT_NAME = {
+    "persona": "人格", "seat": "席位源", "unlock": "破甲", "managed": "托管文档",
+    "route": "路由", "leaf": "路由叶子",
+}
+_DOC_CAT_NAME = dict(DOC_CATS)
+
+# 生成产物：改源件重新生成，页面上标出来，别让人白改。
+DOC_GENERATED = {
+    "content/route-layer.md",
+    "content/routes/leaves/INDEX.md",
+}
+
+# 允许读写的根 —— 指令库只碰 content/ 与 targets/，其它一律拒。
+DOC_ROOTS = ("content", "targets")
+
+# 引擎自动写的镜像 / 备份，不是可选的注入源 —— 指令页不列它们
+# （用户在「部署目标」页的总览里看这些文件的实际内容与生效情况）。
+DOC_MIRRORS = {
+    "targets/codex/codex-unlock-instructions.md",
+    "targets/codex/AGENTS-追加块.md",
+    "targets/codex/AGENTS.md",
+}
+
+# 注入开关的状态文件：id（相对路径）→ false 表示不注入。
+# 改名 / 移动源件是错的 —— 那会让引擎找不到源、生成脚本对不上；
+# 开关只动这张表，真正的合成在 deploy 时按表拼装。
+DOC_STATE_FILE = os.path.join(ROOT, "状态", "_doc_inject.json")
+
+# 用户备注：id（相对路径）→ 一句话。存 状态/_doc_notes.json，不进 content/targets，
+# 免得把 GUI 的元数据混进注入源件。
+DOC_NOTES_FILE = os.path.join(ROOT, "状态", "_doc_notes.json")
+
+
+def _doc_notes():
+    """读备注表。文件损坏时先备份，再当空表 —— 不能因为解析失败就把用户备注冲掉。
+
+    旧版按 `.md.off` 存过键，读的时候统一折回原文件名，否则改名方案留下的备注
+    会"看起来消失了"。
+    """
+    try:
+        with open(DOC_NOTES_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+    except ValueError:
+        try:
+            shutil.copyfile(DOC_NOTES_FILE, DOC_NOTES_FILE + ".bad-%d" % int(time.time()))
+        except OSError:
+            pass
+        return {}
+    except OSError:
+        return {}
+    if not isinstance(d, dict):
+        return {}
+    out = {}
+    for k, v in d.items():
+        out[_doc_base(k) if isinstance(k, str) else k] = v
+    return out
+
+
+def _doc_notes_save(d):
+    """原子写：先写临时文件再替换，进程中途退出也不会留下半截 JSON。
+
+    半截文件下次读会走 ValueError，用户所有备注就"重启后消失"了。
+    """
+    tmp = DOC_NOTES_FILE + ".tmp"
+    try:
+        os.makedirs(os.path.dirname(DOC_NOTES_FILE), exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, DOC_NOTES_FILE)
+        return True
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return False
+
+
+def _doc_skip(rel):
+    """不是提示词、不该出现在指令页的文件：各目录下的「说明.md」等纯文档。"""
+    name = os.path.basename(rel).lower()
+    if name.startswith("说明") or name.startswith("readme"):
+        return True
+    return "/skills/" in "/" + rel
+
+
+def _doc_rel(p):
+    return os.path.relpath(os.path.abspath(p), ROOT).replace("\\", "/")
+
+
+def _doc_cat(rel, agent):
+    """按路径与文件名归类。顺序有意义：越具体的规则越靠前。"""
+    base = os.path.basename(rel).lower()
+    if re.fullmatch(r"custom_[a-z0-9_\-]+\.md", base):
+        return "custom"
+    if rel == "content/persona.md" or re.search(r"(^|/)persona\.md$", rel, re.I):
+        return "persona"
+    if rel == "content/route-layer.md":
+        return "route"
+    if rel.startswith("content/routes/leaves/"):
+        return "leaf"
+    if rel.startswith("content/routes/"):
+        return "route"
+    if rel.startswith("content/seats/"):
+        return "managed" if re.search(r"_md\.md$", base) else "seat"
+    if "/instructions/" in "/" + rel or re.search(r"unlock|argon|破甲|越狱", base):
+        return "unlock"
+    if re.search(r"agents|claude\.md|_md\.md", base):
+        return "managed"
+    return "instruction"
+
+
+def _doc_allowed(path):
+    """只允许 content/ 与 targets/ 下的 .md（含 .md.off）—— 挡住越界写。"""
+    ap = os.path.abspath(path)
+    root = os.path.abspath(ROOT)
+    if os.path.commonpath([ap, root]) != root:
+        return False
+    rel = _doc_rel(ap).split("/")
+    if not rel or rel[0] not in DOC_ROOTS:
+        return False
+    low = ap.lower()
+    return low.endswith(".md") or low.endswith(".md.off")
+
+
+def _doc_enabled(p):
+    """文件存在且没被开关关掉。"""
+    if not os.path.isfile(p):
+        return False
+    off = _doc_state().get(_doc_rel(p))
+    return off is not False
+
+
+def _doc_base(p):
+    """兼容旧版 .off 改名方案：把 <x>.md.off 还原成 <x>.md。"""
+    return p[:-4] if p.lower().endswith(".md.off") else p
+
+
+def _doc_actual(p):
+    """给定 <x>.md，返回盘上真实存在的那一份（兼容旧 .off 残留）。"""
+    if os.path.isfile(p):
+        return p
+    off = p + ".off"
+    return off if os.path.isfile(off) else ""
+
+
+def _doc_state():
+    """读开关表。缺文件 / 坏 JSON 一律当"全开"。"""
+    try:
+        with open(DOC_STATE_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _doc_state_save(d):
+    """原子写：先落 .tmp 再 os.replace。
+
+    非原子写在崩溃 / 被杀时会留下半截 JSON，读回一律当"全开" —— 用户刚关掉的
+    文档会在重启后又出现"怎么都关不掉"。
+    """
+    try:
+        os.makedirs(os.path.dirname(DOC_STATE_FILE), exist_ok=True)
+        tmp = DOC_STATE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False, indent=1, sort_keys=True)
+        os.replace(tmp, DOC_STATE_FILE)
+        return True
+    except OSError:
+        return False
+
+
+def _doc_set_enabled(rel, on):
+    d = _doc_state()
+    key = _doc_rel(os.path.join(ROOT, _doc_base(rel)))
+    if on:
+        d.pop(key, None)
+    else:
+        d[key] = False
+    return _doc_state_save(d)
+
+
+# 注入动作的元信息：哪个席位最近一次换指令 / 关闭注入是什么时候。
+# 只用于界面显示与排错，不参与注入判定。
+DOC_META_FILE = os.path.join(ROOT, "状态", "_doc_meta.json")
+
+
+def _doc_meta():
+    try:
+        with open(DOC_META_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _inject_meta_update(seat, last=""):
+    """记一笔：某席位的注入动作做过什么、什么时候。失败不影响主流程。"""
+    d = _doc_meta()
+    d[seat] = {"last": last or "", "at": time.strftime("%Y-%m-%d %H:%M:%S")}
+    try:
+        os.makedirs(os.path.dirname(DOC_META_FILE), exist_ok=True)
+        with open(DOC_META_FILE, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False, indent=1, sort_keys=True)
+    except OSError:
+        pass
+    return d.get(seat, {})
+
+
+def _read_text(p):
+    with open(p, "rb") as f:
+        return f.read().decode("utf-8-sig", "replace")
+
+
+def _astra():
+    """加载 engine/astra_deploy.py（ChatGPT 席位的四落点部署）。"""
+    import importlib.util
+    p = os.path.join(ENGINE, "astra_deploy.py")
+    if not os.path.isfile(p):
+        return None
+    spec = importlib.util.spec_from_file_location("astra_deploy", p)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def _doc_scan(agent):
+    """扫出某个 Agent 名下的文档。
+
+    ChatGPT 页照 gpt6-Astra 的四个落点分四类：指令文件 / AGENTS.md / config.toml / SKILL.md。
+    其它 Agent 本次不改，仍走旧扫描。
+    """
+    label, dirname = _DOC_AGENT_MAP.get(agent, (agent, agent))
+    if agent == "codex":
+        return _doc_scan_astra(label)
+    out = []
+    seen = set()
+
+    def add(p, note=""):
+        if not p.lower().endswith(".md"):
+            return
+        real = _doc_actual(p)
+        if not real:
+            return
+        rel = _doc_rel(real)
+        if rel in DOC_MIRRORS or _doc_skip(rel):
+            return
+        if rel in seen:
+            return
+        seen.add(rel)
+        enabled = _doc_enabled(real)
+        out.append({
+            "id": rel,
+            "path": os.path.abspath(real),
+            "name": os.path.basename(p),
+            "cat": _doc_cat(_doc_rel(p), agent),
+            "size": os.path.getsize(real),
+            "exists": True,
+            "enabled": enabled,
+            "generated": _doc_rel(p) in DOC_GENERATED or _doc_rel(p).startswith("content/routes/leaves/"),
+            "note": note or ("" if enabled else "已停用 · 不参与合成，内容一个字节没动"),
+        })
+
+    add(os.path.join(CONTENT, "seats", agent + ".md"), "席位独立提示词源")
+    for fn, n in SEAT_MANAGED_SRC.get(agent, {}).items():
+        add(os.path.join(CONTENT, "seats", fn), n)
+    add(os.path.join(ROOT, "targets", dirname, "persona.md"), "该席位目录下的人格副本")
+    add(os.path.join(CONTENT, "persona.md"), "全部席位共用的人格源件")
+    seats_dir = os.path.join(CONTENT, "seats")
+    if os.path.isdir(seats_dir):
+        for fn in sorted(os.listdir(seats_dir)):
+            m = re.fullmatch(r"(custom_[A-Za-z0-9_\-]+\.md)(\.off)?", fn, re.I)
+            if m:
+                add(os.path.join(seats_dir, m.group(1)), "用户自建指令")
+    tdir = os.path.join(ROOT, "targets", dirname) if dirname else ""
+    if tdir and os.path.isdir(tdir):
+        for dirpath, dirnames, filenames in os.walk(tdir):
+            dirnames[:] = [d for d in dirnames if d not in ("__pycache__", ".git")]
+            for fn in sorted(filenames):
+                if fn.lower().endswith(".md.off"):
+                    add(os.path.join(dirpath, fn[:-7]))
+                else:
+                    add(os.path.join(dirpath, fn))
+    return _doc_finish(out, agent, label, "")
+
+
+def _routes_mod():
+    """加载 engine/pojia_routes.py（叶子元信息 / 类目名）。"""
+    import importlib.util
+    p = os.path.join(ENGINE, "pojia_routes.py")
+    if "pojia_routes" in sys.modules:
+        return sys.modules["pojia_routes"]
+    spec = importlib.util.spec_from_file_location("pojia_routes", p)
+    m = importlib.util.module_from_spec(spec)
+    sys.modules["pojia_routes"] = m
+    spec.loader.exec_module(m)
+    return m
+
+
+def _label(tag, tone=""):
+    """卡片上的标签：tag 文字 + 语气（ok/warn/info/muted）。"""
+    return {"tag": tag, "tone": tone or ""}
+
+
+def _doc_scan_astra(label):
+    """ChatGPT 页 = Astra 会写的四类落点，不再拆人格 / 席位源 / 路由叶子。"""
+    ad = _astra()
+    if ad is None:
+        return {"ok": False, "error": "engine/astra_deploy.py 缺失"}
+    home = ad.home_of("codex")
+    state = _doc_state()
+    notes = _doc_notes()
+    v = ad.verify("codex")
+    by_path = {c["path"]: c for c in v["checks"]}
+    st = ad.state()
+    out = []
+
+    # 1) 指令文件：targets/codex/instructions/*.md 里选一份部署
+    lib = os.path.join(ROOT, "targets", "codex", "instructions")
+    active = ((st.get("pack") or ad.pack_name())
+              if st.get("pack_on") is not False else "")
+    for fn in (sorted(os.listdir(lib)) if os.path.isdir(lib) else []):
+        if not fn.lower().endswith(".md"):
+            continue
+        p = os.path.join(lib, fn)
+        is_active = fn == active
+        out.append({
+            "id": _doc_rel(p), "path": p, "name": fn, "cat": "instruction",
+            "size": os.path.getsize(p), "exists": True,
+            "enabled": is_active, "active": is_active, "deployable": True,
+            "note": ("注入中 · 部署到 ~/.codex/prompts/%s" % fn) if is_active
+                    else "拨右把它部署为 ChatGPT 的指令文件",
+            "labels": [_label("指令源", "info"),
+                       _label("注入中" if is_active else "未部署", "ok" if is_active else "muted")],
+            "memo": notes.get(_doc_rel(p), ""),
+        })
+
+    # 2/3) AGENTS.md 标记块 + config.toml 指针：开关存 Astra 状态表
+    for cat, name, role, nid, flag in (
+            ("agents", "AGENTS.md", "AGENTS.md 标记块", "astra:agents", "agents"),
+            ("config", "config.toml", "config.toml 指针", "astra:config", "config")):
+        hit = next((c for c in v["checks"] if c["role"] == role), None)
+        p = (hit or {}).get("path") or os.path.join(home, name)
+        nbytes = 0
+        try:
+            nbytes = os.path.getsize(p) if os.path.isfile(p) else 0
+        except OSError:
+            nbytes = 0
+        out.append({
+            "id": nid, "path": p, "name": name, "cat": cat,
+            "size": nbytes, "exists": os.path.isfile(p),
+            "enabled": st.get(flag) is not False, "managed": True, "live": True,
+            # 描述里不再重复标签已经说过的「本机文件」——卡片上会连着出现两遍
+            "note": ("可点开看内容" if os.path.isfile(p) else "本机还没有这个文件")
+                    + (" · 部署已就位" if (hit or {}).get("ok") else " · 尚未写入"),
+            "labels": [_label("本机文件", "info"),
+                       _label("托管块" if cat == "agents" else "配置指针", "muted"),
+                       _label("已启用" if st.get(flag) is not False else "已关闭",
+                              "ok" if st.get(flag) is not False else "muted")],
+            "memo": notes.get(nid, ""),
+        })
+
+    # 4) SKILL.md：父类目 + 叶子，逐份开关（键沿用 leaves/<id>.md）
+    try:
+        items = ad._skill_items(all_items=True)
+    except Exception:
+        items = []
+    try:
+        routes = _routes_mod()
+    except Exception:
+        routes = None
+    for sid, body in items:
+        p = os.path.join(home, "skills", sid, "SKILL.md")
+        nid = _astra_skill_key(sid)
+        on = _astra_skill_on(sid)
+        c = by_path.get(p) or {}
+        leaf_p = os.path.join(ROOT, "content", "routes", "leaves", sid + ".md")
+        meta = routes.leaf_meta(sid) if (routes and os.path.isfile(leaf_p)) else None
+        parent_key = next((k for k, v in (routes.CATEGORIES if routes else {}).items()
+                           if v[3] == sid), "")
+        if meta:
+            cn = meta["name"]                  # 中文小类名：接口对接 / SQL 注入 …
+            kw = meta["keywords"]
+            cat_cn = meta["category_name"]
+            kind, note = "小类", "命中「%s」时走这一份" % kw
+            labels = [_label(cat_cn, "info"), _label(kind, "muted"),
+                      _label("已投放" if c.get("ok") else "未投放",
+                             "ok" if c.get("ok") else "muted")]
+        elif parent_key:
+            stamp, pname, pkw, _slug = routes.CATEGORIES[parent_key]
+            cn, kw, cat_cn = pname, pkw, "类目"
+            kind = "父类目"
+            note = "类目三拍 · 下辖全部小类的入口"
+            labels = [_label("类目", "info"), _label(pname, "muted"),
+                      _label("已投放" if c.get("ok") else "未投放",
+                             "ok" if c.get("ok") else "muted")]
+        else:
+            cn, kw, cat_cn, kind = sid, "", "SKILL.md", "技能"
+            note = "已投放" if c.get("ok") else "尚未投放"
+            labels = [_label("SKILL.md", "info"),
+                      _label("已投放" if c.get("ok") else "未投放",
+                             "ok" if c.get("ok") else "muted")]
+        out.append({
+            "id": nid, "path": p, "name": sid, "cat": "skill",
+            "title": cn, "keywords": kw, "category": cat_cn,
+            "size": len(body.encode("utf-8")), "exists": os.path.isfile(p),
+            "enabled": on, "managed": True, "skill": True,
+            "note": note,
+            "labels": labels,
+            "memo": notes.get(nid, ""),
+        })
+
+    return _doc_finish(out, "codex", label, home)
+
+
+def _doc_finish(out, agent, label, home):
+    out.sort(key=lambda it: (_DOC_CAT_ORDER.get(it["cat"], 99), it["name"].lower()))
+    notes = _doc_notes()
+
+    def memo_of(it):
+        """按 id 找备注；再按旧键兜底（astra:skill/<id> ↔ leaves/<id>.md）。"""
+        iid = it.get("id") or ""
+        if not iid:
+            return ""
+        if notes.get(iid):
+            return notes[iid]
+        sid = ""
+        if iid.startswith("content/routes/leaves/"):
+            sid = os.path.basename(iid)[:-3]
+        elif iid.startswith("astra:skill/"):
+            sid = iid[len("astra:skill/"):]
+        if sid:
+            for alt in ("astra:skill/" + sid, "content/routes/leaves/%s.md" % sid):
+                if notes.get(alt):
+                    return notes[alt]
+        return ""
+
+    for it in out:
+        if it.get("memo"):
+            continue
+        it["memo"] = memo_of(it)
+    counts = {}
+    cat_label = {"persona": "人格", "seat": "席位源", "unlock": "破甲",
+                 "managed": "托管文档", "route": "路由", "leaf": "路由叶子",
+                 "instruction": "指令", "custom": "自定义"}
+    for it in out:
+        if not it.get("labels"):
+            it["labels"] = [{"tag": cat_label.get(it["cat"], "文档"), "tone": "info"},
+                            {"tag": "已启用" if it["enabled"] else "已停用",
+                             "tone": "ok" if it["enabled"] else "muted"}]
+        counts[it["cat"]] = counts.get(it["cat"], 0) + 1
+    cats = [{"id": cid, "name": _DOC_CAT_NAME[cid], "count": counts[cid]}
+            for cid, _n in DOC_CATS if counts.get(cid)]
+    # 其它 Agent 仍用旧分类（人格 / 席位源 / 路由 …）—— 没登记的也要给个 tab，
+    # 不然这些文档有数据却一个标签都不出现。
+    for cid, n in counts.items():
+        if cid not in _DOC_CAT_NAME:
+            cats.append({"id": cid, "name": _LEGACY_CAT_NAME.get(cid, cid), "count": n})
+    on = sum(1 for it in out if it["enabled"])
+    return {"ok": True, "agent": agent, "label": label, "root": ROOT,
+            "categories": cats, "items": out, "home": home,
+            "onCount": on, "offCount": len(out) - on,
+            "official": bool(out) and on == 0}
+
+
+def _inside(p):
+    """路径是否在项目根下（部署位在 ~/.codex，跨盘符不能 relpath）。"""
+    try:
+        ap = os.path.abspath(p)
+        root = os.path.abspath(ROOT)
+        return os.path.commonpath([ap, root]) == root
+    except ValueError:
+        return False
+
+
+def cmd_doc_memo(rel, memo):
+    """给某份文档写一句备注（存 状态/_doc_notes.json，不碰源件）。
+
+    Astra 页的 id（astra:agents / astra:config / astra:skill/<id>）直接用 id 当键 ——
+    备注是本地元数据，不需要文件落在项目里；本机落点（~/.codex）同理。
+    """
+    text = (memo or "").strip()
+    if len(text) > 200:
+        return {"ok": False, "error": "备注最多 200 字"}
+    if rel.startswith("astra:"):
+        key = rel
+    else:
+        p = os.path.abspath(os.path.join(ROOT, _doc_base(rel)))
+        if not _doc_allowed(p):
+            # 本机落点（~/.codex/AGENTS.md 之类）：只存备注，不碰文件
+            if not os.path.isfile(p):
+                return {"ok": False, "error": "不允许操作：%s" % rel}
+            key = _doc_rel(p) if _inside(p) else rel
+        else:
+            if not _doc_actual(p):
+                return {"ok": False, "error": "文件不存在：%s" % rel}
+            key = _doc_rel(p)
+    notes = _doc_notes()
+    if text:
+        notes[key] = text
+    else:
+        notes.pop(key, None)
+    if not _doc_notes_save(notes):
+        return {"ok": False, "error": "备注写盘失败"}
+    return {"ok": True, "id": key, "memo": text}
+
+
+def _astra_skill_key(sid):
+    """SKILL 开关的键：有同名叶子就用叶子路径，否则用 astra:skill/<id>。"""
+    leaf = "content/routes/leaves/%s.md" % sid
+    if os.path.isfile(os.path.join(ROOT, leaf)):
+        return leaf
+    return "astra:skill/%s" % sid
+
+
+def _astra_toggle(doc_id, want):
+    """Astra 页的三类开关：AGENTS.md / config.toml / SKILL.md。
+
+    AGENTS.md 与 config.toml 记在 状态/_astra_codex.json（astra_deploy 的 opts）；
+    SKILL.md 复用通用开关表（叶子键 content/routes/leaves/<id>.md）。
+    """
+    ad = _astra()
+    if ad is None:
+        return {"ok": False, "error": "engine/astra_deploy.py 缺失"}
+    if doc_id in ("astra:agents", "astra:config"):
+        flag = "agents" if doc_id == "astra:agents" else "config"
+        st = ad.state()
+        st[flag] = bool(want)
+        ad.save_state(st)
+        return {"ok": True, "id": doc_id, "enabled": bool(want),
+                "note": "已%s · 下次部署时%s写这一路" % (
+                    "启用" if want else "停用", "" if want else "不")}
+    if doc_id.startswith("astra:skill/"):
+        sid = doc_id[len("astra:skill/"):]
+        key = _astra_skill_key(sid)
+        if key.startswith("astra:"):
+            st = ad.state()
+            st[key] = bool(want)
+            ad.save_state(st)
+            return {"ok": True, "id": doc_id, "enabled": bool(want),
+                    "note": "已%s · 下次部署后生效" % ("启用" if want else "停用")}
+        ok = _doc_set_enabled(key, want)
+        return {"ok": ok, "id": doc_id, "enabled": bool(want),
+                "note": ("已启用 · 下次部署会重新投放" if want
+                         else "已停用 · 下次部署会撤下这一份 skill")}
+    p = os.path.abspath(os.path.join(ROOT, _doc_base(doc_id)))
+    if not _doc_allowed(p):
+        return {"ok": False, "error": "不允许操作：%s" % doc_id}
+    ok = _doc_set_enabled(_doc_rel(p), want)
+    return {"ok": ok, "id": doc_id, "enabled": bool(want),
+            "note": ("已启用 · 下次部署会重新投放" if want else "已停用 · 下次部署会撤下这一份 skill")}
+
+
+def _astra_skill_on(sid):
+    ad = _astra()
+    key = _astra_skill_key(sid)
+    if key.startswith("astra:"):
+        st = ad.state() if ad else {}
+        return st.get(key) is not False
+    return _doc_enabled(os.path.join(ROOT, key))
+
+
+def cmd_doc_toggle(rel):
+    """每个文档的注入开关：写状态表，不动盘上的源件。
+
+    关闭只是把这份文档从"合成清单"里摘掉，源文件一个字节不改 ——
+    生成脚本、引擎按路径找源件的地方都不会对不上。改完实时生效于下一次部署。
+    """
+    if rel.startswith("astra:"):
+        if rel in ("astra:agents", "astra:config"):
+            ad = _astra()
+            st = ad.state() if ad else {}
+            flag = "agents" if rel == "astra:agents" else "config"
+            return _astra_toggle(rel, st.get(flag) is False)
+        if rel.startswith("astra:skill/"):
+            sid = rel[len("astra:skill/"):]
+            return _astra_toggle(rel, not _astra_skill_on(sid))
+        return {"ok": False, "error": "未知开关：%s" % rel}
+    p = os.path.abspath(os.path.join(ROOT, _doc_base(rel)))
+    if not _doc_allowed(p):
+        return {"ok": False, "error": "不允许操作：%s" % rel}
+    base_rel = _doc_rel(p)
+    if base_rel == "targets/codex/codex-unlock-instructions.md":
+        return {"ok": False, "error": "这是部署快照，不能停用：它跟着实际注入内容自动同步"}
+    if not _doc_actual(p):
+        return {"ok": False, "error": "文件不存在：%s" % base_rel}
+    was_on = _doc_enabled(p)
+    if not _doc_set_enabled(base_rel, not was_on):
+        return {"ok": False, "error": "开关状态写盘失败"}
+    note = "已启用 · 重新部署后生效" if not was_on else "已停用 · 重新部署后生效"
+    if base_rel in DOC_GENERATED:
+        note = ("已启用 · 下次生成按钮重新生成并部署后生效" if not was_on
+                else "已停用 · 引擎改用内置兜底骨架，不属于生成产物、可随拨随生效")
+    if base_rel.startswith("content/routes/leaves/"):
+        note = ("已启用 · 重新部署后 skill 会重新投放" if not was_on
+                else "已停用 · 下次部署会撤下这一份 skill")
+    return {"ok": True, "id": base_rel, "path": p,
+            "enabled": not was_on, "note": note}
+
+
+def cmd_doc_toggle_many(items, on):
+    """批量开关：一次桥调用写完，界面只等一趟。
+
+    items = [{"id": 相对路径, "on": true/false}]；单项失败不影响其余，
+    返回 done / failed 两个列表。
+    """
+    if not isinstance(items, list):
+        return {"ok": False, "error": "items 必须是数组"}
+    done, failed = [], []
+    for it in items:
+        rel = (it or {}).get("id") if isinstance(it, dict) else it
+        want = bool((it or {}).get("on", on)) if isinstance(it, dict) else bool(on)
+        if isinstance(rel, str) and rel.startswith("astra:"):
+            if rel.startswith("astra:skill/"):
+                rel = _astra_skill_key(rel[len("astra:skill/"):])
+                if not rel.startswith("astra:"):
+                    # 折成叶子路径后走通用表，别再按 astra: 处理
+                    p2 = os.path.abspath(os.path.join(ROOT, rel))
+                    ok2 = _doc_set_enabled(rel, want) if _doc_allowed(p2) else False
+                    (done if ok2 else failed).append(
+                        {"id": rel, "enabled": want} if ok2
+                        else {"id": rel, "error": "写盘失败"})
+                    continue
+            r = _astra_toggle(rel, want)
+            (done if r.get("ok") else failed).append(
+                {"id": rel, "enabled": want} if r.get("ok")
+                else {"id": rel, "error": r.get("error") or "失败"})
+            continue
+        p = os.path.abspath(os.path.join(ROOT, _doc_base(rel or "")))
+        if not rel or not _doc_allowed(p):
+            failed.append({"id": rel, "error": "不允许操作"})
+            continue
+        base_rel = _doc_rel(p)
+        if base_rel == "targets/codex/codex-unlock-instructions.md":
+            failed.append({"id": base_rel, "error": "部署快照不可停用"})
+            continue
+        if not _doc_actual(p):
+            failed.append({"id": base_rel, "error": "文件不存在"})
+            continue
+        if not _doc_set_enabled(base_rel, want):
+            failed.append({"id": base_rel, "error": "写盘失败"})
+            continue
+        done.append({"id": base_rel, "enabled": want})
+    return {"ok": True, "done": done, "failed": failed,
+            "onCount": sum(1 for d in done if d["enabled"]),
+            "offCount": sum(1 for d in done if not d["enabled"])}
+
+
+def cmd_docs(agent):
+    return _doc_scan(agent if agent in _DOC_AGENT_MAP else "codex")
+
+
+def _doc_scan_all():
+    """全库汇总（保留给命令行用，界面不再提供入口）。"""
+    out = []
+    seen = set()
+
+    def add(p, note=""):
+        if not p.lower().endswith(".md"):
+            return
+        real = _doc_actual(p)
+        if not real:
+            return
+        rel = _doc_rel(real)
+        if rel in DOC_MIRRORS or _doc_skip(rel):
+            return
+        if rel in seen:
+            return
+        seen.add(rel)
+        enabled = _doc_enabled(real)
+        out.append({
+            "id": rel, "path": os.path.abspath(real), "name": os.path.basename(p),
+            "cat": _doc_cat(_doc_rel(p), ""), "size": os.path.getsize(real), "exists": True,
+            "enabled": enabled,
+            "generated": _doc_rel(p) in DOC_GENERATED or _doc_rel(p).startswith("content/routes/leaves/"),
+            "note": note or ("" if enabled else "已停用 · 不参与合成，内容一个字节没动"),
+        })
+
+    add(os.path.join(CONTENT, "persona.md"), "全部席位共用的人格源件")
+    seats_dir = os.path.join(CONTENT, "seats")
+    if os.path.isdir(seats_dir):
+        for fn in sorted(os.listdir(seats_dir)):
+            m = re.fullmatch(r"(.+\.md)(\.off)?", fn, re.I)
+            if not m:
+                continue
+            add(os.path.join(seats_dir, m.group(1)),
+                "用户自建指令" if m.group(1).startswith("custom_") else "席位 / 托管源")
+    for key, _label, dirname in DOC_AGENTS:
+        tdir = os.path.join(ROOT, "targets", dirname)
+        if not os.path.isdir(tdir):
+            continue
+        for dirpath, dirnames, filenames in os.walk(tdir):
+            dirnames[:] = [d for d in dirnames if d not in ("__pycache__", ".git")]
+            for fn in sorted(filenames):
+                if fn.lower().endswith(".md.off"):
+                    add(os.path.join(dirpath, fn[:-7]))
+                else:
+                    add(os.path.join(dirpath, fn))
+
+    # codex 破甲候选：标出当前部署
+    active_name = ""
+    try:
+        dep = _deployed_instr_path("codex")
+        if dep and os.path.isfile(dep):
+            active_name = os.path.basename(dep)
+    except Exception:
+        pass
+    lib = os.path.join(ROOT, "targets", "codex", "instructions")
+    for it in out:
+        if os.path.dirname(it["path"]) == lib:
+            it["deployable"] = True
+            it["active"] = it["enabled"] and it["name"] == active_name
+
+    out.sort(key=lambda it: (_DOC_CAT_ORDER.get(it["cat"], 99), it["name"].lower()))
+    notes = _doc_notes()
+    for it in out:
+        it["memo"] = notes.get(_doc_rel(_doc_base(it["path"])), "")
+    counts = {}
+    for it in out:
+        counts[it["cat"]] = counts.get(it["cat"], 0) + 1
+    cats = [{"id": cid, "name": _DOC_CAT_NAME[cid], "count": counts[cid]}
+            for cid, _n in DOC_CATS if counts.get(cid)]
+    return {"ok": True, "agent": "", "label": "全部席位",
+            "root": ROOT, "categories": cats, "items": out,
+            "offCount": sum(1 for it in out if not it["enabled"])}
+
+
+def _astra_doc_keywords(doc_id):
+    """Astra 页文档的命中关键词（编辑页顶部要看得见，方便照着改）。"""
+    routes = _routes_mod()
+    if doc_id.startswith("astra:skill/"):
+        sid = doc_id[len("astra:skill/"):]
+        parent = next((k for k, v in routes.CATEGORIES.items() if v[3] == sid), "")
+        return routes.CATEGORIES[parent][2] if parent else ""
+    if doc_id == "astra:agents":
+        return "本机 AGENTS.md 标签块（部署时写入）"
+    if doc_id == "astra:config":
+        return "model_instructions_file · model_provider · model"
+    return ""
+
+
+def _astra_edit_path(doc_id):
+    """Astra 页落点的编辑目标：AGENTS.md / config.toml 就是本机实盘文件。"""
+    ad = _astra()
+    home = ad.home_of("codex") if ad else os.path.join(os.path.expanduser("~"), ".codex")
+    if doc_id == "astra:agents":
+        return os.path.join(home, "AGENTS.md"), "本机 AGENTS.md（部署时同步标记块）"
+    if doc_id == "astra:config":
+        return os.path.join(home, "config.toml"), "本机 config.toml（部署时改写 model_instructions_file）"
+    if doc_id.startswith("astra:skill/"):
+        sid = doc_id[len("astra:skill/"):]
+        key = _astra_skill_key(sid)
+        if key.startswith("astra:"):
+            return "", "父类目内容由 content/routes/ 生成"
+        return os.path.join(ROOT, key), "SKILL.md 正文源（部署时投放到 ~/.codex/skills/）"
+    return "", ""
+
+
+def cmd_doc_read(rel):
+    """整文件读出（编辑用）。Astra 页的 id 折到项目里的源件。"""
+    path, note = (_astra_edit_path(rel) if rel.startswith("astra:") else ("", ""))
+    if rel.startswith("astra:"):
+        if not path or not os.path.isfile(path):
+            return {"ok": False, "error": note or "这份不可编辑"}
+        try:
+            content = _read_text(path)
+        except OSError as e:
+            return {"ok": False, "error": str(e)}
+        # 写回时按本机文件落点；顺带把内容源路径告诉界面
+        return {"ok": True, "id": rel, "path": path, "content": content,
+                "size": os.path.getsize(path), "editable": True,
+                "enabled": True, "generated": False, "live": True, "hint": note,
+                "keywords": _astra_doc_keywords(rel)}
+    p = os.path.abspath(os.path.join(ROOT, rel))
+    if not _doc_allowed(p):
+        p = os.path.abspath(os.path.join(ROOT, _doc_base(rel)))
+        if not _doc_allowed(p):
+            return {"ok": False, "error": "不允许访问：%s" % rel}
+    real = _doc_actual(_doc_base(p))
+    if not real:
+        return {"ok": False, "error": "文件不存在：%s" % rel}
+    try:
+        sz = os.path.getsize(real)
+        if sz > 2 * 1024 * 1024:
+            return {"ok": False, "error": "超过 2 MB，请用编辑器打开：%s" % real}
+        content = _read_text(real)
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+    base_rel = _doc_rel(_doc_base(real))
+    kw = ""
+    if base_rel.startswith("content/routes/leaves/"):
+        try:
+            kw = _routes_mod().leaf_meta(os.path.basename(base_rel)[:-3])["keywords"]
+        except Exception:
+            kw = ""
+    return {"ok": True, "id": _doc_rel(real), "path": real, "content": content,
+            "size": sz, "editable": True, "enabled": _doc_enabled(real),
+            "keywords": kw,
+            "generated": base_rel in DOC_GENERATED or base_rel.startswith("content/routes/leaves/")}
+
+
+def _write_outside(doc_id, path, content):
+    """写项目外的本机文件（~/.codex）。写前备份到 状态/editor-backup。"""
+    try:
+        with open(path, "rb") as f:
+            old = f.read()
+        bak = _backup_path(path)
+        if not (os.path.isfile(bak) and open(bak, "rb").read() == old):
+            with open(bak, "wb") as f:
+                f.write(old)
+        new = content.encode("utf-8")
+        if old == new:
+            return {"ok": True, "id": doc_id, "path": path, "written": False,
+                    "note": "内容没变，不写盘"}
+        with open(path, "wb") as f:
+            f.write(new)
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "id": doc_id, "path": path, "written": True, "backup": bak,
+            "size": len(new), "note": "已写回本机文件 · 备份在 状态/editor-backup"}
+
+
+def cmd_doc_write(rel, content):
+    """写回 md（停用的 .md.off 也能写）。先备份原内容到 状态/editor-backup。"""
+    if rel.startswith("astra:"):
+        path, note = _astra_edit_path(rel)
+        if not path or not os.path.isfile(path):
+            return {"ok": False, "error": note or "这份不可编辑"}
+        if not _inside(path):
+            # 本机落点（~/.codex）：直接写，备份到 状态/editor-backup
+            return _write_outside(rel, path, content)
+    p = os.path.abspath(os.path.join(ROOT, _doc_base(rel)))
+    if not _doc_allowed(p):
+        return {"ok": False, "error": "不允许写入：%s" % rel}
+    real = _doc_actual(p)
+    if not real:
+        return {"ok": False, "error": "文件不存在：%s" % rel}
+    try:
+        with open(real, "rb") as f:
+            old = f.read()
+        bak = _backup_path(real)
+        if not (os.path.isfile(bak) and open(bak, "rb").read() == old):
+            with open(bak, "wb") as f:
+                f.write(old)
+        new = content.encode("utf-8")
+        if old == new:
+            return {"ok": True, "path": real, "written": False, "note": "内容没变，不写盘"}
+        with open(real, "wb") as f:
+            f.write(new)
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "path": real, "written": True, "backup": bak,
+            "size": len(new), "note": "已写回 · 备份在 状态/editor-backup"}
+
+
+def cmd_doc_new(agent, cat, name):
+    """在 content/seats/ 下新建 custom_<name>.md（统一落点，好备份、好迁移）。"""
+    if not re.fullmatch(r"[A-Za-z0-9_\-]{1,40}", name or ""):
+        return {"ok": False, "error": "名称只允许字母 / 数字 / _ / -（1-40 字符）"}
+    p = os.path.join(CONTENT, "seats", "custom_%s.md" % name)
+    if os.path.exists(p):
+        return {"ok": False, "error": "同名文件已存在：%s" % _doc_rel(p)}
+    title = _DOC_CAT_NAME.get(cat, "自定义")
+    try:
+        with open(p, "wb") as f:
+            f.write(("<!-- %s · %s -->\n\n# %s\n\n" % (title, agent, name)).encode("utf-8"))
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "id": _doc_rel(p), "path": p}
+
+
+def cmd_doc_delete(rel):
+    """删自定义 md；内置 / 生成产物不让删。"""
+    p = os.path.abspath(os.path.join(ROOT, rel))
+    if not _doc_allowed(p):
+        return {"ok": False, "error": "不允许删除：%s" % rel}
+    base = os.path.basename(p)
+    if not re.fullmatch(r"custom_[A-Za-z0-9_\-]+\.md", base):
+        return {"ok": False, "error": "只允许删除 custom_*.md 自建文件"}
+    if not os.path.isfile(p):
+        return {"ok": False, "error": "文件不存在"}
+    try:
+        os.remove(p)
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "id": rel, "path": p}
+
+
+def cmd_cat(target, index):
+    """读补丁表第 index 行（0 起，对应 cmd_patches 展平顺序）的文件头尾预览。"""
+    d = cmd_patches(target)
+    if not d.get("ok"):
+        return d
+    flat = [r for g in d["groups"] for r in g["rows"]]
+    if index < 0 or index >= len(flat):
+        return {"ok": False, "error": "行号越界：0-%d" % (len(flat) - 1) if flat else "没有行"}
+    row = flat[index]
+    p = row["path"]
+    out = {"ok": True, "path": p, "role": row["role"], "state": row["state"],
+           "isdir": row["isdir"], "head": "", "tail": "", "sha": row["sha"]}
+    if row["isdir"] or not os.path.isfile(p):
+        return out
+    try:
+        with open(p, "rb") as f:
+            head = f.read(2400).decode("utf-8-sig", "replace")
+        with open(p, "rb") as f:
+            f.seek(max(0, os.path.getsize(p) - 1600))
+            tail = f.read().decode("utf-8", "replace")
+    except OSError as e:
+        out["error"] = str(e)
+        return out
+    out["head"] = head
+    out["tail"] = tail
+    return out
+
+
+# ─────────────────────────── 文件编辑（purge 式 editor）───────────────────────────
+
+# 允许编辑的扩展名白名单 —— 破甲改的都是这些文本格式；二进制（exe/asar/dll）一律拒
+_EDIT_OK_EXT = (".md", ".txt", ".yml", ".yaml", ".json", ".toml", ".js", ".mjs",
+                ".cjs", ".css", ".html", ".py", ".ps1", ".bat", ".cmd", ".cmd")
+
+
+def _backup_path(p):
+    """编辑备份落点：状态/editor-backup/<sha1 前缀>_<文件名>。同内容重复编辑不堆副本。"""
+    m = mod()
+    digest = m.sha1_short(p)[:8]
+    d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "状态", "editor-backup")
+    os.makedirs(d, exist_ok=True)
+    return os.path.abspath(os.path.join(d, "%s_%s" % (digest, os.path.basename(p))))
+
+
+def cmd_read(target, index):
+    """整文件读出（编辑用）。cat 只给头尾，编辑必须全文。上限 2 MB。"""
+    d = cmd_patches(target)
+    if not d.get("ok"):
+        return d
+    flat = [r for g in d["groups"] for r in g["rows"]]
+    if index < 0 or index >= len(flat):
+        return {"ok": False, "error": "行号越界"}
+    row = flat[index]
+    p = row["path"]
+    out = {"ok": True, "path": p, "role": row["role"], "state": row["state"],
+           "isdir": row["isdir"], "sha": row["sha"], "editable": False, "content": ""}
+    if row["isdir"] or not os.path.isfile(p):
+        out["error"] = "目录不能编辑"
+        return out
+    if not p.lower().endswith(_EDIT_OK_EXT):
+        out["error"] = "只支持文本格式（md/txt/yml/json/toml/js/py…）"
+        return out
+    try:
+        sz = os.path.getsize(p)
+        if sz > 2 * 1024 * 1024:
+            out["error"] = "文件超过 2 MB，请直接用编辑器改：%s" % p
+            return out
+        with open(p, "rb") as f:
+            out["content"] = f.read().decode("utf-8-sig", "replace")
+    except OSError as e:
+        out["error"] = str(e)
+        return out
+    out["editable"] = True
+    out["size"] = sz
+    return out
+
+
+def cmd_write(target, index, content):
+    """写回第 index 行的文件。写之前先备份原内容到 状态/editor-backup/。"""
+    d = cmd_patches(target)
+    if not d.get("ok"):
+        return d
+    flat = [r for g in d["groups"] for r in g["rows"]]
+    if index < 0 or index >= len(flat):
+        return {"ok": False, "error": "行号越界"}
+    row = flat[index]
+    p = row["path"]
+    if row["isdir"] or not os.path.isfile(p):
+        return {"ok": False, "error": "目录不能写"}
+    if not p.lower().endswith(_EDIT_OK_EXT):
+        return {"ok": False, "error": "只支持文本格式"}
+    try:
+        sz = os.path.getsize(p)
+        if sz > 2 * 1024 * 1024:
+            return {"ok": False, "error": "文件超过 2 MB，不走这里改"}
+        with open(p, "rb") as f:
+            old = f.read()
+        bak = _backup_path(p)
+        if not (os.path.isfile(bak) and open(bak, "rb").read() == old):
+            with open(bak, "wb") as f:
+                f.write(old)
+        new = content.encode("utf-8")
+        # 内容没变就不写 —— 避免无意义地动 mtime（客户端可能按 mtime 缓存）
+        if old == new:
+            return {"ok": True, "path": p, "written": False, "backup": bak, "note": "内容没变，不写盘"}
+        with open(p, "wb") as f:
+            f.write(new)
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "path": p, "written": True, "backup": bak,
+            "size": len(new), "note": "已写回，备份在 状态/editor-backup"}
+
+
 def cmd_status(targets):
     m = mod()  # 预热：模块加载是全局惰性的，别让第一次调用落在工作线程里
     want = m.sha1_short("|" + m.POLICY_BASE + "|" + m.OVERLAY + "|False")
@@ -1301,36 +2852,26 @@ def _test_impl(targets):
         add("dim", "  体量：%d 字符" % len(m.ROUTE_SECTION))
 
     if "codex" in targets:
-        t = m.TARGETS["codex"]()
-        home = t.resolve_home("")
-        cfg_p, inst_p, _st, _bak = t.paths(home)
-        add("info", "【Codex】%s" % home)
-        cfg = ""
-        if os.path.isfile(cfg_p):
-            with open(cfg_p, encoding="utf-8", errors="replace") as f:
-                cfg = f.read()
-        tgt = ""
-        for ln in cfg.splitlines():
-            if "model_instructions_file" in ln and "=" in ln:
-                tgt = ln.split("=", 1)[1].strip().strip('"').strip("'")
-                break
-        if not tgt:
+        ad = _astra()
+        if ad is None:
             ok = False
-            add("err", "  [FAIL] config.toml 缺少 model_instructions_file")
+            add("err", "  [FAIL] engine/astra_deploy.py 缺失")
         else:
-            instr = os.path.normpath(os.path.join(home, tgt))
-            add("dim", "  指令文件：%s" % instr)
-            e2, _s2, hit2, miss2 = probe(instr, list(CODEX_KEYS) + ["沉浸优先", "表演规则"])
-            for k in list(CODEX_KEYS) + ["沉浸优先", "表演规则"]:
-                good = k in hit2
-                ok = ok and good
-                add("ok" if good else "err", "  [%s] 关键段：%s" % ("OK  " if good else "FAIL", k))
-        p = os.path.join(CONTENT, "persona.md")
-        if os.path.isfile(p) and os.path.isfile(inst_p):
-            if os.path.getmtime(inst_p) + 5 < os.path.getmtime(p):
-                add("warn", "  [WARN] persona.md 比部署文件新 —— 改了人格没重打，需要重新部署")
-            else:
-                add("ok", "  [OK  ] 部署文件与 persona.md 同步（新鲜度）")
+            v = ad.verify("codex")
+            add("info", "【ChatGPT】%s" % v["home"])
+            add("dim", "  指令源：%s · %d 个落点" % (v["pack"] or "（未选）", v["total"]))
+            for c in v["checks"]:
+                if c["role"] == "SKILL.md":
+                    continue
+                ok = ok and c["ok"]
+                add("ok" if c["ok"] else "err",
+                    "  [%s] %s：%s" % ("OK  " if c["ok"] else "FAIL", c["role"], c["path"]))
+            sk = [c for c in v["checks"] if c["role"] == "SKILL.md"]
+            sk_ok = sum(1 for c in sk if c["ok"])
+            ok = ok and sk_ok == len(sk)
+            add("ok" if sk_ok == len(sk) else "err",
+                "  [%s] SKILL.md：%d / %d 已投放" % ("OK  " if sk_ok == len(sk) else "FAIL",
+                                                  sk_ok, len(sk)))
 
     if has_dsh(targets):
         t = m.TARGETS["dsh"]()
@@ -1476,7 +3017,11 @@ def _clean_env():
 
 
 def _pump(cmd, tag, label):
-    """跑一条命令并把输出转成 NDJSON 行事件。返回退出码。"""
+    """跑一条命令并把输出转成 NDJSON 行事件。返回退出码。
+
+    astra_deploy.py 只吐一段 JSON（没有逐行日志），这里把它翻译成人话，
+    让「指令提示页开关 → 部署」链路在日志里看得见。
+    """
     try:
         p = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT, env=_clean_env(),
@@ -1485,12 +3030,51 @@ def _pump(cmd, tag, label):
         emit({"type": "line", "target": tag, "level": "err", "text": "启动失败：%s" % e})
         return 1
     assert p.stdout is not None
+    astra = tag == "codex" and any("astra_deploy.py" in str(c) for c in cmd)
+    buf = []
     for raw in p.stdout:
         ln, level = classify(raw)
-        if ln.strip():
+        if not ln.strip():
+            continue
+        if astra:
+            buf.append(ln)                 # JSON 原文不进日志，下面翻译成人话
+        else:
             emit({"type": "line", "target": tag, "level": level, "text": spice(ln)})
     p.wait()
+    if astra:
+        for text, level in _astra_lines(buf):
+            emit({"type": "line", "target": tag, "level": level, "text": text})
     return p.returncode or 0
+
+
+def _astra_lines(lines):
+    """把 astra_deploy 的 JSON 结果拆成日志行：谁写了、谁撤了、当前是哪个源。"""
+    blob = "\n".join(lines).strip()
+    try:
+        d = json.loads(blob)
+    except ValueError:
+        return []
+    if not isinstance(d, dict):
+        return []
+    out = []
+    act = d.get("action") or ""
+    if d.get("dry"):
+        out.append(("[预演] 不写盘：" + (d.get("note") or "检查四路落点"), "dim"))
+        return out
+    pack = d.get("pack") or ""
+    if act == "deploy":
+        out.append(("指令源：" + (pack or "（无 —— 按官方原版处理）"), "ok" if pack else "warn"))
+    elif act == "restore":
+        out.append(("已还原成官方原版：四路落点全部撤回", "ok"))
+    for p in (d.get("written") or []):
+        out.append(("  写入 " + p, "ok"))
+    for p in (d.get("removed") or []):
+        out.append(("  撤下 " + p, "dim"))
+    if act == "deploy" and not d.get("written") and not d.get("removed"):
+        out.append(("  四路落点都已是最新，本次无需改动", "dim"))
+    if d.get("note"):
+        out.append((d["note"], "ok"))
+    return out
 
 
 # 破甲模式：独立动作，不走 per-target 循环 —— 它不是 破甲一键通 的 target，
@@ -1548,7 +3132,23 @@ def cmd_run(action, targets, flags=None):
     buf = []
     for k in targets:
         emit({"type": "step", "target": k, "action": label})
-        if preset_only and k == "dsh":
+        if k == "codex":
+            # ChatGPT 席位走 Astra 那套四落点部署（指令文件 / AGENTS.md / config.toml / SKILL.md）
+            cmd = [sys.executable, os.path.join(ENGINE, "astra_deploy.py")]
+            if argv_action == "apply":
+                # 滑块拨右 = 部署。用户刚点过「还原」的话，先把还原时置 false 的
+                # 四路开关拨回来；否则四路全关又会被 deploy() 判成「回官方原版」。
+                ad = _astra()
+                st = ad.state() if ad else {}
+                if (st.get("pack_on") is False and st.get("agents") is False
+                        and st.get("config") is False and st.get("skills") is False):
+                    ad.enable_all()
+                cmd.append("apply")
+            else:
+                cmd.append({"revert": "restore", "dry": "deploy"}[argv_action])
+            if argv_action == "dry":
+                cmd.append("--dry")
+        elif preset_only and k == "dsh":
             # 只有 DSH 有破甲模式这个附加产物；走主脚本的 --dsh-preset 通道，
             # 不带 --target 就等于完全不碰本体文件。
             sub = "remove" if argv_action == "revert" else "deploy"
@@ -1677,7 +3277,7 @@ def cmd_diff(target):
 
 def main(argv):
     if not argv:
-        emit({"error": "用法：bridge.py meta|status|test|route|tx|diff|run"})
+        emit({"error": "用法：bridge.py meta|status|test|route|tx|diff|patches|cat|run"})
         return 2
     cmd = argv[0].lower()
     if cmd == "meta":
@@ -1687,6 +3287,84 @@ def main(argv):
     elif cmd == "diff":
         tgt = argv[1] if len(argv) > 1 else ""
         emit(cmd_diff(tgt))
+    elif cmd == "prompts":
+        emit(cmd_prompts())
+    elif cmd == "prompt-read":
+        emit(cmd_prompt_read(argv[1] if len(argv) > 1 else ""))
+    elif cmd == "prompt-write":
+        # prompt-write <id> <base64 内容> —— 全文经 base64 过桥
+        try:
+            content = base64.b64decode(argv[2] if len(argv) > 2 else "").decode("utf-8")
+        except Exception:
+            emit({"ok": False, "error": "prompt-write 第 3 参必须是 UTF-8 文本的 base64"})
+            return 2
+        emit(cmd_prompt_write(argv[1] if len(argv) > 1 else "", content))
+    elif cmd == "prompt-new":
+        emit(cmd_prompt_new(argv[1] if len(argv) > 1 else ""))
+    elif cmd == "prompt-delete":
+        emit(cmd_prompt_delete(argv[1] if len(argv) > 1 else ""))
+    elif cmd == "instr-list":
+        emit(cmd_instr_list(argv[1] if len(argv) > 1 else "codex"))
+    elif cmd == "instr-apply":
+        emit(cmd_instr_apply(argv[1] if len(argv) > 1 else "codex",
+                             argv[2] if len(argv) > 2 else ""))
+    elif cmd == "instr-disable":
+        emit(cmd_instr_disable(argv[1] if len(argv) > 1 else "codex"))
+    elif cmd == "instr-toggle":
+        emit(cmd_instr_toggle(argv[1] if len(argv) > 1 else "codex",
+                              argv[2] if len(argv) > 2 else "",
+                              (argv[3] if len(argv) > 3 else "1") not in ("0", "false", "off")))
+    elif cmd == "docs":
+        emit(cmd_docs(argv[1] if len(argv) > 1 else "codex"))
+    elif cmd == "doc-read":
+        emit(cmd_doc_read(argv[1] if len(argv) > 1 else ""))
+    elif cmd == "doc-write":
+        try:
+            content = base64.b64decode(argv[2] if len(argv) > 2 else "").decode("utf-8")
+        except Exception:
+            emit({"ok": False, "error": "doc-write 第 3 参必须是 UTF-8 文本的 base64"})
+            return 2
+        emit(cmd_doc_write(argv[1] if len(argv) > 1 else "", content))
+    elif cmd == "doc-new":
+        emit(cmd_doc_new(argv[1] if len(argv) > 1 else "codex",
+                         argv[2] if len(argv) > 2 else "custom",
+                         argv[3] if len(argv) > 3 else ""))
+    elif cmd == "doc-delete":
+        emit(cmd_doc_delete(argv[1] if len(argv) > 1 else ""))
+    elif cmd == "doc-toggle":
+        emit(cmd_doc_toggle(argv[1] if len(argv) > 1 else ""))
+    elif cmd == "doc-toggle-many":
+        # doc-toggle-many <base64 JSON [{"id":..,"on":..}]>
+        try:
+            payload = json.loads(base64.b64decode(argv[1] if len(argv) > 1 else "").decode("utf-8"))
+        except Exception:
+            emit({"ok": False, "error": "doc-toggle-many 参数必须是 JSON 数组的 base64"})
+            return 2
+        emit(cmd_doc_toggle_many(payload, True))
+    elif cmd == "doc-memo":
+        emit(cmd_doc_memo(argv[1] if len(argv) > 1 else "",
+                          argv[2] if len(argv) > 2 else ""))
+    elif cmd == "patches":
+        tgt = argv[1] if len(argv) > 1 else ""
+        emit(cmd_patches(tgt))
+    elif cmd == "cat":
+        tgt = argv[1] if len(argv) > 1 else ""
+        idx = int(argv[2]) if len(argv) > 2 and argv[2].isdigit() else -1
+        emit(cmd_cat(tgt, idx))
+    elif cmd == "read":
+        tgt = argv[1] if len(argv) > 1 else ""
+        idx = int(argv[2]) if len(argv) > 2 and argv[2].isdigit() else -1
+        emit(cmd_read(tgt, idx))
+    elif cmd == "write":
+        # write <target> <idx> <base64 内容> —— 全文经 base64 过桥，别让换行/引号炸 JSON
+        tgt = argv[1] if len(argv) > 1 else ""
+        idx = int(argv[2]) if len(argv) > 2 and argv[2].isdigit() else -1
+        try:
+            content = base64.b64decode(argv[3] if len(argv) > 3 else "").decode("utf-8")
+        except Exception:
+            emit({"ok": False, "error": "write 第 4 参必须是 UTF-8 文本的 base64"})
+            return 2
+        emit(cmd_write(tgt, idx, content))
     elif cmd == "status":
         emit(cmd_status(norm_targets(argv[1] if len(argv) > 1 else "")))
     elif cmd == "test":

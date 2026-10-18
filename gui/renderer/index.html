@@ -8,100 +8,387 @@
 </head>
 <body>
 
-<header class="titlebar">
-  <div class="tb-left">
-    <div class="logo">破</div>
-    <div class="tb-title">破甲工作台</div>
-    <div class="ver clickable" id="tbVersion" title="点击查看更新日志 / 检查新版本">v6.8</div>
-    <div class="tb-sub" id="tbSub">九目标统一控制台</div>
-  </div>
-  <div class="tb-drag"></div>
-  <div class="tb-right">
-    <button class="wbtn" data-win="min" title="最小化">&#x2013;</button>
-    <button class="wbtn" data-win="max" title="最大化">&#x25A1;</button>
-    <button class="wbtn close" data-win="close" title="关闭">&#x2715;</button>
-  </div>
-</header>
+<div class="app">
 
-<section class="toolbar">
-  <div class="tb-group">
-    <button class="btn primary" id="btnDeploy" data-action="apply">
-      <span class="bi">&#x25B6;</span> 部署
-    </button>
-    <button class="btn" id="btnDry" data-action="dry">
-      <span class="bi">&#x25CE;</span> 预演
-    </button>
-    <button class="btn" id="btnDiff" title="先看将要写入的内容，再决定要不要部署">
-      <span class="bi">&#x2637;</span> 预览
-    </button>
-    <button class="btn" id="btnTest" data-action="test">
-      <span class="bi">&#x2714;</span> 验证
-    </button>
-    <button class="btn danger" id="btnRevert" data-action="revert" title="撤掉破甲，从备份还原成官方原版">
-      <span class="bi">&#x21BA;</span> 还原
-    </button>
-  </div>
-
-  <div class="tb-sep"></div>
-
-  <div class="tb-group sel">
-    <span class="lbl">目标</span>
-    <button class="chipbtn" data-sel="all">全选</button>
-    <button class="chipbtn" data-sel="none">全不选</button>
-    <button class="chipbtn" data-sel="invert">反选</button>
-  </div>
-
-  <div class="tb-drag2"></div>
-
-  <div class="tb-group">
-    <button class="btn ghost" id="btnRefresh" title="F5 重新检测">
-      <span class="bi">&#x21BB;</span> 刷新状态
-    </button>
-    <button class="btn ghost" id="btnTx" title="查看部署历史 / 按快照回退">
-      <span class="bi">&#x25F7;</span> 历史
-    </button>
-    <button class="btn ghost" id="btnConsole">控制台</button>
-    <button class="btn ghost" id="btnPy">Python</button>
-  </div>
-</section>
-
-<main class="workspace">
-  <section class="cards" id="cards"></section>
-
-  <section class="logpanel" id="logPanel">
-    <div class="loghead">
-      <button class="collapsebtn" id="btnCollapse" title="折叠 / 展开日志">&#x21E5;</button>
-      <span class="lt">执行日志</span>
-      <span class="lcount" id="logCount">0</span>
-      <div class="lspacer"></div>
-      <label class="autoscroll"><input type="checkbox" id="autoScroll" checked> 自动滚底</label>
-      <button class="minibtn" id="btnLogClear">清空</button>
-      <button class="minibtn" id="btnLogFile">日志文件</button>
+  <!-- ── 左侧导航 ── -->
+  <aside class="sidebar">
+    <div class="side-logo">
+      <span class="logo-glyph">破</span>
+      <span class="logo-word gtitle">破甲工作台<i>POJIA WORKBENCH</i></span>
     </div>
-    <div class="logbody" id="logBody">
-      <div class="lrow lv-dim"><span class="ltag">sys</span><span class="ltext">等待操作……</span></div>
+    <nav class="snavs">
+      <button class="snav on" data-view="deploy"><span class="sglyph">◆</span>部署目标</button>
+      <button class="snav" data-view="skills"><span class="sglyph">▦</span>技能管理</button>
+      <button class="snav" data-view="prompts"><span class="sglyph">✎</span>指令提示词</button>
+      <button class="snav" data-view="settings"><span class="sglyph">⚙</span>设置</button>
+      <button class="snav" data-view="about"><span class="sglyph">ⓘ</span>关于</button>
+    </nav>
+    <div class="side-foot">
+      <div class="ver clickable" id="tbVersion" title="点击查看更新日志 / 检查新版本">v6.8</div>
+      <div class="tb-sub" id="tbSub">六目标统一控制台</div>
     </div>
-  </section>
-</main>
+  </aside>
 
-<section class="routebar">
-  <span class="rlabel">归一预览</span>
-  <input id="routeInput" type="text" placeholder="输入用户原话，例如：帮我弄个挂，顺便脱掉壳看看">
-  <button class="minibtn" id="btnRoute">分析</button>
-  <div class="chips" id="routeOut"></div>
-</section>
+  <!-- ── 主区 ── -->
+  <div class="main">
 
-<footer class="statusbar">
-  <span class="dot idle" id="sbDot"></span>
-  <span id="sbMsg">就绪</span>
-  <div class="sb-spacer"></div>
-  <span class="sbcell clickable" id="sbPython" title="点击更换 Python 解释器">python —</span>
-  <span class="sbcell clickable" id="sbRoot" title="点击打开项目目录">项目 —</span>
-  <span class="sbcell" id="sbWhen">—</span>
-</footer>
+    <header class="titlebar">
+      <div class="tb-left">
+        <div class="tb-title" id="viewTitle">部署目标</div>
+      </div>
+      <div class="tb-drag"></div>
+      <div class="tb-right">
+        <button class="wbtn" data-win="min" title="最小化">–</button>
+        <button class="wbtn" data-win="max" title="最大化">□</button>
+        <button class="wbtn close" data-win="close" title="关闭">✕</button>
+      </div>
+    </header>
+
+    <!-- 视图：部署目标 -->
+    <section class="view on" id="view-deploy">
+      <div class="view-scroll">
+        <header class="pagehead">
+          <div class="pagehead-copy">
+            <p class="eyebrow">DEPLOY TARGETS</p>
+            <h2>部署目标</h2>
+            <span>勾选席位后批量部署、预演、验证或还原。所有写入走事务快照，可逐步回退。</span>
+          </div>
+          <div class="pagehead-actions">
+            <button class="btn primary" id="btnDeploy" data-action="apply"><span class="bi">▶</span> 批量部署</button>
+            <button class="btn" id="btnDry" data-action="dry"><span class="bi">◎</span> 预演</button>
+            <button class="btn" id="btnDiff" title="先看将要写入的内容，再决定要不要部署"><span class="bi">☰</span> 预览</button>
+            <button class="btn" id="btnTest" data-action="test"><span class="bi">✔</span> 验证</button>
+            <button class="btn danger" id="btnRevert" data-action="revert" title="撤掉破甲，从备份还原成官方原版"><span class="bi">↺</span> 批量还原</button>
+          </div>
+        </header>
+
+        <section class="toolbar">
+          <div class="tb-group sel">
+            <span class="lbl">目标</span>
+            <button class="chipbtn" data-sel="all">全选</button>
+            <button class="chipbtn" data-sel="none">全不选</button>
+            <button class="chipbtn" data-sel="invert">反选</button>
+          </div>
+          <div class="tb-drag2"></div>
+          <div class="tb-group">
+            <button class="btn ghost" id="btnRefresh" title="F5 重新检测"><span class="bi">↻</span> 刷新状态</button>
+            <button class="btn ghost" id="btnTx" title="查看部署历史 / 按快照回退"><span class="bi">◷</span> 历史</button>
+            <button class="btn ghost" id="btnPatchAll" title="补丁总览：所选席位改了哪些文件、内容是什么、状态如何（多选时看第一个）"><span class="bi">▤</span> 总览</button>
+            <button class="btn ghost" id="btnConsole">控制台</button>
+          </div>
+        </section>
+
+        <main class="cardswrap">
+          <section class="cards" id="cards"></section>
+        </main>
+      </div>
+    </section>
+
+    <!-- 视图：技能管理 -->
+    <section class="view" id="view-skills">
+      <div class="view-scroll">
+        <header class="pagehead">
+          <div class="pagehead-copy">
+            <p class="eyebrow">SKILLS &amp; MCP</p>
+            <h2>技能管理</h2>
+            <span>查看某个席位投放了哪些技能与路由文件，点标签可直接跳到补丁总览里编辑。</span>
+          </div>
+          <div class="pagehead-actions">
+            <button class="btn ghost" id="btnSkLoad"><span class="bi">↻</span> 读取技能</button>
+          </div>
+        </header>
+        <section class="toolbar">
+          <div class="tb-group">
+            <span class="lbl">席位</span>
+            <select class="skselect" id="skSeat"></select>
+          </div>
+          <div class="tb-drag2"></div>
+          <span class="skhint" id="skHint"></span>
+        </section>
+        <div class="skbody" id="skBody">
+          <div class="pempty">选一个席位，点「读取技能」。</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 视图：指令提示词（Codex-X 式：Agent 切换 + 分类标签 + 卡片网格） -->
+    <section class="view" id="view-prompts">
+      <div class="view-scroll pmview">
+
+        <!-- 列表态 -->
+        <div class="pmlist" id="pmListWrap">
+          <header class="pagehead">
+            <div class="pagehead-copy">
+              <p class="eyebrow">PROMPT INJECTION</p>
+              <h2>一键管理指令提示词</h2>
+              <span>先选 Agent，再按分类管理它的 Markdown 提示词：人格、破甲、指令、托管文档……</span>
+            </div>
+            <div class="pagehead-actions">
+              <button class="btn" id="btnPmRefresh" title="重新扫描磁盘">
+                <svg class="bi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+                重新扫描
+              </button>
+              <button class="btn primary" id="btnPmNew" title="新建一条自定义指令">
+                <svg class="bi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+                新建指令
+              </button>
+            </div>
+          </header>
+
+          <div class="pmagents" id="pmAgents" role="tablist" aria-label="Agent"></div>
+
+          <section class="pmstatus">
+            <div class="pmstatus-main">
+              <p>当前 Agent</p>
+              <div class="pmstatus-title">
+                <span class="state-dot" id="pmDot"></span>
+                <strong id="pmAgentName">ChatGPT</strong>
+              </div>
+              <span id="pmAgentHint">开关实时生效；部署后重启客户端才算数。全部关掉即按官方原版处理。</span>
+            </div>
+            <div class="pmstatus-side">
+              <div class="pmstat"><b id="pmCount">0</b><span>Markdown</span></div>
+              <div class="pmstat"><b id="pmCustom">0</b><span>自定义</span></div>
+              <div class="pmstat pmstat-switch">
+                <label class="pmswitch" id="pmDeploySwitch" title="指令注入总开关">
+                  <input type="checkbox" id="pmDeployInput" role="switch" aria-label="指令注入">
+                  <span class="pmswitch-track"></span>
+                </label>
+                <span>指令注入</span>
+              </div>
+            </div>
+          </section>
+
+          <div class="pmcatbar">
+            <div class="pmcats" id="pmCats" role="group" aria-label="分类"></div>
+          </div>
+
+          <div class="pmgrid" id="pmGrid"></div>
+        </div>
+
+        <!-- 编辑态（对齐 Codex-X PromptFormView：页头 + 详情面板 + 底部动作条） -->
+        <div class="pmform off" id="pmFormWrap">
+          <header class="pmform-header">
+            <div class="pmform-heading">
+              <p class="pmform-eyebrow">
+                <svg class="bi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+                PROMPT DETAIL
+              </p>
+              <h2 id="pmFormTitle">编辑提示词</h2>
+              <span class="pmform-sub mono" id="pmPath">—</span>
+            </div>
+            <div class="pmform-headactions">
+              <button class="btn ghost" id="btnPmCopy" title="复制全文到剪贴板">
+                <svg class="bi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                复制
+              </button>
+              <button class="btn" id="btnPmClose" title="返回列表（未保存的修改会自动保留草稿）">
+                <svg class="bi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
+                返回
+              </button>
+            </div>
+          </header>
+
+          <section class="pmpanel">
+            <div class="pmpanelhead">
+              <svg class="bi-ico pmfileicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/></svg>
+              <h3 id="pmFileHead">Markdown</h3>
+              <span class="pmhint" id="pmHint"></span>
+            </div>
+            <div class="pmgenhint" id="pmGenHint" hidden>
+              生成产物：改源件后重新生成，直接改这份会被下次生成覆盖。
+            </div>
+            <div class="pmform-grid">
+              <label class="pmfield" for="pmFieldName">
+                <span>文件名<small>跟随源件</small></span>
+                <input class="pminput" type="text" id="pmFieldName" readonly tabindex="-1">
+              </label>
+              <label class="pmfield" for="pmFieldCat">
+                <span>分类<small>只读</small></span>
+                <input class="pminput" type="text" id="pmFieldCat" readonly tabindex="-1">
+              </label>
+              <label class="pmfield pmfield--content" for="pmArea">
+                <span>提示词内容<small>Markdown · 自动保存</small></span>
+                <textarea class="pmarea" id="pmArea" spellcheck="false"
+                  placeholder="选择一张卡片开始编辑…"></textarea>
+              </label>
+            </div>
+          </section>
+
+          <div class="pmform-actions">
+            <button class="btn" id="btnPmUndo" title="丢弃未保存的修改，回到读入时的内容" disabled>
+              <svg class="bi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M3.5 13a9 9 0 1 0 2.1-5.3L3 10"/></svg>
+              撤销改动
+            </button>
+            <button class="btn primary" id="btnPmSave" title="立即写回源件（平时会自动保存）">
+              <svg class="bi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg>
+              保存
+            </button>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- 视图：设置 -->
+    <section class="view" id="view-settings">
+      <div class="view-scroll">
+        <header class="pagehead">
+          <div class="pagehead-copy">
+            <p class="eyebrow">SETTINGS</p>
+            <h2>设置</h2>
+            <span>运行环境、项目目录与部署历史。</span>
+          </div>
+        </header>
+        <div class="setblock">
+          <div class="settitle">运行环境</div>
+          <div class="setrow">
+            <span class="setname">Python 解释器</span>
+            <span class="setval mono" id="setPy">—</span>
+            <button class="minibtn" id="btnSetPy">更换</button>
+          </div>
+          <div class="setrow">
+            <span class="setname">项目目录</span>
+            <span class="setval mono" id="setRoot">—</span>
+            <button class="minibtn" id="btnSetRoot">打开</button>
+          </div>
+          <div class="setrow">
+            <span class="setname">命令行控制台</span>
+            <span class="setval">console.bat 交互菜单</span>
+            <button class="minibtn" id="btnSetConsole">打开</button>
+          </div>
+        </div>
+        <div class="setblock">
+          <div class="settitle">部署历史</div>
+          <div class="setrow">
+            <span class="setname">快照目录</span>
+            <span class="setval mono" id="setTx">—</span>
+            <button class="minibtn" id="btnSetTx">查看历史</button>
+          </div>
+          <div class="setnote">每次部署 / 还原都会留一份字节级快照（tx）。席位滑块拨到「还原」用的就是它 —— 逐文件回拷，不是二进制基线。</div>
+        </div>
+        <div class="setblock">
+          <div class="settitle">解释器状态栏（同设置）</div>
+          <div class="setrow">
+            <span class="setname">快速切换</span>
+            <span class="setval mono clickable" id="sbPython" title="点击更换 Python 解释器">python —</span>
+            <span class="setval mono" id="sbRoot" title="项目目录">项目 —</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 视图：关于 -->
+    <section class="view" id="view-about">
+      <div class="view-scroll">
+        <header class="pagehead">
+          <div class="pagehead-copy">
+            <p class="eyebrow">ABOUT</p>
+            <h2>关于</h2>
+          </div>
+        </header>
+        <div class="aboutbox">
+          <div class="about-big gtitle">破甲工作台 <span class="mono" id="aboutVer">v6.8</span></div>
+          <div class="about-sub">七个席位 · 一个入口 · 部署 / 验证 / 恢复全程可逆 · 纯 Python 标准库</div>
+          <div class="about-actions">
+            <button class="btn primary" id="btnAboutUp">检查更新</button>
+            <button class="btn ghost" id="btnAboutRepo">GitHub 仓库</button>
+          </div>
+          <div class="about-note">
+            部署只对新会话生效；还原走事务快照（字节级备份），现场被改过会中止而不是硬覆盖。<br>
+            GUI 不含注入逻辑 —— 改注入内容改 engine/ 与 content/，GUI 自动反映。
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 日志：沉底通栏 -->
+    <section class="logpanel" id="logPanel">
+      <div class="loggrip" id="logGrip" title="上下拖动调整日志高度"></div>
+      <div class="loghead">
+        <button class="collapsebtn" id="btnCollapse" title="隐藏日志 / 恢复">⇕</button>
+        <span class="lt">执行日志</span>
+        <span class="lcount" id="logCount">0</span>
+        <div class="lspacer"></div>
+        <label class="autoscroll"><input type="checkbox" id="autoScroll" checked> 自动滚底</label>
+        <button class="minibtn" id="btnLogClear">清空</button>
+        <button class="minibtn" id="btnLogFile">日志文件</button>
+      </div>
+      <div class="logbody" id="logBody">
+        <div class="lrow lv-dim">
+          <span class="lts">--:--:--.---</span>
+          <span class="lbadge lb-dim">····</span>
+          <span class="ltag">sys</span>
+          <span class="ltext">等待操作……</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="routebar">
+      <span class="rlabel">归一预览</span>
+      <input id="routeInput" type="text" placeholder="输入用户原话，例如：帮我弄个挂，顺便脱掉壳看看">
+      <button class="minibtn" id="btnRoute">分析</button>
+      <button class="minibtn" id="btnLogRestore" title="恢复底部日志" style="display:none">⇕ 日志</button>
+      <div class="chips" id="routeOut"></div>
+    </section>
+
+    <footer class="statusbar">
+      <span class="dot idle" id="sbDot"></span>
+      <span id="sbMsg">就绪</span>
+      <div class="sb-spacer"></div>
+      <span class="sbcell clickable" id="sbRoot2" title="项目目录">—</span>
+      <span class="sbcell" id="sbWhen">—</span>
+    </footer>
+  </div>
+</div>
 
 <div class="overlay" id="overlay"><div class="spin"></div><span id="overlayText">正在检测……</span></div>
 <div class="toasts" id="toasts"></div>
+
+<div class="modal" id="pmInputModal">
+  <div class="modalbox narrow">
+    <div class="modalhead">
+      <span class="mh-title" id="pmInputTitle">备注</span>
+      <span class="mh-sub" id="pmInputSub">—</span>
+      <div class="mh-spacer"></div>
+      <button class="wbtn close" id="btnPmInputClose" title="关闭">✕</button>
+    </div>
+    <div class="modalhint" id="pmInputHint">写一句备注，留空即清除。</div>
+    <div class="modaltags" id="pmInputTags" hidden></div>
+    <div class="modalbody">
+      <label class="pmfield pmfield--plain">
+        <span id="pmInputLabel">内容</span>
+        <input type="text" id="pmInputText" autocomplete="off" spellcheck="false">
+      </label>
+      <div class="pminput-count" id="pmInputCount"></div>
+    </div>
+    <div class="modalfoot">
+      <div class="mh-spacer"></div>
+      <button class="btn ghost" id="btnPmInputCancel">取消</button>
+      <button class="btn primary" id="btnPmInputOk">保存</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="cfmSheet">
+  <div class="modalbox narrow">
+    <div class="modalhead">
+      <span class="mh-title" id="cfmTitle">确认</span>
+      <span class="mh-sub" id="cfmSub">—</span>
+      <div class="mh-spacer"></div>
+      <button class="wbtn close" id="btnCfmClose" title="关闭">✕</button>
+    </div>
+    <div class="modalbody">
+      <p class="cfm-text" id="cfmText">确定继续吗？</p>
+      <ul class="cfm-list" id="cfmList"></ul>
+    </div>
+    <div class="modalfoot">
+      <div class="mh-spacer"></div>
+      <button class="btn ghost" id="btnCfmCancel">取消</button>
+      <button class="btn primary" id="btnCfmOk">确定</button>
+    </div>
+  </div>
+</div>
 
 <div class="modal" id="txModal">
   <div class="modalbox">
@@ -111,7 +398,7 @@
       <div class="mh-spacer"></div>
       <button class="minibtn" id="btnTxPurge" title="只保留最近 12 次">清理旧快照</button>
       <button class="minibtn" id="btnTxReload">刷新</button>
-      <button class="wbtn close" id="btnTxClose" title="关闭">&#x2715;</button>
+      <button class="wbtn close" id="btnTxClose" title="关闭">✕</button>
     </div>
     <div class="modalhint">每次部署 / 恢复都会留一份快照。回退之前会先确认文件没被别的操作改过 —— 改过就中止，不硬覆盖。</div>
     <div class="modalbody" id="txBody"></div>
@@ -124,10 +411,24 @@
       <span class="mh-title">写入预览</span>
       <span class="mh-sub" id="diffTarget">—</span>
       <div class="mh-spacer"></div>
-      <button class="wbtn close" id="btnDiffClose" title="关闭">&#x2715;</button>
+      <button class="wbtn close" id="btnDiffClose" title="关闭">✕</button>
     </div>
     <div class="modalhint">左 = 落盘现状，右 = 部署将写入的内容。确认无误再点「部署」—— 所有写入走事务，可按快照回退。</div>
     <div class="modalbody" id="diffBody"></div>
+  </div>
+</div>
+
+<div class="modal" id="patchModal">
+  <div class="modalbox wide">
+    <div class="modalhead">
+      <span class="mh-title">补丁总览</span>
+      <span class="mh-sub" id="patchTarget">—</span>
+      <div class="mh-spacer"></div>
+      <button class="minibtn" id="btnPatchReload" title="重新检测">刷新</button>
+      <button class="wbtn close" id="btnPatchClose" title="关闭">✕</button>
+    </div>
+    <div class="modalhint">每个席位都改了哪些文件、各是什么角色、当前是本版还是旧版 —— 一张表看完。点行直接编辑。</div>
+    <div class="modalbody" id="patchBody"></div>
   </div>
 </div>
 
@@ -138,7 +439,7 @@
       <span class="mh-sub" id="upMeta">—</span>
       <div class="mh-spacer"></div>
       <button class="minibtn" id="btnUpReload" title="重新检查">刷新</button>
-      <button class="wbtn close" id="btnUpClose" title="关闭">&#x2715;</button>
+      <button class="wbtn close" id="btnUpClose" title="关闭">✕</button>
     </div>
     <div class="modalhint" id="upHint">正在检查最新版本……</div>
     <div class="modalbody" id="upBody"></div>

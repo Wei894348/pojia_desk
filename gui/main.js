@@ -52,9 +52,13 @@ function pythonCandidates() {
     if (cached) push(cached);
   } catch (_) { /* 没缓存，正常 */ }
   push(process.env.POJIA_PYTHON);
+  // 项目自己的解释器优先：gui/.python-path 指定的 > 项目 .venv > PATH 上的 python。
+  // 找不到才退回 WorkBuddy 自带那份 —— 它只是保底，不是默认。
   push(path.join(ROOT, '.venv', 'Scripts', 'python.exe'));
   push(path.join(ROOT, '.venv', 'bin', 'python'));
-  // WorkBuddy 自带的 python（本机跑这套脚本用的就是它）
+  push('python');
+  push('python3');
+  // WorkBuddy 自带的 python（保底）
   const home = process.env.USERPROFILE || app.getPath('home');
   const base = path.join(home, '.workbuddy', 'binaries', 'python', 'versions');
   try {
@@ -63,9 +67,6 @@ function pythonCandidates() {
       push(path.join(base, v, 'bin', 'python'));
     }
   } catch (_) { /* 不存在就跳过 */ }
-  push('py', ['-3']);
-  push('python');
-  push('python3');
   return out;
 }
 
@@ -168,7 +169,7 @@ function createWindow() {
 
   mainWin = new BrowserWindow({
     width, height, minWidth: Math.min(900, width), minHeight: Math.min(600, height),
-    frame: false, backgroundColor: '#0d1117', show: false,
+    frame: false, backgroundColor: '#f3f4f6', show: false,
     title: '破甲工作台',
     webPreferences: {
       preload: path.join(GUI_DIR, 'preload.js'),
@@ -177,8 +178,532 @@ function createWindow() {
     },
   });
   mainWin.loadFile(path.join(GUI_DIR, 'renderer', 'index.html'));
-  mainWin.once('ready-to-show', () => mainWin.show());
+  // 截图模式下窗口必须真的显示并处于前台，否则 offscreen 合成长时间不刷新，
+  // capturePage 会反复拿到同一张旧帧（切分类后画面仍旧）。
+  mainWin.once('ready-to-show', () => {
+    mainWin.show();
+    if (process.env.POJIA_SHOT || process.env.POJIA_REVERTTEST) mainWin.focus();
+  });
   if (process.argv.includes('--dev')) mainWin.webContents.openDevTools({ mode: 'detach' });
+
+  // 界面截图：POJIA_SHOT=1 时依次切视图截图落盘后退出（无需人工点）
+  if (process.env.POJIA_SHOT) {
+    mainWin.webContents.once('did-finish-load', async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const shots = [];
+      const save = async (name) => {
+        // capturePage 在无 GPU 时会取到合成器里较早的一帧（切分类后画面滞后）。
+        // invalidate() 强制整页重绘，再隔两帧取图。
+        try { mainWin.webContents.invalidate(); } catch (_) {}
+        await mainWin.webContents.capturePage();
+        await sleep(260);
+        try { mainWin.webContents.invalidate(); } catch (_) {}
+        await sleep(200);
+        const img = await mainWin.webContents.capturePage();
+        // 诊断：打印当前视图与分类栏位置，避免再"看图猜坐标"
+        try {
+          const diag = await mainWin.webContents.executeJavaScript(`(() => {
+            const v = document.querySelector('.view.on');
+            const c = document.getElementById('pmCats');
+            const r = c && c.getBoundingClientRect();
+            return JSON.stringify({
+              view: v && v.id,
+              iw: window.innerWidth, ih: window.innerHeight, dpr: window.devicePixelRatio,
+              cats: r ? [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)] : null,
+              tabs: [...document.querySelectorAll('#pmCats .pmcat')].map(b => b.textContent),
+              title: document.getElementById('pmAgentName').textContent,
+              firstCat: (() => {
+                const el = document.querySelector('#pmCats .pmcat');
+                if (!el) return null;
+                const sp = el.querySelector('span');
+                const cs = getComputedStyle(el), ss = sp && getComputedStyle(sp);
+                const r = el.getBoundingClientRect(), sr = sp && sp.getBoundingClientRect();
+                return {
+                  text: el.textContent,
+                  cat: [cs.color, cs.fontSize, cs.opacity, cs.visibility],
+                  span: ss && [ss.color, ss.fontSize, ss.opacity, ss.visibility, ss.display],
+                  rect: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)],
+                  spanRect: sr && [Math.round(sr.x), Math.round(sr.y), Math.round(sr.width), Math.round(sr.height)],
+                };
+              })(),
+            });
+          })()`);
+          shots.push('diag:' + diag);
+        } catch (_) {}
+        const p = path.join(ROOT, '状态', name);
+        fs.writeFileSync(p, img.toPNG());
+        shots.push(name);
+      };
+      try {
+        await sleep(9000);
+        await save('_shot_deploy.png');
+        const cardIcons = await mainWin.webContents.executeJavaScript(`(() => {
+          const imgs = [...document.querySelectorAll('#cards .clogo')];
+          return JSON.stringify(imgs.map(i => ({
+            key: i.closest('.card') ? i.closest('.card').dataset.key : '?',
+            src: i.getAttribute('src'),
+            ok: i.complete && i.naturalWidth > 0,
+            w: i.naturalWidth,
+          })));
+        })()`);
+        shots.push('card-icons:' + cardIcons);
+        const cardLook = await mainWin.webContents.executeJavaScript(`(() => {
+          const c = document.querySelector('#cards .card');
+          if (!c) return JSON.stringify({ err: 'no card' });
+          const g = (s) => { const e = c.querySelector(s); if (!e) return null;
+            const cs = getComputedStyle(e); return { color: cs.color, size: cs.fontSize, bg: cs.backgroundColor }; };
+          return JSON.stringify({
+            cardBg: getComputedStyle(c).backgroundColor,
+            name: g('.cname'), meta: g('.cmeta'), idx: g('.cindex'), status: g('.cstatus'),
+            logo: (() => { const i = c.querySelector('.clogo'); if (!i) return null;
+              const r = i.getBoundingClientRect();
+              return { src: i.getAttribute('src'), w: Math.round(r.width), h: Math.round(r.height) }; })(),
+          });
+        })()`);
+        shots.push('card-look:' + cardLook);
+        const logoGeo = await mainWin.webContents.executeJavaScript(`(() => {
+          const out = [];
+          document.querySelectorAll('#cards .card').forEach(c => {
+            const img = c.querySelector('.clogo');
+            const nm = c.querySelector('.cname');
+            if (!img || !nm) return;
+            const ir = img.getBoundingClientRect(), nr = nm.getBoundingClientRect();
+            const cs = getComputedStyle(img);
+            out.push({
+              key: c.dataset.key,
+              img: [Math.round(ir.x), Math.round(ir.y), Math.round(ir.width), Math.round(ir.height)],
+              name: [Math.round(nr.x), Math.round(nr.y)],
+              op: cs.opacity, vis: cs.visibility, disp: cs.display, filter: cs.filter,
+              complete: img.complete, nw: img.naturalWidth,
+            });
+          });
+          return JSON.stringify(out);
+        })()`);
+        shots.push('logo-geo:' + logoGeo);
+        await mainWin.webContents.executeJavaScript(
+          "document.querySelector('.snav[data-view=prompts]').click()");
+        await sleep(2500);
+        // 等分类标签真的画出来再截 —— 之前截在首次 refreshDocs 返回前，图里是空的
+        let gridState = '';
+        for (let i = 0; i < 25; i++) {
+          const st = await mainWin.webContents.executeJavaScript(
+            "JSON.stringify([document.querySelectorAll('#pmCats .pmcat').length,"
+            + "document.querySelectorAll('#pmGrid .pmrow').length,"
+            + "(document.getElementById('pmGrid')||{}).innerHTML.length||0])");
+          gridState = st;
+          const [nc, nr] = JSON.parse(st);
+          if (nc > 0 && nr > 0) break;
+          await sleep(400);
+        }
+        shots.push('gridwait:' + gridState);
+        shots.push('pmdebug:' + await mainWin.webContents.executeJavaScript(
+          "JSON.stringify(window.__pmDebug && window.__pmDebug())"));
+        await sleep(900);          // 等一帧合成，否则截到的是分类栏出现前的画面
+        await save('_shot_prompts.png');
+        // 日志行样式自检：时间戳 / 级别徽标 / 颜色分级都要在
+        const logLook = await mainWin.webContents.executeJavaScript(`(() => {
+          if (typeof logLine === 'function') {
+            logLine('warn', 'sys', '样式自检 WARN');
+            logLine('err', 'sys', '样式自检 ERR');
+          }
+          const rows = [...document.querySelectorAll('#logBody .lrow')].slice(-6);
+          return JSON.stringify(rows.map(r => ({
+            cls: r.className,
+            ts: (r.querySelector('.lts') || {}).textContent || '',
+            badge: (r.querySelector('.lbadge') || {}).textContent || '',
+            color: getComputedStyle(r.querySelector('.ltext') || r).color,
+            bg: getComputedStyle(r).backgroundColor,
+          })));
+        })()`);
+        shots.push('loglook:' + logLook);
+        const iconState = await mainWin.webContents.executeJavaScript(`(() => {
+          const imgs = [...document.querySelectorAll('.pmagent-glyph img')];
+          return JSON.stringify(imgs.map(i => ({ src: i.getAttribute('src'), ok: i.complete && i.naturalWidth > 0, w: i.naturalWidth })));
+        })()`);
+        shots.push('imgs:' + iconState);
+        const cats = await mainWin.webContents.executeJavaScript(
+          "JSON.stringify([...document.querySelectorAll('#pmCats .pmcat')].map(b => b.textContent))");
+        shots.push('cats:' + cats);
+        const catGeo = await mainWin.webContents.executeJavaScript(`(() => {
+          const ids = ['pmAgents','pmGrid','pmCats'];
+          const out = {};
+          document.querySelectorAll('.pmstatus,.pmcatbar,.pmgrid,.pmagents,#pmCats').forEach(el => {
+            const r = el.getBoundingClientRect();
+            out[(el.id || el.className)] = [Math.round(r.x),Math.round(r.y),Math.round(r.width),Math.round(r.height),getComputedStyle(el).display];
+          });
+          return JSON.stringify(out);
+        })()`);
+        shots.push('catgeo:' + catGeo);
+        const ar = await mainWin.webContents.executeJavaScript(
+          "(()=>{const r=document.getElementById('pmAgents').getBoundingClientRect(); return JSON.stringify({x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height)});})()");
+        const arj = JSON.parse(ar);
+        const aimg = await mainWin.webContents.capturePage({
+          x: arj.x - 4, y: arj.y - 4, width: arj.w + 8, height: arj.h + 8,
+        });
+        fs.writeFileSync(path.join(ROOT, '状态', '_shot_agents.png'), aimg.toPNG());
+        shots.push('_shot_agents.png');
+        // 备注弹窗：点三横线图标 → 输入 → 保存（用临时文件，别覆盖用户的真实备注）
+        // 先确认列表真的渲染出来了，再点备注
+        for (let i = 0; i < 25; i++) {
+          const n = await mainWin.webContents.executeJavaScript(
+            "document.querySelectorAll('#pmGrid .pmrow').length");
+          if (n > 0) break;
+          await sleep(400);
+        }
+        const memoFlow = await mainWin.webContents.executeJavaScript(`(async () => {
+          const btn = document.querySelector('#pmGrid .iconbtn[title^="备注"]');
+          if (!btn) return JSON.stringify({ step: 'no-btn' });
+          btn.click();
+          await new Promise(r => setTimeout(r, 300));
+          const open = document.getElementById('pmInputModal').classList.contains('on');
+          const inp = document.getElementById('pmInputText');
+          const prev = inp.value;
+          inp.value = '自动化测试备注';
+          inp.dispatchEvent(new Event('input', { bubbles: true }));
+          document.getElementById('btnPmInputOk').click();
+          await new Promise(r => setTimeout(r, 900));
+          const card = document.querySelector('#pmGrid .pmrow');
+          const desc = card && card.querySelector('.pmcdesc');
+          const out = {
+            open,
+            closed: !document.getElementById('pmInputModal').classList.contains('on'),
+            desc: desc && desc.textContent,
+            hasMemoClass: desc && desc.className.includes('has-memo'),
+            prev,
+          };
+          // 还原成点之前的备注（清空也行，复原也行）
+          btn.click();
+          await new Promise(r => setTimeout(r, 300));
+          const inp2 = document.getElementById('pmInputText');
+          inp2.value = prev;
+          inp2.dispatchEvent(new Event('input', { bubbles: true }));
+          document.getElementById('btnPmInputOk').click();
+          await new Promise(r => setTimeout(r, 700));
+          return JSON.stringify(out);
+        })()`);
+        shots.push('memo:' + memoFlow);
+        {
+          const tagDiag = await mainWin.webContents.executeJavaScript(`(() => {
+            const c = document.querySelector('#pmGrid .pmrow');
+            if (!c) return JSON.stringify({ err: 'no card' });
+            return JSON.stringify({
+              tags: [...c.querySelectorAll('.pmtag')].map(t => [t.textContent, t.className]),
+              meta: (c.querySelector('.pmrow-meta') || {}).textContent,
+              foot: (c.querySelector('.pmrow-foot') || {}).textContent,
+            });
+          })()`);
+          shots.push('tagdiag:' + tagDiag);
+        }
+        await sleep(1200);
+        // 弹窗打开态截图
+        await mainWin.webContents.executeJavaScript(
+          "document.querySelector('#pmGrid .iconbtn[title^=\"备注\"]').click()");
+        await sleep(900);
+        const modalOn = await mainWin.webContents.executeJavaScript(
+          "document.getElementById('pmInputModal').classList.contains('on')");
+        shots.push('modalOn:' + modalOn);
+        shots.push('modaltext:' + await mainWin.webContents.executeJavaScript(`JSON.stringify({
+          title: document.getElementById('pmInputTitle').textContent,
+          sub: document.getElementById('pmInputSub').textContent,
+          tags: [...document.querySelectorAll('#pmInputTags .pmtag')].map(t => t.textContent),
+          inputVal: document.getElementById('pmInputText').value,
+          sel: (() => { const el = document.getElementById('pmInputText');
+                         return [el.selectionStart, el.selectionEnd, el.value.length]; })(),
+          rect: (() => { const r = document.getElementById('pmInputModal').getBoundingClientRect();
+                         return [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)]; })(),
+        })`));
+        await save('_shot_memo.png');
+        await mainWin.webContents.executeJavaScript(
+          "document.getElementById('btnPmInputCancel').click()");
+        const iq = await mainWin.webContents.executeJavaScript(`(() => {
+          const b = [...document.querySelectorAll('#pmGrid .iconbtn')];
+          const card = document.querySelector('#pmGrid .pmrow');
+          const cr = card && card.getBoundingClientRect();
+          return JSON.stringify({
+            iconBtns: b.length,
+            svgs: b.filter(x => x.querySelector('svg')).length,
+            first: b[0] ? { w: Math.round(b[0].getBoundingClientRect().width), h: Math.round(b[0].getBoundingClientRect().height), title: b[0].title } : null,
+            card: cr ? [Math.round(cr.x), Math.round(cr.y), Math.round(cr.width), Math.round(cr.height)] : null,
+          });
+        })()`);
+        shots.push('icons:' + iq);
+        await mainWin.webContents.executeJavaScript(
+          "document.querySelector('#pmGrid .pmrow.off-doc') && document.querySelector('#pmGrid .pmrow.off-doc').scrollIntoView({block:'center'})");
+        await sleep(700);
+        await save('_shot_prompts_scrolled.png');
+        // SKILL.md 分类：标签与中文名
+        await mainWin.webContents.executeJavaScript(`(() => {
+          const tabs = [...document.querySelectorAll('#pmCats .pmcat')];
+          const t = tabs.find(b => b.textContent.indexOf('SKILL.md') >= 0);
+          if (t) t.click();
+        })()`);
+        await sleep(1200);
+        await save('_shot_skill_cat.png');
+        const skillCard = await mainWin.webContents.executeJavaScript(`(() => {
+          const rows = [...document.querySelectorAll('#pmGrid .pmrow')];
+          return JSON.stringify(rows.slice(0, 4).map(c => ({
+            name: (c.querySelector('.pmcname') || {}).textContent,
+            desc: (c.querySelector('.pmcdesc') || {}).textContent,
+            tags: [...c.querySelectorAll('.pmtag')].map(t => t.textContent),
+          })));
+        })()`);
+        shots.push('skillcard:' + skillCard);
+        // 干净状态下打开 SKILL 备注：输入框应为空（不再预填说明）
+        shots.push('skillmemo-builtin:' + await mainWin.webContents.executeJavaScript(`(async () => {
+          document.querySelector('#pmGrid .iconbtn[title^="备注"]').click();
+          await new Promise(r => setTimeout(r, 400));
+          const out = JSON.stringify({ val: document.getElementById('pmInputText').value });
+          document.getElementById('btnPmInputCancel').click();
+          await new Promise(r => setTimeout(r, 200));
+          return out;
+        })()`));
+        // SKILL 卡片的备注弹窗：先写一条作为「已有备注」，再重新打开验证带出
+        await mainWin.webContents.executeJavaScript(`(async () => {
+          document.querySelector('#pmGrid .iconbtn[title^="备注"]').click();
+          await new Promise(r => setTimeout(r, 300));
+          const inp = document.getElementById('pmInputText');
+          inp.value = '已有备注-验证';
+          inp.dispatchEvent(new Event('input', { bubbles: true }));
+          document.getElementById('btnPmInputOk').click();
+          await new Promise(r => setTimeout(r, 800));
+        })()`);
+        await sleep(500);
+        await mainWin.webContents.executeJavaScript(
+          "document.querySelector('#pmGrid .iconbtn[title^=\"备注\"]').click()");
+        await sleep(600);
+        shots.push('skillmemo:' + await mainWin.webContents.executeJavaScript(`JSON.stringify({
+          title: document.getElementById('pmInputTitle').textContent,
+          inputVal: document.getElementById('pmInputText').value,
+        })`));
+        await save('_shot_skill_memo.png');
+        // 端到端：在 SKILL 卡片上写备注 → 保存 → 再点开，输入框必须带出来
+        const roundTrip = await mainWin.webContents.executeJavaScript(`(async () => {
+          const inp = document.getElementById('pmInputText');
+          const before = inp.value;
+          inp.value = '临时备注-自检';
+          inp.dispatchEvent(new Event('input', { bubbles: true }));
+          document.getElementById('btnPmInputOk').click();
+          await new Promise(r => setTimeout(r, 900));
+          document.querySelector('#pmGrid .iconbtn[title^="备注"]').click();
+          await new Promise(r => setTimeout(r, 400));
+          const again = document.getElementById('pmInputText').value;
+          document.getElementById('btnPmInputCancel').click();
+          return JSON.stringify({ before, again });
+        })()`);
+        shots.push('skillmemo-roundtrip:' + roundTrip);
+        // 再开一次：确认备注持久（这一步不改任何东西）
+        const third = await mainWin.webContents.executeJavaScript(`(async () => {
+          document.querySelector('#pmGrid .iconbtn[title^="备注"]').click();
+          await new Promise(r => setTimeout(r, 500));
+          const v = document.getElementById('pmInputText').value;
+          const cur = '';
+          document.getElementById('btnPmInputCancel').click();
+          return JSON.stringify({ v, cur });
+        })()`);
+        shots.push('skillmemo-third:' + third);
+        // 干净收尾：把自检写的备注清掉，别污染用户表
+        await mainWin.webContents.executeJavaScript(`(async () => {
+          document.querySelector('#pmGrid .iconbtn[title^="备注"]').click();
+          await new Promise(r => setTimeout(r, 300));
+          const inp = document.getElementById('pmInputText');
+          inp.value = '';
+          inp.dispatchEvent(new Event('input', { bubbles: true }));
+          document.getElementById('btnPmInputOk').click();
+          await new Promise(r => setTimeout(r, 800));
+        })()`);
+        shots.push('skillmemo-clean:' + await mainWin.webContents.executeJavaScript(
+          "JSON.stringify([...document.querySelectorAll('#pmGrid .pmrow')].slice(0,3)"
+          + ".map(r => (r.querySelector('.pmcdesc')||{}).textContent))"));
+        await mainWin.webContents.executeJavaScript(`(async () => {
+          document.querySelector('#pmGrid .iconbtn[title^="备注"]').click();
+          await new Promise(r => setTimeout(r, 300));
+          const inp = document.getElementById('pmInputText');
+          inp.value = '';
+          inp.dispatchEvent(new Event('input', { bubbles: true }));
+          document.getElementById('btnPmInputOk').click();
+        })()`);
+        await sleep(700);
+        await mainWin.webContents.executeJavaScript(
+          "document.querySelector('#pmCats .pmcat').click()");
+        await sleep(800);
+        // config.toml 分类：应显示本机内容，不是空
+        await mainWin.webContents.executeJavaScript(`(() => {
+          const tabs = [...document.querySelectorAll('#pmCats .pmcat')];
+          const t = tabs.find(b => b.textContent.indexOf('config.toml') >= 0);
+          if (t) t.click();
+        })()`);
+        await sleep(1200);
+        await save('_shot_config_cat.png');
+        const cfgCard = await mainWin.webContents.executeJavaScript(`(() => {
+          const c = document.querySelector('#pmGrid .pmrow');
+          if (!c) return JSON.stringify({ err: 'no card',
+            grid: (document.getElementById('pmGrid') || {}).innerHTML ? 'has html' : 'empty',
+            view: (document.querySelector('.view.on') || {}).id,
+            cats: document.querySelectorAll('#pmCats .pmcat').length });
+          return JSON.stringify({
+            name: (c.querySelector('.pmcname') || {}).textContent,
+            desc: (c.querySelector('.pmcdesc') || {}).textContent,
+            meta: (c.querySelector('.pmcpath') || {}).textContent || '(无分类名)',
+            tags: [...c.querySelectorAll('.pmtag')].map(t => t.textContent),
+            foot: (c.querySelector('.pmrow-foot') || {}).textContent,
+            cards: document.querySelectorAll('#pmGrid .pmrow').length,
+          });
+        })()`);
+        shots.push('cfgcard:' + cfgCard);
+        await mainWin.webContents.executeJavaScript(
+          "document.querySelector('#pmGrid .iconbtn[title^=\"查看\"], #pmGrid .iconbtn[title^=\"编辑\"]')"
+          + " && document.querySelector('#pmGrid .iconbtn[title^=\"查看\"]').click()");
+        await sleep(1500);
+        const cfgEdit = await mainWin.webContents.executeJavaScript(`(() => {
+          const a = document.getElementById('pmArea');
+          return JSON.stringify({ len: (a.value || '').length, head: (a.value || '').slice(0, 60),
+            path: document.getElementById('pmPath').textContent,
+            hint: document.getElementById('pmHint').textContent });
+        })()`);
+        shots.push('cfgedit:' + cfgEdit);
+        shots.push('cfghead:' + await mainWin.webContents.executeJavaScript(`JSON.stringify({
+          title: document.getElementById('pmFormTitle').textContent,
+          head: document.getElementById('pmFileHead').textContent,
+          path: document.getElementById('pmPath').textContent,
+          name: document.getElementById('pmFieldName').value,
+          cat: document.getElementById('pmFieldCat').value,
+          geo: (() => {
+            const out = {};
+            ['pmFormWrap','pmFormTitle','pmPath','pmFieldName','pmFieldCat','pmArea','pmHint'].forEach(id => {
+              const el = document.getElementById(id); if (!el) return;
+              const r = el.getBoundingClientRect();
+              out[id] = [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)];
+            });
+            return out;
+          })(),
+        })`));
+        await save('_shot_config_edit.png');
+        await mainWin.webContents.executeJavaScript(
+          "document.getElementById('btnPmClose').click()");
+        await sleep(800);
+        await mainWin.webContents.executeJavaScript(
+          "document.querySelector('#pmCats .pmcat').click()");
+        await sleep(800);
+        // SKILL 编辑页：标题不能重复
+        await mainWin.webContents.executeJavaScript(`(() => {
+          const tabs = [...document.querySelectorAll('#pmCats .pmcat')];
+          const t = tabs.find(b => b.textContent.indexOf('SKILL.md') >= 0);
+          if (t) t.click();
+        })()`);
+        await sleep(1000);
+        await mainWin.webContents.executeJavaScript(
+          "document.querySelector('#pmGrid .iconbtn[title^=\"编辑\"]').click()");
+        await sleep(1200);
+        shots.push('skilledit:' + await mainWin.webContents.executeJavaScript(`JSON.stringify({
+          title: document.getElementById('pmFormTitle').textContent,
+          head: document.getElementById('pmFileHead').textContent,
+          len: (document.getElementById('pmArea').value || '').length,
+        })`));
+        await save('_shot_skill_edit.png');
+        await mainWin.webContents.executeJavaScript(
+          "document.getElementById('btnPmClose').click()");
+        await sleep(600);
+        await mainWin.webContents.executeJavaScript(
+          "document.querySelector('#pmCats .pmcat').click()");
+        await sleep(800);
+        await mainWin.webContents.executeJavaScript(
+          "document.querySelector('#pmGrid .iconbtn[title^=\"编辑\"]') && document.querySelector('#pmGrid .iconbtn[title^=\"编辑\"]').click()");
+        await sleep(2000);
+        await save('_shot_prompt_edit.png');
+        await mainWin.webContents.executeJavaScript(
+          "document.getElementById('btnPmClose').click(); document.querySelector('.snav[data-view=skills]').click()");
+        await sleep(2000);
+        await save('_shot_skills.png');
+      } catch (e) {
+        shots.push('error:' + String(e).slice(0, 200));
+      }
+      fs.writeFileSync(path.join(ROOT, '状态', '_shot.json'), JSON.stringify(shots), 'utf8');
+      app.quit();
+    });
+  }
+
+  // 还原滑块自检：POJIA_REVERTTEST=1 —— 点 ChatGPT 卡片的滑块，核对四路落点与指令页开关
+  if (process.env.POJIA_REVERTTEST) {
+    mainWin.webContents.once('did-finish-load', async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const save = async (name) => {
+        // 丢一帧再截：GPU 关掉时 capturePage 偶尔拿到上一帧
+        await mainWin.webContents.capturePage();
+        await sleep(150);
+        const img = await mainWin.webContents.capturePage();
+        fs.writeFileSync(path.join(ROOT, '状态', name), img.toPNG());
+      };
+      const out = {};
+      const probe = async () => mainWin.webContents.executeJavaScript(`JSON.stringify((() => {
+        const card = [...document.querySelectorAll('.card')].find(c => c.dataset.key === 'codex');
+        const sl = card && card.querySelector('.slider');
+        return {
+          sliderOn: sl ? sl.classList.contains('on') : null,
+          state: (card && card.querySelector('.sliderstate') || {}).textContent || '',
+          status: (card && card.querySelector('.cstatus') || {}).textContent || '',
+        };
+      })())`);
+      try {
+        await sleep(9000);
+        out.before = JSON.parse(await probe());
+        const t0 = Date.now();
+        await mainWin.webContents.executeJavaScript(
+          "document.querySelector('.card[data-key=codex] .slider').click()");
+        // 立刻读一次：滑块应当在 Python 返回之前就翻过去
+        await sleep(250);
+        out.immediate = JSON.parse(await probe());
+        out.immediateMs = Date.now() - t0;
+        await sleep(25000);
+        out.after = JSON.parse(await probe());
+        out.afterMs = Date.now() - t0;
+        out.afterLog = await mainWin.webContents.executeJavaScript(
+          "document.getElementById('logBody').textContent.slice(-1600)");
+        await save('_gui_revert_1_card.png');
+        // 指令提示词页：还原后应全部显示未启用
+        await mainWin.webContents.executeJavaScript(
+          "document.querySelector('.snav[data-view=prompts]').click()");
+        await sleep(2500);
+        // 切页会自动重扫（不必再点「重新扫描」）—— 留 3.5s 等 bridge 返回
+        await sleep(3500);
+        out.docs = JSON.parse(await mainWin.webContents.executeJavaScript(`JSON.stringify({
+          rows: document.querySelectorAll('#pmGrid .pmrow').length,
+          on: document.querySelectorAll('#pmGrid .pmrow:not(.off-doc)').length,
+          switch: (document.getElementById('pmDeployInput') || {}).checked,
+        })`));
+        await save('_gui_revert_2_prompts.png');
+        // 复位：再拨回去，环境保持部署态
+        await mainWin.webContents.executeJavaScript(
+          "document.querySelector('.snav[data-view=deploy]').click()");
+        await sleep(1500);
+        await mainWin.webContents.executeJavaScript(
+          "document.querySelector('.card[data-key=codex] .slider').click()");
+        await sleep(25000);
+        out.reset = JSON.parse(await probe());
+        await save('_gui_revert_3_reset.png');
+        // 复位后回指令页再确认一次开关（这一步只看，不改）
+        await mainWin.webContents.executeJavaScript(
+          "document.querySelector('.snav[data-view=prompts]').click()");
+        await sleep(2500);
+        await mainWin.webContents.executeJavaScript(
+          "document.getElementById('btnPmRefresh').click()");
+        await sleep(4000);
+        out.docsReset = JSON.parse(await mainWin.webContents.executeJavaScript(`JSON.stringify({
+          rows: document.querySelectorAll('#pmGrid .pmrow').length,
+          on: document.querySelectorAll('#pmGrid .pmrow:not(.off-doc)').length,
+          switch: (document.getElementById('pmDeployInput') || {}).checked,
+          first: [...document.querySelectorAll('#pmGrid .pmrow')].slice(0, 2)
+            .map(r => [r.querySelector('.pmcname') && r.querySelector('.pmcname').textContent,
+                       r.classList.contains('off-doc')]),
+        })`));
+        await save('_gui_revert_4_prompts_reset.png');
+      } catch (e) {
+        out.error = String(e).slice(0, 300);
+      }
+      fs.writeFileSync(path.join(ROOT, '状态', '_gui_revert.json'),
+        JSON.stringify(out, null, 1), 'utf8');
+      app.quit();
+    });
+  }
 
   // 端到端自检：POJIA_SELFTEST=1 时自动点一遍「预演」和「验证」，再把结果截图落盘
   if (process.env.POJIA_SELFTEST) {
@@ -222,13 +747,30 @@ function createWindow() {
   // 布局自检：POJIA_LAYOUT_DEBUG=1 时把窗口与各区块的验证尺寸写到 状态/_gui_layout.json
   if (process.env.POJIA_LAYOUT_DEBUG) {
     mainWin.webContents.once('did-finish-load', async () => {
-      await new Promise((r) => setTimeout(r, 3500));
+      await new Promise((r) => setTimeout(r, 12000));
       try {
         const s = await mainWin.webContents.executeJavaScript(`(() => {
           const q = (sel) => { const e = document.querySelector(sel); return e ? Math.round(e.getBoundingClientRect().width) : -1; };
           return { vw: innerWidth, vh: innerHeight, body: document.body.scrollWidth,
                    toolbar: q('.toolbar'), cards: q('.cards'), log: q('.logpanel'),
-                   route: q('.routebar'), card1: q('.card'), ws: q('.workspace') };
+                   route: q('.routebar'), card1: q('.card'), ws: q('.workspace'),
+                   cardsDisp: getComputedStyle(document.querySelector('.cards')).display,
+                   gridRows: getComputedStyle(document.querySelector('.cards')).gridTemplateRows,
+                   gridAuto: getComputedStyle(document.querySelector('.cards')).gridAutoRows,
+                   cardsH: Math.round(document.querySelector('.cards').getBoundingClientRect().height),
+                   cardsScrollH: document.querySelector('.cards').scrollHeight,
+                   cardsAttr: document.querySelector('.cards').getAttribute('style') || '',
+                   cardProbe: (() => { const c = document.querySelector('.card'); if (!c) return null;
+                     const cs = getComputedStyle(c);
+                     return { clip: cs.clipPath, shadow: cs.boxShadow, radius: cs.borderRadius,
+                              topbar: getComputedStyle(c, '::before').width,
+                              ctop: !!c.querySelector('.ctop'), ctopText: (c.querySelector('.cindex') || {}).textContent || '',
+                              status: (c.querySelector('.cstatus') || {}).textContent || '' }; })(),
+                   cardRects: [...document.querySelectorAll('.card')].slice(0, 8).map((c) => {
+                     const r = c.getBoundingClientRect();
+                     const b = c.firstElementChild ? c.firstElementChild.getBoundingClientRect() : { height: 0 };
+                     return [c.dataset.key, Math.round(r.top), Math.round(r.height), Math.round(b.height)];
+                   }) };
         })()`);
         const info = { windowBounds: mainWin.getBounds(), contentBounds: mainWin.getContentBounds(), layout: s };
         fs.writeFileSync(path.join(ROOT, '状态', '_gui_layout.json'), JSON.stringify(info, null, 1), 'utf8');
@@ -239,6 +781,34 @@ function createWindow() {
           await mainWin.webContents.executeJavaScript(
             "(() => { const c = document.querySelector('.cards'); if (c) c.scrollTop = c.scrollHeight; })()");
           await new Promise((r) => setTimeout(r, 700));
+        }
+        // POJIA_OPEN_PATCH=1：先打开补丁总览弹窗再截屏（诊断弹窗配色用）
+        if (process.env.POJIA_OPEN_PATCH) {
+          await mainWin.webContents.executeJavaScript(
+            "(() => { const b = document.getElementById('btnPatchAll'); if (b) b.click(); })()");
+          await new Promise((r) => setTimeout(r, 6000));
+          // 弹窗信息面诊断：量每个主要区块的实测背景与文字色
+          const pd = await mainWin.webContents.executeJavaScript(`(async () => {
+            const m = document.getElementById('patchModal');
+            // 点开第一行文件，把编辑区/只读预览也渲染出来
+            const row = m.querySelector('.ptable tr.prow');
+            if (row) row.click();
+            await new Promise((r) => setTimeout(r, 3000));
+            const light = [];
+            for (const e of m.querySelectorAll('*')) {
+              const cs = getComputedStyle(e);
+              const lum = (c) => c ? (0.2126*c[0] + 0.7152*c[1] + 0.0722*c[2]) : 0;
+              const parse = (s) => { const mm = s.match(/rgba?\\(([\\d.]+),\\s*([\\d.]+),\\s*([\\d.]+)(?:,\\s*([\\d.]+))?\\)/);
+                return mm ? [+mm[1], +mm[2], +mm[3], mm[4] === undefined ? 1 : +mm[4]] : null; };
+              const b = parse(cs.backgroundColor);
+              const c = parse(cs.color);
+              if (b && b[3] > 0.1 && lum(b) > 100) light.push(['bg', e.className || e.tagName, cs.backgroundColor]);
+              if (c && lum(c) > 200) light.push(['fg', e.className || e.tagName, cs.color]);
+            }
+            return { on: m.classList.contains('on'), light: light.slice(0, 40),
+                     scroll: (() => { const b = m.querySelector('.modalbody');
+                       return b ? getComputedStyle(b, '::-webkit-scrollbar') && 'webkit' : 'n/a'; })() }; })()`);
+          fs.writeFileSync(path.join(ROOT, '状态', '_gui_patch_diag.json'), JSON.stringify(pd, null, 1), 'utf8');
         }
         const img = await mainWin.webContents.capturePage();
         fs.writeFileSync(path.join(ROOT, '状态', '_gui_render.png'), img.toPNG());
@@ -289,6 +859,122 @@ ipcMain.handle('pojia:tx', async (_e, argv) => {
 ipcMain.handle('pojia:diff', async (_e, argv) => {
   try { return await callBridge(['diff'].concat(argv || []), 120000); }
   catch (e) { return { error: String(e.message || e) }; }
+});
+
+ipcMain.handle('pojia:patches', async (_e, target) => {
+  try { return await callBridge(['patches', target], 240000); }
+  catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+ipcMain.handle('pojia:cat', async (_e, argv) => {
+  try { return await callBridge(['cat'].concat(argv || []), 60000); }
+  catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+ipcMain.handle('pojia:read', async (_e, argv) => {
+  try { return await callBridge(['read'].concat(argv || []), 60000); }
+  catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+ipcMain.handle('pojia:write', async (_e, argv) => {
+  try { return await callBridge(['write'].concat(argv || []), 60000); }
+  catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+ipcMain.handle('pojia:prompts', async () => {
+  try { return await callBridge(['prompts'], 60000); }
+  catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+ipcMain.handle('pojia:promptRead', async (_e, id) => {
+  try { return await callBridge(['prompt-read', id], 60000); }
+  catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+ipcMain.handle('pojia:promptWrite', async (_e, payload) => {
+  const { id, b64 } = payload || {};
+  try { return await callBridge(['prompt-write', id, b64], 60000); }
+  catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+ipcMain.handle('pojia:promptNew', async (_e, name) => {
+  try { return await callBridge(['prompt-new', String(name || '')], 60000); }
+  catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+ipcMain.handle('pojia:promptDelete', async (_e, id) => {
+  try { return await callBridge(['prompt-delete', id], 60000); }
+  catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+ipcMain.handle('pojia:instrList', async (_e, seat) => {
+  try { return await callBridge(['instr-list', seat || 'codex'], 60000); }
+  catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+ipcMain.handle('pojia:instrApply', async (_e, payload) => {
+  const { seat, name } = payload || {};
+  try { return await callBridge(['instr-apply', seat || 'codex', name || ''], 120000); }
+  catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+ipcMain.handle('pojia:instrDisable', async (_e, seat) => {
+  try { return await callBridge(['instr-disable', seat || 'codex'], 120000); }
+  catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+// 破甲候选的滑块：on = 部署这一份，off = 关闭注入（同一份状态表）
+ipcMain.handle('pojia:instrToggle', async (_e, payload) => {
+  const { seat, name, on } = payload || {};
+  try {
+    return await callBridge(['instr-toggle', seat || 'codex', name || '', on ? '1' : '0'], 120000);
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+// 指令库（按 Agent 分区的 md 管理）
+ipcMain.handle('pojia:docs', async (_e, agent) => {  try { return await callBridge(['docs', agent || 'codex'], 60000); }
+  catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+ipcMain.handle('pojia:docRead', async (_e, id) => {
+  try { return await callBridge(['doc-read', id], 60000); }
+  catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+ipcMain.handle('pojia:docWrite', async (_e, payload) => {
+  const { id, b64 } = payload || {};
+  try { return await callBridge(['doc-write', id, b64], 60000); }
+  catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+ipcMain.handle('pojia:docNew', async (_e, payload) => {
+  const { agent, cat, name } = payload || {};
+  try { return await callBridge(['doc-new', agent || 'codex', cat || 'custom', name || ''], 60000); }
+  catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+ipcMain.handle('pojia:docDelete', async (_e, id) => {
+  try { return await callBridge(['doc-delete', id], 60000); }
+  catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+ipcMain.handle('pojia:docToggle', async (_e, id) => {
+  try { return await callBridge(['doc-toggle', id], 60000); }
+  catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+// 批量开关：一次过桥写完，界面不用为每份文档各等一趟
+ipcMain.handle('pojia:docToggleMany', async (_e, items) => {
+  try {
+    const b64 = Buffer.from(JSON.stringify(items || []), 'utf8').toString('base64');
+    return await callBridge(['doc-toggle-many', b64], 90000);
+  } catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+ipcMain.handle('pojia:docMemo', async (_e, payload) => {
+  const { id, memo } = payload || {};
+  try { return await callBridge(['doc-memo', id || '', memo || ''], 60000); }
+  catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
 
 ipcMain.handle('pojia:test', async (_e, targets) => {

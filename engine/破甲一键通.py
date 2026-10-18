@@ -63,10 +63,9 @@
 --------------------------------------------------------------------------------
  安全 & 可逆
 --------------------------------------------------------------------------------
-   * 每个被改的文件都会备份，且备份后缀与原工具保持一致
-     （DSH: .dshpurge.bak   WorkBuddy: .unlockbak   Codex: codex-unlock-backups/）
-     —— 所以这个脚本和原来的工具可以互相还原，不会打架。
-   * 打包前把备份按时间戳归档一份到 <脚本目录>/历史备份/，防止覆盖。
+   * 每个被改的文件都会备份（DSH: .pojiabak   WorkBuddy: .unlockbak
+     Codex: codex-unlock-backups/），每文件一份固定名、首次部署时留原状，
+     备份已存在不覆盖 —— 不会随操作次数堆积。
    * 任何时候 --revert / --restore 都能还原。
    * 原五套工具目录一个字节都不动。
    * v6.2 起每次 apply / revert 都是一次部署事务（pojia_tx）：
@@ -171,6 +170,52 @@ def _load_tx():
 
 
 TX = _load_tx()                                           # None = 退回直接写入
+
+
+def _load_doc_inject():
+    """加载 doc_inject（每份提示词文档的注入开关，GUI 写、引擎读）。"""
+    import importlib.util
+    path = os.path.join(HERE, "doc_inject.py")
+    if not os.path.exists(path):
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("doc_inject", path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["doc_inject"] = mod
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:                                     # pragma: no cover
+        return None
+
+
+DOC_INJECT = _load_doc_inject()
+
+
+def doc_on(path):
+    """这份文件是否参与注入。缺省参与；关掉的写在 状态/_doc_inject.json。"""
+    return True if DOC_INJECT is None else DOC_INJECT.enabled(path)
+
+
+# 各席位自己的托管源：这些也算「注入开关管着的文档」，关掉即退出托管。
+_SEAT_MANAGED_SRC = {
+    "codex": ("codex_agents_md.md",),
+    "claude": ("claude_md.md",),
+    "workbuddy": ("workbuddy_user_md.md",),
+}
+
+
+def seat_all_off(seat):
+    """该席位的注入源是不是全关了 —— 全关 = 回官方原版（走 revert）。
+
+    「注入源」= 席位正文 + 共享人格 + 路由层 + 该席位的托管块源件。
+    少关一个就还有内容要写，不算全关。
+    """
+    cands = [seat_override_path(seat), PERSONA_FILE, ROUTE_FILE]
+    for fn in _SEAT_MANAGED_SRC.get(seat, ()):
+        cands.append(os.path.join(SEAT_DIR, fn))
+    live = [p for p in cands if os.path.isfile(p)]
+    return bool(live) and not any(doc_on(p) for p in live)
+
 
 
 def _load_skills():
@@ -518,7 +563,7 @@ HASH_MARK_LEGACY = ("unlock-v6:h=", "unlock-v4:h=")   # 兼容识别历史补丁
 OVERLAY_MARK = "最高优先级覆盖 版本2.0"   # 覆盖层标记（2026-10-11 恢复强授权块）
 OVERLAY_MARK_LEGACY = ("本机部署配置",)   # v6.3~v6.9 的温和块，现在是历史标记（整块替换）
 
-BAK_DSH = ".dshpurge.bak"
+BAK_DSH = ".pojiabak"
 BAK_WB = ".unlockbak"
 
 # 手动指定的安装目录（自动探测找不到时，让用户点选并记下来）
@@ -645,7 +690,7 @@ def now_stamp():
     return _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
 
 
-# ---- 读写：保留 BOM 与原行尾（原 dsh_purge 用 text 模式写盘，会把 LF 变 CRLF，这里修掉）
+# ---- 读写：保留 BOM 与原行尾（text 模式写盘会把 LF 变 CRLF，这里修掉）
 
 def read_text(path):
     """返回 (文本, 是否有BOM)。二进制读入 -> 行尾原样保留。"""
@@ -775,7 +820,9 @@ def route_skills_apply(key, home, tag="", dry=False):
         # tx_write_bytes 只收 bytes —— 之前配错成它，于是每次投放都在第一份
         # 就抛 `a bytes-like object is required, not 'str'`，还被下面的 except
         # 吞成一行黄字，谁都以为只是"这次没投上"。用文本写口 write_text。
-        res = SKILLS.install(key, write_text, home=home)
+        res = SKILLS.install(key, write_text, home=home, remove_fn=tx_remove)
+        if res.get("removed"):
+            log("路由 skills：按指令页开关撤下 %d 份" % len(res["removed"]), "y", tag or key)
     except Exception as e:
         # 这里以前是黄字一行了事，于是"写完盘才发现写口类型不对"这种硬 bug
         # 被吞了一整天。改红字，并说清是脚本自己的问题。
@@ -967,18 +1014,7 @@ def rel_display(path, install="", data_dir=""):
     return r
 
 
-# ---- 备份（统一入口 + 历史归档 + 升级自愈） --------------------------------
-
-def _archive(path, tag):
-    """把一份备份再归档到 历史备份/ 里，防止后面被覆盖后丢原版。"""
-    try:
-        os.makedirs(HIST_DIR, exist_ok=True)
-        dst = os.path.join(HIST_DIR, "%s.%s.%s.bak" % (os.path.basename(path), tag, now_stamp()))
-        shutil.copy2(path, dst)
-        return dst
-    except Exception:
-        return ""
-
+# ---- 备份（统一入口 + 升级自愈） --------------------------------------------
 
 def backup_file(path, suffix=None, bak_path=None, is_pristine=None):
     """确保"未打补丁的原始版本"有一份备份。
@@ -987,7 +1023,7 @@ def backup_file(path, suffix=None, bak_path=None, is_pristine=None):
     做法（修掉原工具"升级后备份过期 → revert 把文件降级"的问题）：
       · bak 不存在  -> 直接备份当前文件
       · bak 存在且当前文件已是"有补丁"状态 -> 什么都不做（保住原始基准）
-      · bak 存在但当前文件是干净的官方版（说明官方升级覆盖过）-> 归档旧 bak，重建基准
+      · bak 存在但当前文件是干净的官方版（说明官方升级覆盖过）-> 就地重建基准
     bak_path 用来支持 DSH 那种"备份不能放在原目录旁边"的密封目录场景。
     """
     bak = bak_path or (path + (suffix or ".bak"))
@@ -1004,7 +1040,6 @@ def backup_file(path, suffix=None, bak_path=None, is_pristine=None):
             if cur is not None and is_pristine(cur):
                 old = read_text_safe(bak)
                 if old is not None and old != cur:
-                    _archive(bak, "superseded")
                     shutil.copy2(path, bak)
         return bak
     except Exception:
@@ -1344,6 +1379,9 @@ def load_user_persona(override=""):
             if override:
                 say("[!] --persona 指定的文件不存在：%s" % path, "red")
             continue
+        # GUI 指令页把这份关掉了 —— 当作没有，不注入（不是报错）。
+        if label == "persona.md" and not doc_on(path):
+            continue
         try:
             txt = read_text(path)[0]
         except Exception:
@@ -1396,6 +1434,10 @@ def load_route_layer():
     优先级：route-layer.md > 内置兜底。文件缺失或剥完为空时用兜底并提示。
     """
     txt = ""
+    if not doc_on(ROUTE_FILE):
+        # 指令页把路由层关掉了 —— 不注入任何路由文本，也不拿内置骨架顶上
+        # （骨架也是注入内容；"关掉"就该是官方口径）。
+        return ""
     if os.path.isfile(ROUTE_FILE):
         try:
             txt = clean_prompt(read_text(ROUTE_FILE)[0])
@@ -1414,8 +1456,8 @@ ROUTE_SECTION = load_route_layer()
 #
 # POLICY_BASE_CORE = 不含路由层的政策正文，专供 Codex 用 ——
 # Codex 是"整份文件生成"，它自己会把路由层单独放在文件最前面（避免同 2KB 出现两次）。
-POLICY_BASE = ROUTE_SECTION + "\r\n\r\n" + POLICY_BASE
-POLICY_BASE_CORE = POLICY_BASE[len(ROUTE_SECTION) + 4:]
+POLICY_BASE = (ROUTE_SECTION + "\r\n\r\n" + POLICY_BASE) if ROUTE_SECTION else POLICY_BASE
+POLICY_BASE_CORE = POLICY_BASE[len(ROUTE_SECTION) + 4:] if ROUTE_SECTION else POLICY_BASE
 
 
 def build_policy(user_prompt):
@@ -1475,7 +1517,10 @@ def seat_override_path(seat):
 def seat_override(seat):
     if os.environ.get("POJIA_NO_SEAT_OVERRIDE"):
         return None
-    t = read_text_safe(seat_override_path(seat))
+    p = seat_override_path(seat)
+    if not doc_on(p):
+        return None
+    t = read_text_safe(p)
     return t.strip("\r\n") if (t and t.strip()) else None
 
 
@@ -1919,7 +1964,7 @@ class DshTarget:
         d = os.path.dirname(fp)
         if not self.is_sealed_bin(d):
             return fp + self.bak_suffix
-        root = os.path.join(self.dsh_home(), "dsh-purge", "shim-backups")
+        root = os.path.join(self.dsh_home(), "pojia-shim-backups")
         os.makedirs(root, exist_ok=True)
         digest = hashlib.sha1(os.path.normpath(fp).encode("utf-8")).hexdigest()[:20]
         return os.path.join(root, "%s.%s.bak" % (os.path.basename(fp), digest))
@@ -1970,7 +2015,7 @@ class DshTarget:
     def patch_persona_sections(text):
         old = "const PERSONA_SECTION_NAMES = new Set(['deployment:persona', 'persona'])"
         new = ("const PERSONA_SECTION_NAMES = new Set(['deployment:persona', 'persona', "
-               "'dsh-purge', 'dsh-purge:rules', 'dsh-purge:post'])")
+               "'pojia', 'pojia:rules', 'pojia:post'])")
         if old in text and new not in text:
             return text.replace(old, new), True
         return text, False
@@ -1979,7 +2024,7 @@ class DshTarget:
     def strip_and_set_persona(text, persona, want_hash="", keep_suffix=False):
         """剥离官方默认身份 -> 注入"操作者人格 + 宽松政策 + 末尾兜底"。
 
-        修掉原 dsh_purge 的三处问题：
+        修掉朴素实现的三处问题：
           · 只认 "You are a coding agent powered by..." 这一种写法，漏掉了
             `prefix: You are a helpful software engineer assistant.`（minimal 预设用的
             就是这种无引号内联标量）—— 本机 11 个靶点里有 1 个因此一直是官方的。
@@ -2412,7 +2457,7 @@ class DshTarget:
         """取一份"干净"的创造模式声明当模板。
 
         两个坑：
-          · 别盲目优先 `.dshpurge.bak` —— 0.1.5 时代留下的备份是**旧目录布局**
+          · 别盲目优先 `.bak` 备份 —— 0.1.5 时代留下的备份是**旧目录布局**
             的 `agent.cordis.yml`（含新版已删的包），拿它当模板会生成 activation
             失败的声明。只认 shipped 的当前单文件。
           · shipped 文件是 **CRLF**。以 `$` 收尾的正则在 `\\r` 前不匹配，会静默
@@ -2867,7 +2912,7 @@ class DshTarget:
         if mode != "revert":
             running = self.running()
             if running and not getattr(args, "kill_dsh", False):
-                # 原 dsh_purge 默认【直接杀掉】DSH 进程。本会话自己就跑在 DSH 里，
+                # 默认【不杀】DSH 进程 —— 本会话自己就很可能跑在 DSH 里，
                 #   那样等于自杀，而且会丢掉用户没保存的会话。这里默认绝不杀。
                 log("检测到 DSH 正在运行（%d 个进程）：" % len(running), "y", "dsh")
                 for pid, name, _cmd in running[:6]:
@@ -2947,7 +2992,7 @@ class DshTarget:
                     log("[预演] 将应用 %s | %s" % (", ".join(applied), rel_display(fp, b)), "y", "dsh")
                     stats["fixed"] += 1
                     continue
-                # 备份：普通位置放 <file>.dshpurge.bak；DSH Desktop 的密封 bin 目录
+                # 备份：普通位置放 <file>.pojiabak；DSH Desktop 的密封 bin 目录
                 # 不能出现陌生兄弟文件（会让桌面端拒绝启动），改存到 DSH_HOME 下。
                 if self.is_sealed_bin(os.path.dirname(fp)):
                     backup_file(fp, bak_path=self.backup_path_for(fp), is_pristine=self.is_pristine)
@@ -3098,7 +3143,7 @@ CODEX_CMD_HINTS = ("@openai/codex", ".codex\\plugins", ".codex/plugins", "codex.
 
 class CodexTarget:
     key = "codex"
-    label = "Codex CLI"
+    label = "ChatGPT"
 
     # ---------------- 目录 ----------------
     def pick_title(self):
@@ -3252,12 +3297,38 @@ class CodexTarget:
         write_text(os.path.join(home, CODEX_STATE),
                    json.dumps(st, ensure_ascii=False, indent=2) + "\n", make_dirs=True)
 
+    # ---------------- 备份 ----------------
+    _BAK_TS = re.compile(r"\.\d{8}-\d{6}\.(?:bak|txt)$")
+
+    def prune_backups(self, home):
+        """清掉旧命名体系（带时间戳）的备份堆积，固定名备份不受影响。"""
+        bdir = os.path.join(home, CODEX_BAKDIR)
+        if not os.path.isdir(bdir):
+            return 0
+        n = 0
+        for fn in os.listdir(bdir):
+            p = os.path.join(bdir, fn)
+            if os.path.isfile(p) and (self._BAK_TS.search(fn)
+                                      or "legacy-unlock.20" in fn or "superseded" in fn):
+                try:
+                    os.remove(p)
+                    n += 1
+                except OSError:
+                    pass
+        return n
+
     def backup(self, home, path, label):
+        """每个目标文件只留一份部署前原状：备份已存在就不动（防堆积）。
+
+        label 仅用于还原侧识别备份种类；同一 (文件, label) 组合永远复用同一份。
+        """
         if not os.path.exists(path):
             return ""
         bdir = os.path.join(home, CODEX_BAKDIR)
         os.makedirs(bdir, exist_ok=True)
-        dst = os.path.join(bdir, "%s.%s.%s.bak" % (os.path.basename(path), label, now_stamp()))
+        dst = os.path.join(bdir, "%s.%s.bak" % (os.path.basename(path), label))
+        if os.path.exists(dst):
+            return dst
         try:
             shutil.copy2(path, dst)
             return dst
@@ -3632,6 +3703,10 @@ class CodexTarget:
         want = seat_want("codex", user)
         instr = self.build_instructions(user, want)
         ag_block = self.build_agents_block(want)
+        if not getattr(args, "dry_run", False):
+            n = self.prune_backups(home)
+            if n:
+                log("清理旧时间戳备份 %d 份（备份改为每文件一份固定名）" % n, "dg", "codex")
 
         if mode == "revert":
             cfg = read_text_safe(cfg_p) or ""
@@ -3651,10 +3726,6 @@ class CodexTarget:
             tx_remove(st_p)
             route_skills_revert("codex", home, "codex")
             # 二进制身份补丁回退（按状态文件里的备份逐个还原）。
-            try:
-                codex_bin_restore("codex")
-            except Exception as e:
-                log("[cx] 内置身份还原失败：%s" % e, "red", "codex")
             log("已还原 Codex：移除 model_instructions_file、指令文件与 AGENTS.md 标记块", "g", "codex")
             return {"revert": 1}
 
@@ -3682,7 +3753,7 @@ class CodexTarget:
             # "去双份：只留用户内容"，用户内容空则整份移除（不留空指令文件）。
             _ag_src = (None if os.environ.get("POJIA_NO_SEAT_OVERRIDE")
                        else read_text_safe(CODEX_AGENTS_MD_SRC))
-            if _ag_src and _ag_src.strip():
+            if _ag_src and _ag_src.strip() and doc_on(CODEX_AGENTS_MD_SRC):
                 ag_new = _ag_src.strip("\r\n") + "\n"
             else:
                 ag_new = self.strip_agents_block(ag_base or "").strip("\n")
@@ -3707,10 +3778,6 @@ class CodexTarget:
             route_skills_apply("codex", home, "codex", dry=is_dry)
             # 指令文件没变 ≠ 二进制身份已就位（Codex 升级会覆盖补丁）：
             # 早退分支也要补跑一次内容判定。
-            try:
-                codex_bin_apply("codex")
-            except Exception as e:
-                log("[cx] 内置身份补丁失败（不影响其余通道）：%s" % e, "red", "codex")
             return {"skip": 1}
         if lv == "other" and not getattr(args, "force", False):
             if not config_changed and not ag_changed:
@@ -3775,7 +3842,7 @@ class CodexTarget:
                 bak_ag = self.backup(home, ag_p, "agents")
             if leg_changed and leg_orig:
                 # 遗留块的原文另存一份（不进事务，纯留档），便于事后核对/回拷。
-                lg = os.path.join(home, CODEX_BAKDIR, "AGENTS.md.legacy-unlock.%s.txt" % now_stamp())
+                lg = os.path.join(home, CODEX_BAKDIR, "AGENTS.md.legacy-unlock.txt")
                 try:
                     os.makedirs(os.path.dirname(lg), exist_ok=True)
                     write_text(lg, leg_orig)
@@ -3850,10 +3917,6 @@ class CodexTarget:
         route_skills_apply("codex", home, "codex", dry=is_dry)
         # 内置身份补丁（与 cc_bin_apply 同构）：换掉 exe 里硬编码的
         # "You are Codex, …" 身份句 —— model_instructions_file 盖不掉它。
-        try:
-            codex_bin_apply("codex")
-        except Exception as e:
-            log("[cx] 内置身份补丁失败（不影响其余通道）：%s" % e, "red", "codex")
         return {"fixed": 1}
 
     def revert_agents(self, home, ag_p):
@@ -4180,11 +4243,14 @@ class ZcodeTarget:
                    json.dumps(st, ensure_ascii=False, indent=2) + "\n", make_dirs=True)
 
     def backup(self, home, path, label):
+        """每个目标文件只留一份部署前原状：备份已存在就不动（防堆积）。"""
         if not os.path.exists(path):
             return ""
         bdir = os.path.join(home, ZCODE_BAKDIR)
         os.makedirs(bdir, exist_ok=True)
-        dst = os.path.join(bdir, "%s.%s.%s.bak" % (os.path.basename(path), label, now_stamp()))
+        dst = os.path.join(bdir, "%s.%s.bak" % (os.path.basename(path), label))
+        if os.path.exists(dst):
+            return dst
         try:
             shutil.copy2(path, dst)
             return dst
@@ -4546,10 +4612,16 @@ class HomeMdTarget:
     def build_body(self, user, want):
         """标记块正文。默认是席位角色档（短版：人格 / 口令 / 路由，不含内容层）。
 
+        席位独立源（content/seats/<key>.md）优先：存在即整份替换，与 zcode 同构；
+        删除该文件即回退共享管线（build_zcode_instructions 角色档）。
         Claude 例外见 ClaudeTarget.build_body：v6.9 起 CC 的完整版正文改由
         CLAUDE.md 承载（user 消息 system-reminder，CC 自有机制），
         不再走 output style。
         """
+        _ov = seat_override(self.key)
+        if _ov is not None:
+            _w = sha1_short(_ov + "|" + self.key)
+            return (_ov.strip() + "\n\n<!-- workspace-profile:h=%s -->\n" % _w)
         return build_zcode_instructions(user, want)
 
     # ---------------- 非默认位置发现（子类按需覆盖） ----------------
@@ -4662,11 +4734,14 @@ class HomeMdTarget:
                    json.dumps(st, ensure_ascii=False, indent=2) + "\n", make_dirs=True)
 
     def backup(self, home, path, label):
+        """每个目标文件只留一份部署前原状：备份已存在就不动（防堆积）。"""
         if not os.path.exists(path):
             return ""
         bdir = os.path.join(home, self.bakdir_name)
         os.makedirs(bdir, exist_ok=True)
-        dst = os.path.join(bdir, "%s.%s.%s.bak" % (os.path.basename(path), label, now_stamp()))
+        dst = os.path.join(bdir, "%s.%s.bak" % (os.path.basename(path), label))
+        if os.path.exists(dst):
+            return dst
         try:
             shutil.copy2(path, dst)
             return dst
@@ -4745,6 +4820,7 @@ class HomeMdTarget:
         txt = read_text_safe(md_p) or ""
         user, _src = load_user_persona(getattr(args, "persona", "") or "")
         _pol, want = build_policy(user)
+        want = seat_want(self.key, user)            # 席位独立源存在时用席位哈希
         lv = seat_md_state(txt, self.key, want)
         found, where = self.client_probe()          # 文件在位 ≠ 客户端会读它
         if not txt:
@@ -4777,6 +4853,7 @@ class HomeMdTarget:
         md_p, st_p, _bak = self.paths(home)
         user, _src = load_user_persona(getattr(args, "persona", "") or "")
         _pol, want = build_policy(user)
+        want = seat_want(self.key, user)            # 席位独立源存在时用席位哈希
         body = self.build_body(user, want)   # 默认席位角色档；Claude 覆写为完整版
 
         # 客户端不在就不写盘：文件落进去也没人读，卡片却会显示"已部署"。
@@ -5396,153 +5473,9 @@ def cc_bin_restore(seat="claude"):
     return {"restored": n}
 
 
-# ── Codex 的二进制内置提示词补丁（2026-10-11 起，与 cc_bin_apply 同构）──────
-#
-# 为什么：Codex 的身份句（"You are Codex, …"）硬编码在 codex.exe 的
-# instructions_template 里（JSON 资源，每模型变体一份），model_instructions_file
-# 只能追加在它后面盖不掉身份。身份是拒绝量表的来源 —— 与 CC 同一个机制。
-# Codex 的 base instructions 里**没有**内容审查条款（Guardian policy 只管
-# 数据外泄/凭证/破坏性行为），所以这里只换身份句，不动正文模板。
-#
-# 打法：等长字节替换（新串 ljust 补空格），不改偏移；判定走内容（原串在不在），
-# 不看版本号 —— Codex 升级会覆盖补丁，重跑 apply 自动补上。
-# 运行中的 codex.exe 以共享模式打开：写不动但允许改名，_cc_bin_write 已处理。
-CODEX_BIN_STATE = os.path.join(os.path.expanduser("~"), ".codex", "codex-bin-patch-state.json")
-
-
-def codex_bin_targets():
-    """Codex 桌面/CLI 的主二进制。按已知安装点探测，存在才返回。"""
-    out = [os.path.join(os.path.expanduser("~"), "AppData", "Local", "OpenAI",
-                        "Codex", "bin", "2e5e00daee91c61d", "codex.exe")]
-    # 版本目录可能变：把 bin 下所有 codex.exe 都算上（去重）
-    root = os.path.dirname(os.path.dirname(out[0]))
-    for f in glob.glob(os.path.join(root, "*", "codex.exe")):
-        if f not in out:
-            out.append(f)
-    return [p for p in out if os.path.exists(p)]
-
-
-# 身份句前缀替换表：只动第一句到句号，后面 Personality/工程规范是正文模板，不动。
-# 值是"新句"；落盘时 ljust 补空格到原长（_cc_bin_pad 同款）。
-CODEX_BIN_REPLACEMENTS = {
-    b"You are Codex, a coding agent based on GPT-5.":
-        b"You are Maixue, this machine's coding agent.",
-    b"You are Codex, an agent based on GPT-5.":
-        b"You are Maixue, a local agent on GPT-5.",
-    b"You are Codex, an agent based on GPT-6.":
-        b"You are Maixue, a local agent on GPT-6.",
-    b"You are Codex, an OpenAI general-purpose agentic assistant":
-        b"You are Maixue, an OpenAI general-purpose agentic assistan",
-}
-
-
-def codex_bin_scan(data):
-    """返回 {原串: 偏移列表}。"""
-    hits = {}
-    for old, new in CODEX_BIN_REPLACEMENTS.items():
-        _cc_bin_pad(new, len(old))
-        offs, i = [], data.find(old)
-        while i >= 0:
-            offs.append(i)
-            i = data.find(old, i + 1)
-        if offs:
-            hits[old] = offs
-    return hits
-
-
-def codex_bin_state():
-    try:
-        return json.load(open(CODEX_BIN_STATE, encoding="utf-8"))
-    except Exception:
-        return {}
-
-
-def _codex_bin_sweep_locked():
-    """清掉腾位残留 `*.pojia-locked-*`。"""
-    root = os.path.join(os.path.expanduser("~"), "AppData", "Local", "OpenAI", "Codex", "bin")
-    for f in glob.glob(os.path.join(root, "*", "codex.exe.pojia-locked-*")):
-        try:
-            os.remove(f)
-        except OSError:
-            pass
-
-
-def codex_bin_apply(seat="codex"):
-    """备份 + 等长替换（复用 _cc_bin_write 的腾位写法）。返回计数。"""
-    targets = codex_bin_targets()
-    if not targets:
-        log("[cx] 未找到 Codex 的二进制，跳过内置身份补丁。", "y", seat)
-        return {"missing": 1}
-    os.makedirs(os.path.dirname(CODEX_BIN_STATE), exist_ok=True)
-    _codex_bin_sweep_locked()
-    ts = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    st = codex_bin_state()
-    patched = already = 0
-    files = []
-    prev = {os.path.normcase(os.path.abspath(f.get("path", ""))): f
-            for f in st.get("files", [])}
-    for p in targets:
-        with open(p, "rb") as f:
-            data = f.read()
-        hits = codex_bin_scan(data)
-        total = sum(len(o) for o in hits.values())
-        if total == 0:
-            already += 1
-            log("[cx] 内置身份已是本版（无原串残留）：%s" % p, "dg", seat)
-            rec = {"path": p, "replacements": 0, "already": True}
-            old_rec = prev.get(os.path.normcase(os.path.abspath(p)), {})
-            if old_rec.get("backup"):
-                rec["backup"] = old_rec["backup"]
-            files.append(rec)
-            continue
-        # 备份与 CC 同目录策略：留状态文件旁 backups/，文件名带目录 slug 防覆盖
-        bakdir = os.path.join(os.path.dirname(CODEX_BIN_STATE), "bin-backups")
-        os.makedirs(bakdir, exist_ok=True)
-        _slug = os.path.basename(os.path.dirname(p)) or "bin"
-        bak = os.path.join(bakdir, "codex.exe.%s.pojia-prepatch.%s.bak" % (_slug, ts))
-        shutil.copy2(p, bak)
-        for old, offs in hits.items():
-            new = _cc_bin_pad(CODEX_BIN_REPLACEMENTS[old], len(old))
-            for off in offs:
-                data = data[:off] + new + data[off + len(old):]
-        _cc_bin_write(p, data)
-        patched += 1
-        log("[cx] 内置身份补丁：%s（%d 处，备份 %s）" % (p, total, bak), "g", seat)
-        files.append({"path": p, "backup": bak, "replacements": total})
-    st.update({"last_patch_time": _dt.datetime.now().isoformat(timespec="seconds"),
-               "files": files})
-    with open(CODEX_BIN_STATE, "w", encoding="utf-8") as f:
-        json.dump(st, f, ensure_ascii=False, indent=2)
-    if patched:
-        log("[cx] Codex 升级会覆盖补丁，届时重跑 apply；正在运行的 Codex 新会话才读到新版。",
-            "y", seat)
-    return {"patched": patched, "already": already}
-
-
-def codex_bin_restore(seat="codex"):
-    """按状态文件里的备份还原打补丁前的字节。"""
-    st = codex_bin_state()
-    n = 0
-    for e in st.get("files", []):
-        bak = e.get("backup")
-        if bak and os.path.exists(bak):
-            try:
-                shutil.copy2(bak, e["path"])
-                n += 1
-                log("[cx] 已还原内置身份：%s" % e["path"], "g", seat)
-            except PermissionError:
-                # 运行中写不动：改名腾位再写
-                _cc_bin_write(e["path"], open(bak, "rb").read())
-                n += 1
-                log("[cx] 已还原内置身份（腾位写）：%s" % e["path"], "g", seat)
-        elif bak:
-            log("[cx] 备份缺失，跳过：%s" % bak, "y", seat)
-    if n:
-        st["files"] = []
-        with open(CODEX_BIN_STATE, "w", encoding="utf-8") as f:
-            json.dump(st, f, ensure_ascii=False, indent=2)
-    return {"restored": n}
-
+# ── Codex 的二进制内置提示词补丁：2026-10-18 按用户要求整体移除 ──────────────
+# 曾对 ~/.codex/.../codex.exe 做等长身份句替换并留 341MB 级备份；已清空备份与
+# 状态文件，二进制恢复官方原版。需要时从 git 历史取回本段实现。
 
 class ClaudeTarget(HomeMdTarget):
     key = "claude"
@@ -5742,7 +5675,8 @@ class ClaudeTarget(HomeMdTarget):
             md_p = os.path.join(home, self.md_name)
             txt = read_text_safe(md_p) or ""
             src_md = read_text_safe(CLAUDE_MD_SEAT_SRC)
-            canon = (src_md.strip("\r\n") + "\n") if (src_md and src_md.strip()) else None
+            canon = (src_md.strip("\r\n") + "\n") if (
+                src_md and src_md.strip() and doc_on(CLAUDE_MD_SEAT_SRC)) else None
             had_block = SEAT_MARKS[self.key][0] in txt
             if canon is not None:
                 if had_block:
@@ -6342,7 +6276,7 @@ class WorkBuddyTarget:
         text = text.rstrip("\r\n") + "\r\n"
         src = (None if os.environ.get("POJIA_NO_SEAT_OVERRIDE")
                else read_text_safe(WB_USER_MD_SEAT_SRC))
-        if not (src and src.strip()):
+        if not (src and src.strip() and doc_on(WB_USER_MD_SEAT_SRC)):
             return text
         body = "\r\n".join(src.strip("\r\n").replace("\r\n", "\n").split("\n"))
         return (text + "\r\n" + WB_USER_MARK_BEGIN + "\r\n" + body +
@@ -7218,11 +7152,16 @@ def run_action(args, mode, targets=None):
             _auto_offer_pick(t, args)
         say("")
         say(BOLD(CYAN("── %s ──────────────────────────────────────────" % t.label)))
+        # GUI 指令页把这个席位的注入源全关了 —— 等于「默认用官方文件」：
+        # apply 直接走还原，把实盘撤成官方原版，不留半份旧内容。
+        all_off = mode != "revert" and seat_all_off(k)
+        if all_off:
+            say("[注入开关] 该席位的注入源已全部关闭 —— 按「回官方原版」处理")
         # 每个目标一次事务：写前留证、原子写、出错回滚。dry-run 不写盘 -> noop。
         session = tx_begin(k, mode)
         err = None
         try:
-            if k == "codex" and mode == "revert":
+            if all_off and mode in ("apply", "dry-run"):
                 t.apply(args, "revert")
             else:
                 t.apply(args, mode)

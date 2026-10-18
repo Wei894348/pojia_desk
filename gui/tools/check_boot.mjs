@@ -49,6 +49,7 @@ class El {
     if (i < 0) return this.appendChild(nw);
     nw.parent = this; this.children[i] = nw; return old;
   }
+  replaceChildren(...ns) { this.children = ns.slice(); ns.forEach((n) => { n.parent = this; }); }
   removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); return c; }
   remove() { if (this.parent) this.parent.removeChild(this); }
   setAttribute(k, v) { this._attrs[k] = v; }
@@ -141,7 +142,8 @@ const pojia = {
   onLog: () => {}, win: () => {},
 };
 
-globalThis.window = { pojia, confirm: () => true };
+// 确认改成页面内抽屉（askConfirm），桩里直接放行；confirm 留着兼容老调用
+globalThis.window = { pojia, confirm: () => true, __pojiaAutoConfirm: true };
 globalThis.document = doc;
 globalThis.localStorage = { getItem: () => null, setItem: () => {} };
 // 定时器改成「收集起来手动 flush」：刷新节流的合并窗口要靠它才验得出来
@@ -172,8 +174,8 @@ console.log('【1】bind() + boot() 真跑');
 // 先把标题写脏 —— 否则 index.html 里的初值恰好也是当前版本，就验不出"到底有没有被 meta 覆盖"
 $('tbVersion').textContent = 'v0.0-占位';
 $('tbSub').textContent = '占位';
-$('sbPython').textContent = 'python —';
-$('sbRoot').textContent = '项目 —';
+$('setPy').textContent = 'python —';
+$('setRoot').textContent = '—';
 let bootErr = null;
 await (async () => { try { X.loadOpts(); X.bind(); await X.boot(); } catch (e) { bootErr = e; } })();
 check('bind() + boot() 不抛异常', !bootErr, bootErr && (bootErr.message + '\n' + bootErr.stack));
@@ -181,15 +183,15 @@ check('版本号被 meta 覆盖（页面里那个只是占位）',
   $('tbVersion').textContent === 'v' + SRC_VERSION, $('tbVersion').textContent);
 check('副标题按 ORDER 算（七张卡 → 六目标）',
   $('tbSub').textContent === '六目标统一控制台', $('tbSub').textContent);
-check('底部栏回显解释器与项目根',
-  $('sbPython').textContent.includes('python.exe') && $('sbRoot').textContent.includes('pojia_desk'),
-  $('sbPython').textContent + ' | ' + $('sbRoot').textContent);
+check('设置页回显解释器与项目根',
+  $('setPy').textContent.includes('python.exe') && $('setRoot').textContent.includes('pojia_desk'),
+  $('setPy').textContent + ' | ' + $('setRoot').textContent);
 check('boot 后每张卡都渲染出来', $('cards').children.length === X.ORDER.length,
   String($('cards').children.length));
 check('每张卡的 key 都对', $('cards').children.map((c) => c.dataset.key).join(',') === X.ORDER.join(','),
   $('cards').children.map((c) => c.dataset.key).join(','));
-check('DSH 卡里有状态行（新加的那行真渲染出来了）',
-  !!$('cards').querySelector('.deploystate'));
+check('每张卡都带部署⇄还原滑块',
+  $('cards').children.every((c) => c.querySelectorAll('.slider').length === 1));
 
 // ── 2. 部署按钮：勾选组合 → 真发给桥的参数 ─────────────────
 console.log('【2】点「部署」→ 实际发给桥的参数');
@@ -329,7 +331,7 @@ resetRefresh(0);
 // ── 5. 其它按钮的绑定都在 ─────────────────────────────────
 console.log('【5】工具条按钮都绑上了 click');
 ['btnDeploy', 'btnDry', 'btnDiff', 'btnTest', 'btnRevert', 'btnRefresh', 'btnTx', 'btnConsole',
- 'btnPy', 'btnRoute', 'btnCollapse', 'btnLogFile', 'btnTxClose', 'btnTxPurge', 'btnDiffClose']
+ 'btnSetPy', 'btnRoute', 'btnCollapse', 'btnLogFile', 'btnTxClose', 'btnTxPurge', 'btnDiffClose']
   .forEach((id) => {
     check(id + ' 有 click 监听', $_(id));
   });

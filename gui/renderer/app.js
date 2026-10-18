@@ -1,271 +1,94 @@
-// 破甲工作台 · 渲染层逻辑
+// 破甲工作台 · 渲染层逻辑 —— 2077 版：左菜单四视图 / 块状席位卡 / 部署⇄还原滑块 / 底部日志
 const $ = (id) => document.getElementById(id);
 const api = window.pojia;
 
 const STATE_MAP = {
-  current: { cls: 's-current', badge: 'badge-ok', label: '已部署 · 本版' },
-  stale:   { cls: 's-stale',   badge: 'badge-warn', label: '已部署 · 旧版' },
-  none:    { cls: 's-none',    badge: 'badge-muted', label: '未部署' },
-  broken:  { cls: 's-broken',  badge: 'badge-err', label: '未安装 / 异常' },
-  foreign: { cls: 's-foreign', badge: 'badge-info', label: '外部配置' },
-  warn:    { cls: 's-warn',    badge: 'badge-warn', label: '部分命中' },
-  orphan:  { cls: 's-orphan',  badge: 'badge-warn', label: 'CLI 未检测到' },
+  current: { cls: 'on',     label: '已部署 · 本版' },
+  stale:   { cls: 'on',     label: '已部署 · 旧版' },
+  none:    { cls: '',       label: '未部署' },
+  broken:  { cls: 'err',    label: '未安装 / 异常' },
+  foreign: { cls: '',       label: '外部配置' },
+  warn:    { cls: '',       label: '部分命中' },
+  orphan:  { cls: '',       label: 'CLI 未检测到' },
 };
-const LEVEL_CLS = { ok: 'lv-ok', warn: 'lv-warn', err: 'lv-err', info: 'lv-info', dim: 'lv-dim' };
+// 滑块态：卡上的部署状态 → 开关位置 + 文案
+const SLIDER_STATE = {
+  current: ['s-current', '本版'],
+  stale:   ['s-stale',   '旧版'],
+  none:    ['s-missing', '未部署'],
+  broken:  ['s-missing', '未安装'],
+  foreign: ['s-unknown', '外部'],
+  warn:    ['s-stale',   '部分'],
+  orphan:  ['s-unknown', '未检'],
+};
+const LEVEL_CLS = { ok: 'lv-ok', warn: 'lv-warn', err: 'lv-err', info: 'lv-info', dim: 'lv-dim', head: 'lv-info', step: 'lv-info' };
 const ORDER = ['codex', 'dsh', 'dsh-desktop', 'wb', 'zcode', 'claude', 'hermes'];
-// 七张卡，但只有**六个命令行目标**：DSH 桌面版和 npm 版共用同一套命令
-// （preset 一次就写 web + desktop 两份 profile），所以它界面单独成卡、
-// 执行时折回 dsh（bridge 的 CARD_ONLY）。DSH 的「破甲模式」仍不是卡 ——
-// 它是 DSH 卡片里的一个下拉选项（两个勾选框），状态并进那张卡的体检项与明细。
 const LABELS = {
-  codex: 'Codex CLI', dsh: 'DSH (Web/CLI)', 'dsh-desktop': 'DSH 桌面版',
+  codex: 'ChatGPT', dsh: 'DSH (Web/CLI)', 'dsh-desktop': 'DSH 桌面版',
   wb: 'WorkBuddy', zcode: 'ZCode (Z.ai)',
   claude: 'Claude Code', hermes: 'Hermes Agent',
 };
+// 桌面版卡执行时折回 dsh（bridge 的 CARD_ONLY），tx 快照的 seat 也是 dsh
+const REAL_SEAT = { 'dsh-desktop': 'dsh' };
+const seatOf = (k) => REAL_SEAT[k] || k;
 
 const OPT_KEY = 'pojia.opts';
+const VIEW_TITLES = { deploy: '部署目标', skills: '技能管理', prompts: '指令提示词', settings: '设置', about: '关于' };
 
-// ── 刷新策略 ───────────────────────────────────────────────
-// 状态检测一次要跑 6 个目标（dsh 单卡就 3.5s），代价很高。
-// 所以：① 两次真检测之间留冷却窗口，窗口内的刷新请求合并成一次；
-//      ② 单张卡的结果缓存 20 秒，冷却窗口外的自动刷新（切窗口回来之类）
-//         直接吃缓存，不重探；③ 只有手动刷新与刚跑完动作的目标才真探。
-const REFRESH_GAP_MS = 5000;    // 两次真检测的最小间隔
-const CARD_TTL_MS = 20000;      // 单卡结果缓存有效期
-
-// DSH 卡片里那个下拉 = 两个独立勾选框，四种组合都合法：
-//   两个都勾（默认）  注入提示词 + 增加破甲模式
-//   只勾「注入提示词」 部署 / 恢复时打或还原 DSH 本体补丁，不动 preset
-//   只勾「增加破甲模式」只用 preset（写入 / 移除），DSH 本体一个字节都不碰
-//   都不勾            这次跳过 DSH
+// DSH 破甲模式四档：两项各管一头（提示词补丁 / 用户级 preset）
 function optMode(o) {
   if (o.prompt && o.preset) return 'both';
   if (o.prompt) return 'prompt';
   if (o.preset) return 'preset';
   return 'none';
 }
-
 const MODE_TEXT = {
   both: '提示词 + 破甲模式', prompt: '只注入提示词',
   preset: '只加破甲模式', none: '都不做',
 };
-
-// 下拉按钮长什么样：两项都勾 = 绿，只勾一项 = 蓝，都不勾 = 灰
-function presetButtonFace(o) {
-  const mode = optMode(o);
-  const cls = mode === 'none' ? 'idle' : (mode === 'both' ? 'on' : 'half');
-  return { mode, text: MODE_TEXT[mode], cls };
-}
-
-// 下拉里两项 → 命令行开关。两个开关互斥，且只有 DSH 受它们影响
-// （bridge 侧 preset-only 判的是 k === 'dsh'；no-preset 对别的目标是空转）。
 function flagsForOpts() {
   const { prompt, preset } = state.opts;
-  if (prompt && !preset) return ['no-preset'];    // 只注入提示词
-  if (!prompt && preset) return ['preset-only'];  // 只动破甲模式
+  if (prompt && !preset) return ['no-preset'];
+  if (!prompt && preset) return ['preset-only'];
   return [];
 }
 
 const state = {
   meta: null,
+  view: 'deploy',
   cards: [],
   selected: new Set(ORDER),
-  expanded: new Set(),
   busy: false,
   logCount: 0,
-  // DSH 卡片里那个下拉的两项：
-  //   prompt —— 部署 / 恢复 DSH 时，写 / 还原提示词补丁（作用于 DSH 本体）
-  //   preset —— 部署 / 恢复 DSH 时，写入 / 移除破甲模式（用户级 agent preset）
   opts: { prompt: true, preset: true },
-  ddOpen: false,
-  // 刷新节流的三块状态（详见下面 refreshStatus / runRefresh）：
-  _lastRefreshAt: 0,        // 上次真检测的时刻
-  _refreshTimer: 0,         // 冷却窗口的合并定时器
-  _queuedKeys: null,        // 窗口内攒下的目标（Set；null = 全部）
-  _pendingRefresh: null,    // busy 期间攒下的刷新请求 { keys }
-  _cardCache: new Map(),    // key -> { card, at } —— 单卡结果缓存
+  _lastRefreshAt: 0,
+  _refreshTimer: 0,
+  _queuedKeys: null,
+  _pendingRefresh: null,
+  _cardCache: new Map(),
 };
 
-// 冷却窗口内的目标取并集；任一侧是 null（= 全部）就是全部
 function mergeRefreshKeys(a, b) {
   if (!a || !b) return null;
   const out = new Set(a);
   b.forEach((k) => out.add(k));
   return out;
 }
-
 function cacheCard(c) { state._cardCache.set(c.key, { card: c, at: Date.now() }); }
 
 function loadOpts() {
   try {
     const d = JSON.parse(localStorage.getItem(OPT_KEY) || '{}');
-    // preset 这个键两版同义（"连带动破甲模式"），直接沿用；
-    // 旧版的 presetCard 是"面板上要不要那张独立卡片"—— 卡片已并进 DSH，丢弃。
     if (typeof d.preset === 'boolean') state.opts.preset = d.preset;
     if (typeof d.prompt === 'boolean') state.opts.prompt = d.prompt;
   } catch (_) { /* 没存过就用默认 */ }
 }
-
 function saveOpts() {
   try { localStorage.setItem(OPT_KEY, JSON.stringify(state.opts)); } catch (_) { /* 隐私模式 */ }
 }
 
-// 勾选框跟着 state.opts 走。菜单每次重建都要重画，所以单独拎出来。
-function syncOptBoxes(root) {
-  const scope = root || document;
-  // 两台下拉各有自己的勾选框（id 带后缀），所以按 data-opt 找，别写死 id ——
-  // 写死就会只同步 DSH 那台，桌面版那台勾了之后回显不动。
-  scope.querySelectorAll('label.optitem[data-opt]').forEach((lab) => {
-    const k = lab.dataset.opt;
-    if (!(k in state.opts)) return;
-    const box = lab.querySelector('input');
-    if (box) box.checked = !!state.opts[k];
-  });
-}
-
-// 把 state.opts 画回下拉：按钮摘要 + 配色 + 展开与否。
-// 卡片每次 upsert 都会重建，所以拆成两份：一份按节点引用画（建卡时节点还没进 DOM），
-// 一份按 id 找（勾选之后重画用）。全都判空，谁不在都不炸。
-function paintDshNodes(btn, txtEl, menu) {
-  const face = presetButtonFace(state.opts);
-  if (btn) {
-    btn.classList.remove('on', 'half', 'idle');
-    btn.classList.add(face.cls);
-  }
-  if (txtEl) txtEl.textContent = face.text;
-  if (menu) {
-    menu.classList.toggle('on', !!state.ddOpen);
-    syncOptBoxes(menu);
-  }
-  return face;
-}
-
-// 两台下拉共享 state.opts（两张 DSH 卡各一台），所以每次重画都过一遍两组节点。
-function paintDshOpts() {
-  const sets = [['ddDshBtn', 'ddDshText', 'ddDshMenu'],
-                ['ddDshBtn2', 'ddDshText2', 'ddDshMenu2']];
-  let first = null;
-  sets.forEach(([b, t, m]) => {
-    const face = paintDshNodes($(b), $(t), $(m));
-    if (!first) first = face;
-  });
-  return first;
-}
-
-// DSH 卡片里那行「当前：已部署 … / 什么都没部署」。
-// 报的是磁盘上的实际状态，跟卡内两个勾选框无关 —— 勾选说的是"这次要做什么"，
-// 这行说的是"现在盘上是什么"。bridge 每次探测都会带上 deploy 字段。
-const DEPLOY_CLS = { on: 'st-on', half: 'st-half', idle: 'st-idle' };
-
-function buildDeployState(dep) {
-  const d = dep || {};
-  const box = document.createElement('div');
-  box.className = 'deploystate ' + (DEPLOY_CLS[d.level] || 'st-idle');
-  const led = document.createElement('span');
-  led.className = 'dled';
-  const txt = document.createElement('span');
-  txt.className = 'dtxt';
-  txt.textContent = d.text || '当前：还没探测到状态';
-  txt.title = d.chip ? (txt.textContent + '（' + d.chip + '）') : txt.textContent;
-  box.appendChild(led);
-  box.appendChild(txt);
-  return box;
-}
-
-// DSH 卡片里的「破甲模式」下拉。菜单内联展开 —— 卡片是 overflow:hidden，
-// 绝对定位的浮层会被裁掉，所以选项直接挤在卡片流里。
-//
-// DSH 现在有两张卡（Web/CLI 版 + 桌面版），各挂一台下拉：它们打的是**同一份包树**
-// （桌面版通过 profiles/node_modules 的 junction 指向 npm 缓存那套），所以两项
-// 对两台卡含义完全一样、共享同一个 state.opts。用 sfx 给 id 加后缀区分节点。
-function buildPresetOpt(dep, sfx) {
-  sfx = sfx || '';
-  const bar = document.createElement('div');
-  bar.className = 'card-opt';
-  const lbl = document.createElement('span');
-  lbl.className = 'optlbl';
-  lbl.textContent = '破甲模式';
-
-  const btn = document.createElement('button');
-  btn.className = 'optbtn';
-  btn.id = 'ddDshBtn' + sfx;
-  btn.title = '这个 DSH 目标要干什么：注入提示词（给它打补丁）/ 增加破甲模式（写入用户级 preset）—— 两项可各选，也可以都要';
-  const led = document.createElement('span');
-  led.className = 'led';
-  const txt = document.createElement('span');
-  txt.id = 'ddDshText' + sfx;
-  const caret = document.createElement('span');
-  caret.className = 'optcaret';
-  caret.textContent = '\u25BE';
-  btn.appendChild(led);
-  btn.appendChild(txt);
-  btn.appendChild(caret);
-
-  const menu = document.createElement('div');
-  menu.className = 'optmenu';
-  menu.id = 'ddDshMenu' + sfx;
-
-  const mk = (id, name, sub, key) => {
-    const lab = document.createElement('label');
-    lab.className = 'optitem';
-    lab.dataset.opt = key;
-    const box = document.createElement('input');
-    box.type = 'checkbox';
-    box.id = id;
-    box.checked = !!state.opts[key];
-    box.addEventListener('change', () => pickOpt(key, box.checked));
-    const box2 = document.createElement('span');
-    box2.className = 'otext';
-    const nm = document.createElement('span');
-    nm.className = 'oname';
-    nm.textContent = name;
-    const sb = document.createElement('span');
-    sb.className = 'osub';
-    sb.textContent = sub;
-    box2.appendChild(nm);
-    box2.appendChild(sb);
-    lab.appendChild(box);
-    lab.appendChild(box2);
-    // 点标签（含文字）交给 checkbox 自己处理，别冒泡到按钮把菜单关了
-    lab.addEventListener('click', (e) => e.stopPropagation());
-    return lab;
-  };
-  menu.appendChild(mk('optPrompt' + sfx, '注入提示词',
-    '部署时给 DSH 打提示词补丁，恢复时还原成官方原版', 'prompt'));
-  menu.appendChild(mk('optPreset' + sfx, '增加破甲模式',
-    '写入 / 移除用户级 agent preset —— 模式下拉里多一个「破甲模式」', 'preset'));
-
-  btn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    state.ddOpen = !state.ddOpen;
-    paintDshOpts();          // 两台下拉（两张 DSH 卡）开合状态保持一致
-  });
-
-  bar.appendChild(lbl);
-  bar.appendChild(btn);
-  return { bar, menu, btn, txt, state: buildDeployState(dep) };
-}
-
-// 勾 / 取消某一项：写盘 + 更新回显。卡片不再增删，所以不用重新探测
-// （省一次几秒的安装基点扫描）；状态栏那句提示靠下一次刷新带上。
-function pickOpt(key, on) {
-  state.opts[key] = !!on;
-  saveOpts();
-  const face = paintDshOpts();
-  logLine('dim', 'sys', 'DSH 破甲 → ' + face.text);
-  return face;
-}
-
-// 当前勾选的目标 —— 全部都是真目标，DSH 那个下拉只决定 DSH 自己怎么跑
-function targets() {
-  return [...state.selected];
-}
-
-// 桌面版那张卡执行时会折回 dsh（bridge 的 CARD_ONLY），所以"这一批里有没有 DSH"
-// 得两张卡一起看 —— 只勾桌面版时漏判会让破甲模式的下拉开关和恢复确认都不出现。
-function hasDsh(tg) {
-  return tg.includes('dsh') || tg.includes('dsh-desktop');
-}
+function targets() { return [...state.selected]; }
+function hasDsh(tg) { return tg.includes('dsh') || tg.includes('dsh-desktop'); }
 
 // ────────────────────────── 通用 UI ──────────────────────────
 
@@ -280,9 +103,9 @@ function toast(msg, kind) {
 
 function setBusy(busy, msg) {
   state.busy = busy;
-  document.querySelectorAll('.toolbar .btn').forEach((b) => { b.disabled = busy; });
+  document.querySelectorAll('.toolbar .btn, .btn.primary, .btn.danger').forEach((b) => { b.disabled = busy; });
   const dot = $('sbDot');
-  dot.className = 'dot ' + (busy ? 'run' : 'idle');
+  dot.className = 'dot ' + (busy ? 'busy' : '');
   if (msg) $('sbMsg').textContent = msg;
 }
 
@@ -296,20 +119,52 @@ function setStatus(msg, kind) {
   if (kind) $('sbDot').className = 'dot ' + kind;
 }
 
-// ────────────────────────── 日志 ──────────────────────────
+// ────────────────────────── 日志（沉底通栏） ──────────────────────────
 
+// 日志行：照 syslog / journalctl 的样子加时间戳 + 级别徽标 + 可着色文本。
+// 颜色只标级别，正文保持正文色；error 整行淡红底，warn 淡黄底。
+const LEVEL_BADGE = {
+  ok:    ['OK  ', 'lbadge lb-ok'],
+  info:  ['INFO', 'lbadge lb-info'],
+  head:  ['====', 'lbadge lb-head'],
+  step:  ['STEP', 'lbadge lb-step'],
+  warn:  ['WARN', 'lbadge lb-warn'],
+  err:   ['ERR ', 'lbadge lb-err'],
+  dim:   ['····', 'lbadge lb-dim'],
+};
+function logStamp() {
+  const d = new Date();
+  const p = (n, w) => String(n).padStart(w || 2, '0');
+  return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds())
+    + '.' + p(d.getMilliseconds(), 3);
+}
 function logLine(level, tag, text) {
   const body = $('logBody');
-  // 首屏占位行清掉
   if (state.logCount === 0) body.innerHTML = '';
   const row = document.createElement('div');
-  row.className = 'lrow ' + (LEVEL_CLS[level] || 'lv-dim');
+  const lv = LEVEL_CLS[level] ? level : 'info';
+  // 类名写成完整字面量（接口契约自检会静态扫 class 名）
+  const LV_ROW = {
+    ok: 'lrow lv-ok', warn: 'lrow lv-warn', err: 'lrow lv-err',
+    info: 'lrow lv-info', dim: 'lrow lv-dim',
+    head: 'lrow lv-head lv-info', step: 'lrow lv-step lv-info',
+  };
+  row.className = LV_ROW[lv] || 'lrow lv-info';
+  const [badge, bcls] = LEVEL_BADGE[lv] || LEVEL_BADGE.info;
+  const ts = document.createElement('span');
+  ts.className = 'lts';
+  ts.textContent = logStamp();
+  const b = document.createElement('span');
+  b.className = bcls;
+  b.textContent = badge;
   const t = document.createElement('span');
   t.className = 'ltag';
   t.textContent = tag || '';
   const x = document.createElement('span');
   x.className = 'ltext';
   x.textContent = text;
+  row.appendChild(ts);
+  row.appendChild(b);
   row.appendChild(t);
   row.appendChild(x);
   body.appendChild(row);
@@ -318,51 +173,40 @@ function logLine(level, tag, text) {
   while (body.children.length > 2600) body.removeChild(body.firstChild);
   if ($('autoScroll').checked) body.scrollTop = body.scrollHeight;
 }
-
 function logHead(text) { logLine('head', '—', text); }
 
-// ────────────────────────── 卡片渲染 ──────────────────────────
+// ────────────────────────── 视图切换 ──────────────────────────
 
-// 卡头那个勾选框。'off' 类与它的 checked 必须同源 ——
-// 只切类不切 checked，就是"点了全选、左边勾号一个没动"。
-function cardBox(node) {
-  const head = node ? node.querySelector('.card-head') : null;
-  return head ? head.querySelector('input[type=checkbox]') : null;
+function switchView(v) {
+  state.view = v;
+  document.querySelectorAll('.snav').forEach((b) => b.classList.toggle('on', b.dataset.view === v));
+  document.querySelectorAll('.view').forEach((s) => s.classList.toggle('on', s.id === 'view-' + v));
+  $('viewTitle').textContent = VIEW_TITLES[v] || v;
+  $('viewTitle').classList.add('gtitle');
+  if (v === 'skills' && !$('skBody').dataset.loaded) loadSkills();
+  if (v === 'prompts') {
+    if (!PROMPTS_INITED) initPrompts();
+    // 每次进来都重扫一遍：部署 / 还原刚改过磁盘，缓存的列表会显示旧开关。
+    // （初始化那次自己会扫，别重复调）
+    else if (PM_DOCS.length) refreshDocs();
+  }
 }
 
+// ────────────────────────── 席位卡（块状 + 滑块） ──────────────────────────
+
 function renderCards(cards) {
-  // 按 ORDER 重排 —— state.cards 的入队顺序是"探测谁先回来"，
-  // 不排的话勾选一次全选卡片就会跳位
-  state.cards = cards.slice().sort((a, b) =>
-    ORDER.indexOf(a.key) - ORDER.indexOf(b.key));
+  state.cards = cards.slice().sort((a, b) => ORDER.indexOf(a.key) - ORDER.indexOf(b.key));
   const wrap = $('cards');
-  // 首屏骨架阶段 state.cards 还是空的：不能往重建分支走（那会把骨架清成空屏），
-  // 但骨架卡头上那个 disabled 的勾选框也得跟着走 —— 否则点了「全选」看着像没反应。
-  if (!state.cards.length) {
-    wrap.querySelectorAll('.card').forEach((n) => {
-      const box = cardBox(n);
-      if (box) box.checked = state.selected.has(n.dataset.key);
-    });
-    return;
-  }
-  // 全选 / 反选只是换勾选态，节点本来就在 —— 就地同步 'off' 类 + 勾选框，
-  // 别整屏重建（那是"点一下全选界面闪一片"的来源）
+  if (!state.cards.length) return;   // 骨架阶段没数据就别动
   const live = new Map([...wrap.querySelectorAll('.card')].map((n) => [n.dataset.key, n]));
-  if (state.cards.every((c) => live.has(c.key))) {
-    state.cards.forEach((c) => {
-      const node = live.get(c.key);
-      const on = state.selected.has(c.key);
-      node.classList.toggle('off', !on);
-      const box = cardBox(node);
-      if (box && box.checked !== on) box.checked = on;
-    });
+  if (state.cards.every((c) => live.has(c.key) && !live.get(c.key).classList.contains('skeleton'))) {
+    state.cards.forEach((c) => updateCard(live.get(c.key), c));
     return;
   }
   wrap.innerHTML = '';
   state.cards.forEach((c) => wrap.appendChild(buildCard(c)));
 }
 
-// 骨架卡：状态还没回来时先把四个席位占上，别让首屏空着
 function renderSkeleton(keys) {
   const wrap = $('cards');
   wrap.innerHTML = '';
@@ -371,30 +215,33 @@ function renderSkeleton(keys) {
     const el = document.createElement('article');
     el.className = 'card skeleton';
     el.dataset.key = k;
+    const ac = (BRAND[k] || {}).accent;
+    if (ac && el.style.setProperty) el.style.setProperty('--seat-accent', ac);
+    const top = document.createElement('div');
+    top.className = 'ctop';
+    const idx = document.createElement('span');
+    idx.className = 'cindex';
+    idx.textContent = String(ORDER.indexOf(k) + 1).padStart(2, '0') + ' / SEAT';
+    const st = document.createElement('span');
+    st.className = 'cstatus';
+    st.textContent = 'SCAN';
+    top.appendChild(idx);
+    top.appendChild(st);
     const head = document.createElement('div');
-    head.className = 'card-head';
-    const chk = document.createElement('input');
-    chk.type = 'checkbox';
-    chk.checked = state.selected.has(k);
-    chk.disabled = true;
-    const name = document.createElement('span');
-    name.className = 'card-name';
-    name.textContent = LABELS[k] || k;
-    const key = document.createElement('span');
-    key.className = 'card-key';
-    key.textContent = k;
-    const spacer = document.createElement('div');
-    spacer.className = 'card-spacer';
-    const badge = document.createElement('span');
-    badge.className = 'badge badge-muted';
-    badge.textContent = '检测中…';
-    head.appendChild(chk);
-    head.appendChild(name);
-    head.appendChild(key);
-    head.appendChild(spacer);
-    head.appendChild(badge);
+    head.className = 'chead';
+    const img = document.createElement('img');
+    img.className = 'clogo';
+    img.src = brandIcon(k);
+    img.width = 26; img.height = 26;
+    const nm = document.createElement('span');
+    nm.className = 'cname';
+    nm.textContent = LABELS[k] || k;
+    head.appendChild(img);
+    head.appendChild(nm);
+    el.appendChild(top);
+    el.appendChild(head);
     const home = document.createElement('div');
-    home.className = 'card-home';
+    home.className = 'cmeta';
     home.textContent = '正在探测安装位置与部署文件……';
     el.appendChild(head);
     el.appendChild(home);
@@ -402,20 +249,15 @@ function renderSkeleton(keys) {
   });
 }
 
-// 单个目标的结果回来就替换它自己那张卡 —— 八个目标并行探测，谁快谁先显示
 function upsertCard(c) {
   const wrap = $('cards');
   const old = wrap.querySelector('.card[data-key="' + c.key + '"]');
-  // 已经是真卡片就地更新；只有骨架卡（或压根没有）才新建节点。
-  // 重建节点会丢滚动位置、hover 与展开动画 —— "界面老在闪"的来源之一。
   if (old && !old.classList.contains('skeleton')) {
     updateCard(old, c);
   } else {
     const el = buildCard(c);
-    if (old) {
-      wrap.replaceChild(el, old);
-    } else {
-      // 插到位置上，不无脑追加 —— 并行探测谁先回来是不定的
+    if (old) wrap.replaceChild(el, old);
+    else {
       const idx = ORDER.indexOf(c.key);
       const after = [...wrap.querySelectorAll('.card')]
         .find((n) => ORDER.indexOf(n.dataset.key) > idx);
@@ -426,47 +268,15 @@ function upsertCard(c) {
   if (i >= 0) state.cards[i] = c; else state.cards.push(c);
 }
 
-// 同一张卡的新结果回来了 —— 就地改内容，不换节点。
-// 只重画会变的几块：状态类名、徽标、落点、DSH 状态行、指标块、明细块。
+// 就地更新：整个 body 重画但节点不换（保滚动 / hover）
 function updateCard(el, c) {
   const map = STATE_MAP[c.state] || STATE_MAP.none;
   const on = state.selected.has(c.key);
-  el.className = 'card ' + map.cls + (on ? '' : ' off');
-  // 探测结果回来也是走这条就地更新 —— 期间若点过全选，勾选框要跟着对齐
-  const box = cardBox(el);
-  if (box && box.checked !== on) box.checked = on;
-
-  const kids = Array.from(el.children);
-  const byCls = (name) => kids.find((x) => (x.className || '').split(' ').includes(name));
-  const open = state.expanded.has(c.key);
-
-  const head = byCls('card-head');
-  if (head) {
-    const badge = head.querySelector('.badge');
-    if (badge) { badge.className = 'badge ' + map.badge; badge.textContent = map.label; }
-    const chev = head.querySelector('.chev');
-    if (chev) chev.textContent = open ? '\u25B4' : '\u25BE';
-  }
-
-  const home = byCls('card-home');
-  if (home) {
-    home.textContent = c.home || '(未探测到路径)';
-    home.title = c.home || '';
-  }
-
-  // DSH 卡那行「当前：已部署 …」—— 探测结果带了 deploy 才换
-  const dsLive = byCls('deploystate');
-  if (dsLive) el.replaceChild(buildDeployState(c.deploy), dsLive);
-
-  const mLive = byCls('metrics');
-  const dLive = byCls('detail');
-  const mNew = buildMetrics(c);
-  if (mLive && mNew) el.replaceChild(mNew, mLive);
-  else if (mLive) el.removeChild(mLive);
-  else if (mNew) { if (dLive) el.insertBefore(mNew, dLive); else el.appendChild(mNew); }
-
-  const dNew = buildDetail(c, open);
-  if (dLive) el.replaceChild(dNew, dLive); else el.appendChild(dNew);
+  el.className = 'card ' + map.cls + (on ? '' : ' dimmed');
+  const ac = (BRAND[c.key] || {}).accent;
+  if (ac && el.style.setProperty) el.style.setProperty('--seat-accent', ac);
+  const body = buildCardBody(c);
+  el.replaceChildren(body);
 }
 
 function buildCard(c) {
@@ -474,179 +284,258 @@ function buildCard(c) {
   const el = document.createElement('article');
   el.className = 'card ' + map.cls;
   el.dataset.key = c.key;
-  if (!state.selected.has(c.key)) el.classList.add('off');
-
-  // 头部
-  const head = document.createElement('div');
-  head.className = 'card-head';
-
-  const chkLabel = document.createElement('label');
-  chkLabel.className = 'chk';
-  const chk = document.createElement('input');
-  chk.type = 'checkbox';
-  chk.checked = state.selected.has(c.key);
-  chk.addEventListener('change', () => {
-    if (chk.checked) state.selected.add(c.key); else state.selected.delete(c.key);
-    el.classList.toggle('off', !chk.checked);
-    updateToolbarHint();
-  });
-  chkLabel.appendChild(chk);
-  head.appendChild(chkLabel);
-
-  const title = document.createElement('div');
-  title.className = 'card-title';
-  const name = document.createElement('span');
-  name.className = 'card-name';
-  name.textContent = c.label;
-  const key = document.createElement('span');
-  key.className = 'card-key';
-  key.textContent = c.key;
-  title.appendChild(name);
-  title.appendChild(key);
-
-  const spacer = document.createElement('div');
-  spacer.className = 'card-spacer';
-
-  const badge = document.createElement('span');
-  badge.className = 'badge ' + map.badge;
-  badge.textContent = map.label;
-
-  const chev = document.createElement('button');
-  chev.className = 'chev';
-  const open = state.expanded.has(c.key);
-  chev.textContent = open ? '\u25B4' : '\u25BE';
-
-  head.appendChild(title);
-  head.appendChild(spacer);
-  head.appendChild(badge);
-  head.appendChild(chev);
-
-  // 落点路径
-  const home = document.createElement('div');
-  home.className = 'card-home';
-  home.textContent = c.home || '(未探测到路径)';
-  home.title = c.home || '';
-  home.addEventListener('click', () => { if (c.home) api.openPath(c.home); });
-
-  // 指标
-  const metrics = buildMetrics(c);
-
-  // 明细
-  const detail = buildDetail(c, open);
-
-  chev.addEventListener('click', () => {
-    const hide = detail.classList.toggle('hide');
-    if (hide) state.expanded.delete(c.key); else state.expanded.add(c.key);
-    chev.textContent = hide ? '\u25BE' : '\u25B4';
-  });
-
-  el.appendChild(head);
-  el.appendChild(home);
-
-  // 两张 DSH 卡（Web/CLI 版与桌面版）各挂一台破甲模式下拉 + 当前部署状态行。
-  // 它们打的是同一份包树（桌面版经 junction 指向 npm 缓存那套），两项的含义完全一样，
-  // 所以下拉照给、共享 state.opts；执行时桥会把两张卡折成同一条 dsh 命令。
-  if (c.key === 'dsh' || c.key === 'dsh-desktop') {
-    const opt = buildPresetOpt(c.deploy, c.key === 'dsh' ? '' : '2');
-    el.appendChild(opt.bar);
-    el.appendChild(opt.state);
-    el.appendChild(opt.menu);
-    paintDshNodes(opt.btn, opt.txt, opt.menu);   // 节点这还没进 DOM，只能按引用画
-  }
-
-  if (metrics) el.appendChild(metrics);
-  el.appendChild(detail);
+  const ac = (BRAND[c.key] || {}).accent;
+  if (ac && el.style.setProperty) el.style.setProperty('--seat-accent', ac);
+  el.appendChild(buildCardBody(c));
   return el;
 }
 
-// 指标块 —— 单独拎出来，是为了让 updateCard 能只换这一块而不重建整张卡。
-// 没有指标时返回 null（buildCard / updateCard 都得容忍）
-function buildMetrics(c) {
-  const list = c.metrics || [];
-  if (!list.length) return null;
-  const metrics = document.createElement('div');
-  metrics.className = 'metrics';
-  list.forEach((m) => {
-    const box = document.createElement('div');
-    box.className = 'metric ' + (m.ok ? 'ok' : 'bad');
-    const n = document.createElement('span');
-    n.className = 'mname';
-    n.textContent = m.name;
-    const v = document.createElement('span');
-    v.className = 'mval';
-    v.textContent = m.value;
-    v.title = String(m.value);
-    box.appendChild(n);
-    box.appendChild(v);
-    metrics.appendChild(box);
-  });
-  return metrics;
+// 各席位用真实客户端图标（与指令页同一套，存在 renderer/icons/）。
+// 只留强调色，卡片左上角那条色带还在用。
+const BRAND = {
+  codex:          { accent: '#10a37f', icon: 'codex.svg' },   // ChatGPT / OpenAI
+  dsh:            { accent: '#4f7dff', icon: 'dsh.png' },     // DeepSeek Harness
+  'dsh-desktop':  { accent: '#4f7dff', icon: 'dsh.png' },
+  wb:             { accent: '#a56bff', icon: 'workbuddy.png' }, // WorkBuddy
+  zcode:          { accent: '#3dffa0', icon: 'zcode.png' },   // ZCode
+  claude:         { accent: '#ff8a3d', icon: 'claude.svg' },  // Claude Code
+  hermes:         { accent: '#ff4fd8', icon: 'hermes.png' },  // Hermes
+};
+function brandIcon(key) {
+  const b = BRAND[key];
+  return b && b.icon ? 'icons/' + b.icon : '';
 }
 
-// 明细块 —— 同样是为了增量更新。没明细也是一块空壳（保持"最后的子节点"位置稳定）
-function buildDetail(c, open) {
+function buildCardBody(c) {
+  const map = STATE_MAP[c.state] || STATE_MAP.none;
+  const box = document.createElement('div');
+  box.className = 'cbody';
+
+  // 角标行：席位编号 / SEAT + 勾选 + 状态灯（Astra 的 seat-top）
+  const top = document.createElement('div');
+  top.className = 'ctop';
+  const idx = document.createElement('span');
+  idx.className = 'cindex';
+  idx.textContent = String(ORDER.indexOf(c.key) + 1).padStart(2, '0') + ' / SEAT';
+  const chk = document.createElement('input');
+  chk.type = 'checkbox';
+  chk.checked = state.selected.has(c.key);
+  chk.title = '纳入批量操作';
+  chk.addEventListener('change', () => {
+    if (chk.checked) state.selected.add(c.key); else state.selected.delete(c.key);
+  });
+  const st = document.createElement('span');
+  st.className = 'cstatus';
+  st.textContent = map.label;
+  top.appendChild(idx);
+  top.appendChild(chk);
+  top.appendChild(st);
+
+  // 标题行：logo + 名字 + 总览按钮
+  const head = document.createElement('div');
+  head.className = 'chead';
+  const img = document.createElement('img');
+  img.className = 'clogo';
+  img.src = brandIcon(c.key);
+  img.alt = c.key;
+  img.width = 26; img.height = 26;
+  const name = document.createElement('span');
+  name.className = 'cname';
+  name.textContent = c.label || LABELS[c.key] || c.key;
+  const patchBtn = document.createElement('button');
+  patchBtn.className = 'minibtn';
+  patchBtn.textContent = '总览';
+  patchBtn.title = '补丁总览：改了哪些文件、位置在哪、内容是什么、状态如何';
+  patchBtn.addEventListener('click', () => openPatch(c.key));
+  head.appendChild(img);
+  head.appendChild(name);
+  head.appendChild(patchBtn);
+
+  // 简介：落点路径（Astra 的 seat-card p —— 一句话说明）
+  const home = document.createElement('div');
+  home.className = 'cmeta';
+  home.textContent = c.home || '(未探测到路径)';
+  home.title = c.home || '';
+  home.style.cursor = c.home ? 'pointer' : '';
+  home.addEventListener('click', () => { if (c.home) api.openPath(c.home); });
+
+  box.appendChild(top);
+  box.appendChild(head);
+  box.appendChild(home);
+
+  if (c.state === 'broken') {
+    (c.rows || []).forEach((r) => {
+      const m = document.createElement('div');
+      m.className = 'cmissing';
+      m.textContent = r.note || r.path || '';
+      box.appendChild(m);
+    });
+  }
+
+  // 指标
+  const list = c.metrics || [];
+  if (list.length) {
+    const stats = document.createElement('div');
+    stats.className = 'cstats';
+    list.forEach((m) => {
+      const cell = document.createElement('div');
+      cell.className = 'cstat';
+      const n = document.createElement('span');
+      n.className = 'n ' + (m.ok ? 'ok' : 'bad');
+      n.textContent = m.value;
+      const t = document.createElement('span');
+      t.className = 't';
+      t.textContent = m.name;
+      cell.appendChild(n);
+      cell.appendChild(t);
+      stats.appendChild(cell);
+    });
+    box.appendChild(stats);
+  }
+
+  // 明细行（部署文件 + 体检行）—— 默认收起，点「明细」展开
   const detail = document.createElement('div');
-  detail.className = 'detail' + (open ? '' : ' hide');
-  // 部署文件清单 —— 该席位落了哪些盘上文件（bridge 的 files[]，含 manifest 补齐）
+  detail.className = 'cdetail';
+  detail.hidden = true;
+  let nDet = 0;
   (c.files || []).forEach((f) => {
     if (!f.path) return;
     const base = (f.path || '').split(/[\\/]/).filter(Boolean).pop();
-    const sizeTxt = f.isdir ? '目录' : (typeof f.size === 'number' ? f.size + ' B' : '');
     const row = document.createElement('div');
-    row.className = 'row';
-    const dot = document.createElement('span');
-    dot.className = 'dot ' + (f.exists ? 'ok' : 'err');
-    const p = document.createElement('span');
-    p.className = 'rpath';
-    p.textContent = '[部署] ' + (f.role ? f.role + ' · ' : '') + base + (sizeTxt ? '（' + sizeTxt + '）' : '');
-    p.title = f.path || '';
-    p.addEventListener('click', () => { if (f.path) api.openPath(f.path); });
-    const note = document.createElement('span');
-    note.className = 'rnote';
-    note.textContent = f.exists ? '' : '缺失';
-    row.appendChild(dot);
-    row.appendChild(p);
-    row.appendChild(note);
+    row.className = 'cmeta';
+    row.textContent = (f.exists ? '▸ ' : '✗ ') + (f.role ? f.role + ' · ' : '') + base;
+    row.title = f.path || '';
+    row.addEventListener('click', () => { if (f.path) api.openPath(f.path); });
     detail.appendChild(row);
+    nDet++;
   });
   (c.rows || []).forEach((r) => {
     const row = document.createElement('div');
-    row.className = 'row';
-    const dot = document.createElement('span');
-    dot.className = 'dot ' + (r.level || 'dim');
-    const p = document.createElement('span');
-    p.className = 'rpath';
-    p.textContent = r.path || '';
-    p.title = r.path || '';
-    p.addEventListener('click', () => { if (r.path) api.openPath(r.path); });
-    const note = document.createElement('span');
-    note.className = 'rnote';
-    note.textContent = r.note || '';
-    row.appendChild(dot);
-    row.appendChild(p);
-    row.appendChild(note);
+    row.className = 'cmeta';
+    row.textContent = (r.level === 'err' ? '✗ ' : r.level === 'warn' ? '△ ' : '· ') + (r.note || r.path || '');
+    if (r.path) {
+      row.title = r.path;
+      row.addEventListener('click', () => api.openPath(r.path));
+    }
     detail.appendChild(row);
+    nDet++;
   });
-  return detail;
+  if (nDet) box.appendChild(detail);
+
+  // DSH 破甲模式四档下拉（两张 DSH 卡共享 state.opts）
+  if (c.key === 'dsh' || c.key === 'dsh-desktop') {
+    const optrow = document.createElement('div');
+    optrow.className = 'sliderwrap';
+    const lbl = document.createElement('span');
+    lbl.className = 'sliderlbl';
+    lbl.textContent = '破甲模式';
+    const sel = document.createElement('select');
+    sel.className = 'skselect';
+    Object.entries(MODE_TEXT).forEach(([v, t]) => {
+      const o = document.createElement('option');
+      o.value = v;
+      o.textContent = t;
+      if (optMode(state.opts) === v) o.selected = true;
+      sel.appendChild(o);
+    });
+    sel.addEventListener('change', () => {
+      state.opts.prompt = sel.value === 'both' || sel.value === 'prompt';
+      state.opts.preset = sel.value === 'both' || sel.value === 'preset';
+      saveOpts();
+      logLine('dim', 'sys', 'DSH 破甲 → ' + MODE_TEXT[sel.value]);
+    });
+    optrow.appendChild(lbl);
+    optrow.appendChild(sel);
+    box.appendChild(optrow);
+  }
+
+  // ── Astra 动作排：明细 · 路径 · 日志（各一行点击动作） ──
+  const acts = document.createElement('div');
+  acts.className = 'cactions';
+  const mkAct = (label, fn, hot) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    if (hot) b.className = 'hot';
+    b.addEventListener('click', fn);
+    return b;
+  };
+  const nFiles = (c.files || []).filter((f) => f.path).length;
+  acts.appendChild(mkAct('明细 ' + (nDet || nFiles), () => {
+    const d = box.querySelector('.cdetail');
+    if (d) d.hidden = !d.hidden;
+  }));
+  acts.appendChild(mkAct('路径', () => { if (c.home) api.openPath(c.home); }));
+  acts.appendChild(mkAct('总览', () => openPatch(c.key), true));
+  box.appendChild(acts);
+
+  // ── 滑块：部署 ⇄ 还原（还原走事务快照）──
+  box.appendChild(buildSlider(c));
+  return box;
 }
 
-function updateToolbarHint() {
-  const n = state.selected.size;
-  $('btnDeploy').title = n ? ('对选中的 ' + n + ' 个目标部署') : '先在卡片上勾选目标';
+function buildSlider(c) {
+  const wrap = document.createElement('div');
+  wrap.className = 'sliderwrap';
+
+  const lblL = document.createElement('span');
+  lblL.className = 'sliderlbl';
+  lblL.textContent = '还原';
+
+  const slider = document.createElement('div');
+  slider.className = 'slider';
+  slider.setAttribute('role', 'switch');
+  slider.title = '拨到右边 = 部署破甲；拨回左边 = 从事务快照还原（无快照则退回常规还原）';
+  const knob = document.createElement('span');
+  knob.className = 'knob';
+  knob.textContent = '⇄';
+  slider.appendChild(knob);
+
+  const st = document.createElement('span');
+  const [scls, stxt] = SLIDER_STATE[c.state] || SLIDER_STATE.none;
+  st.className = 'sliderstate ' + scls;
+  st.textContent = stxt;
+
+  const lblR = document.createElement('span');
+  lblR.className = 'sliderlbl rgt';
+  lblR.textContent = '部署';
+
+  const isOn = c.state === 'current' || c.state === 'stale';
+  slider.classList.toggle('on', isOn);
+  slider.dataset.seat = c.key;
+
+  // 视觉先行：点下去立刻翻滑块，别等 Python 进程 —— 和指令页的开关一致。
+  // 真实状态以后端刷新为准；中途失败 refreshStatus 会把卡片改回去。
+  const paint = (on, pending) => {
+    slider.classList.toggle('on', on);
+    slider.classList.toggle('busy', !!pending);
+    const [cls, txt] = pending
+      ? ['s-stale', on ? '部署中…' : '还原中…']
+      : (SLIDER_STATE[on ? 'current' : 'none'] || SLIDER_STATE.none);
+    st.className = 'sliderstate ' + cls;
+    st.textContent = pending ? txt : (txt || '');
+  };
+
+  slider.addEventListener('click', () => {
+    if (state.busy || slider.classList.contains('busy')) {
+      toast('有活儿在跑，稍等', 'warn');
+      return;
+    }
+    const on = slider.classList.contains('on');
+    paint(!on, true);
+    if (on) doSliderRevert(c); else doRun('apply', [c.key]);
+  });
+
+  wrap.appendChild(lblL);
+  wrap.appendChild(slider);
+  wrap.appendChild(st);
+  wrap.appendChild(lblR);
+  return wrap;
 }
 
 // ────────────────────────── 数据加载 ──────────────────────────
 
-// 外壳：决定"这次请求要不要真的打一次检测"。
-//   busy            → 记待办，本次结束后补跑（不能静默丢弃，否则卡片停在旧内容上）
-//   冷却窗口内      → 合并成一个定时器，到点跑一次；期间来多少请求都只算一次
-//   force           → 跳过冷却与缓存，立刻真检测（手动刷新、刚动过盘的目标走这条）
-//     keys          → 只刷这些目标（Set）；null / 不传 = 全部
-// 注意：定时器回调直接进 runRefresh，不再回到外壳 —— 否则 stub 里同步 setTimeout
-//       会让"再排一次队"变成死循环。
 async function refreshStatus(quiet, keys, force) {
   if (state.busy) { state._pendingRefresh = { keys: keys || null }; return; }
-
   const now = Date.now();
   if (!force && state._lastRefreshAt && now - state._lastRefreshAt < REFRESH_GAP_MS) {
     state._queuedKeys = mergeRefreshKeys(state._queuedKeys, keys || null);
@@ -664,7 +553,9 @@ async function refreshStatus(quiet, keys, force) {
   return runRefresh(quiet, keys || null, force);
 }
 
-// 内核：真去探一次。缓存命中的目标不重探，只把结果重画一遍。
+const REFRESH_GAP_MS = 5000;
+const CARD_TTL_MS = 20000;
+
 async function runRefresh(quiet, keys, force) {
   if (state.busy) { state._pendingRefresh = { keys: keys || null }; return; }
   const want = keys ? ORDER.filter((k) => keys.has(k)) : ORDER.slice();
@@ -673,7 +564,6 @@ async function runRefresh(quiet, keys, force) {
   state._lastRefreshAt = Date.now();
   setBusy(true, '正在检测状态……');
 
-  // 缓存命中判定：TTL 内刚探过就直接复用（force 时不看缓存）
   const now = Date.now();
   const cached = new Map();
   const ask = [];
@@ -685,14 +575,7 @@ async function runRefresh(quiet, keys, force) {
 
   if (!quiet) overlay(true, '正在检测 ' + want.length + ' 个目标……');
   try {
-    // 首屏才铺骨架。之后的刷新一律原地更新 —— 之前的 renderSkeleton 会把
-    // 全部卡片清空重画，那是"界面老是在闪"的主因。
     if (!state.cards.length) renderSkeleton(want);
-    // 一次请求拿全部要探的卡。
-    //   原来是 9 个并发单卡请求、每个只取 cards[0] —— 任何一个失败或超时，
-    //   那张卡就停在旧内容上（正是"某张卡不刷新"的来源）。
-    //   bridge 侧 cmd_status 内部本来就是 ThreadPoolExecutor 批量并行，
-    //   一次拿完更稳，也少 8 次往返。
     const byKey = new Map();
     let when = '';
     if (ask.length) {
@@ -713,7 +596,6 @@ async function runRefresh(quiet, keys, force) {
         upsertCard(c);
         if (c.state !== 'current') bad += 1;
       } else {
-        // 没回来的卡片**必须显式标错**，不能让它留着上一次的内容冒充现状
         bad += 1;
         const broken = { key: k, label: LABELS[k] || k, home: '', state: 'broken',
                          rows: [{ level: 'err', path: '',
@@ -730,7 +612,6 @@ async function runRefresh(quiet, keys, force) {
   } finally {
     setBusy(false);
     overlay(false);
-    // 本次期间攒下的刷新请求，补跑一次（带上它要刷的目标）
     if (state._pendingRefresh) {
       const pend = state._pendingRefresh;
       state._pendingRefresh = null;
@@ -745,19 +626,20 @@ async function boot() {
   try {
     const info = await api.boot();
     $('tbVersion').textContent = 'v' + ((info.meta && info.meta.version) || '?');
-    // 副标题跟着 ORDER 走 —— 加席位时不会再漏成「四目标」
+    $('aboutVer').textContent = 'v' + ((info.meta && info.meta.version) || '?');
     const CN = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
-    // dsh-desktop 与 dsh 是同一目标的第二张卡，不计入「目标数」
     const nTargets = ORDER.filter((k) => k !== 'dsh-desktop').length;
     $('tbSub').textContent = (CN[nTargets] || nTargets) + '目标统一控制台';
-    $('sbPython').textContent = info.python ? (info.python.split('\\').pop() + ' · ' + info.pythonVersion) : 'python 未找到';
-    $('sbPython').title = info.python || '未找到';
-    $('sbRoot').textContent = '项目 ' + (info.root || '');
-    $('sbRoot').title = info.root || '';
+    $('setPy').textContent = info.python ? (info.python.split('\\').pop() + ' · ' + info.pythonVersion) : 'python 未找到';
+    $('setPy').title = info.python || '未找到';
+    $('setRoot').textContent = info.root || '';
+    $('setTx').textContent = '状态\\tx\\（每次部署自动留档）';
+    $('sbRoot2').textContent = info.root || '';
+    $('sbRoot2').title = info.root || '';
     state.meta = info.meta || null;
     if (!info.python) {
-      toast('没找到可用的 Python，请点右下角「python」指定解释器', 'err');
-      logLine('err', 'sys', '未找到 Python 解释器 —— 点右下角 python 手动指定。');
+      toast('没找到可用的 Python，去「设置」里指定解释器', 'err');
+      logLine('err', 'sys', '未找到 Python 解释器 —— 到「设置」页手动指定。');
     } else {
       logHead('破甲工作台 v' + ((info.meta && info.meta.version) || '?') + ' · 解释器 ' + info.python);
       if (info.meta && info.meta.route) {
@@ -773,12 +655,6 @@ async function boot() {
   }
   await refreshStatus(true);
 
-  // 窗口切回来时自动对齐一次状态。
-  //   前端不做轮询（省资源），但盘可能被别处改过（脚本 / 另一个窗口 / 手滑点了「还原」），
-  //   切回来还对着旧快照判断，正是容易再点错按钮的场合 —— 这一下把它拉回来。
-  //   非 force：20 秒内探过的卡直接吃缓存，回来就有一版对齐，不必重跑 8 目标探测。
-  //   用 document 而不是 window：两个 GUI 自检 stub 都 stub 了 document.addEventListener，
-  //   而 check_render 里的 window 只有 { pojia }，绑 window.addEventListener 会直接抛。
   if (typeof document !== 'undefined' && document.addEventListener) {
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden) refreshStatus(true);
@@ -788,32 +664,38 @@ async function boot() {
 
 // ────────────────────────── 执行动作 ──────────────────────────
 
-async function doRun(action) {
+async function doRun(action, forcedTargets, silent) {
   if (state.busy) return;
-  let tg = targets();
+  let tg = forcedTargets || targets();
   if (!tg.length) { toast('先在卡片上勾选目标', 'warn'); return; }
 
-  // DSH 下拉里两项都没勾 = 这个目标这次不参与（下拉写的是"都不做"，不是"跳过按钮"）
   const dshOff = !state.opts.prompt && !state.opts.preset;
-  if (dshOff && hasDsh(tg)) {
+  if (dshOff && hasDsh(tg) && !forcedTargets) {
     tg = tg.filter((k) => k !== 'dsh' && k !== 'dsh-desktop');
-    logLine('dim', 'sys', 'DSH 下拉是「都不做」—— 本次跳过 DSH');
+    logLine('dim', 'sys', 'DSH 破甲模式是「都不做」—— 本次跳过 DSH');
   }
   if (!tg.length) {
-    toast(dshOff ? 'DSH 下拉是「都不做」，也没有别的目标可跑' : '先在卡片上勾选目标', 'warn');
+    toast('没有可执行的目标', 'warn');
     return;
   }
 
-  if (action === 'revert') {
-    if (!window.confirm(revertAsk(tg))) return;
+  if (action === 'revert' && !silent) {
+    const ask = revertAsk(tg);
+    const okToGo = await askConfirm({
+      title: '批量还原',
+      sub: tg.join(' / '),
+      text: ask,
+      items: ['逐文件从快照回拷，可再部署回来',
+              '目标程序需要重启才会重新读取文件'],
+      ok: '还原', danger: true,
+    });
+    if (!okToGo) return;
   }
 
-  // 别把 revert 叫「恢复」—— 它的语义是**撤掉破甲、还原成官方原版**，
-  //   「恢复」会被读成"恢复破甲"，验证把人坑过一次（以为在修，其实在拆）。
   const names = { apply: '部署', revert: '还原', dry: '预演' };
   const flags = flagsForOpts();
   const hint = (hasDsh(tg) && flags.length)
-    ? (flags[0] === 'no-preset' ? '（DSH 只还原本体，破甲模式留着）'
+    ? (flags[0] === 'no-preset' ? '（DSH 只动本体，破甲模式留着）'
                                 : '（DSH 只动破甲模式，本体不碰）')
     : '';
   setBusy(true, names[action] + '中……');
@@ -822,34 +704,47 @@ async function doRun(action) {
   try {
     const r = await api.run(action, tg, flags);
     if (r && r.ok) toast(names[action] + '搞定，漂亮', 'ok');
-    else toast(names[action] + '跑完了，但甩了个非零退出码 ' + ((r && r.code) != null ? r.code : '?') + '，日志里瞅瞅', 'warn');
+    else toast(names[action] + '跑完了，但退出码 ' + ((r && r.code) != null ? r.code : '?') + '，日志里瞅瞅', 'warn');
   } catch (e) {
     toast(names[action] + '翻车了：' + (e.message || e), 'err');
   } finally {
     setBusy(false);
-    // 只重探本次动过的目标，且强制绕过缓存 —— 别的目标沿用缓存，不陪跑一次全量
     await refreshStatus(true, new Set(tg), true);
   }
 }
 
-// 还原前的二次确认 —— 按 DSH 下拉的档位说清会动到哪部分
-// 首行必须把「这是撤除、不是部署」说死：验证有人把 revert 当成
-//   "恢复破甲"连点两次，每次都在拆。注意「破甲模式」四字只能在 hasDsh 分支里出现
-//   （check_render 有断言 revertAsk(['wb']) 不含它）。
 function revertAsk(tg) {
   let s = '这是【撤除】，不是部署 —— 会把 [' + tg.join(' / ') + '] 还原成官方原版。\n'
-        + '（想重新打上，请点工具栏左边的「部署」）\n\n'
-        + '每个目标会从各自的备份还原，部署产物会被移除。';
+        + '（想重新打上，请点「部署」或把滑块拨到右边）\n\n'
+        + '每个目标优先用最近一次部署的事务快照逐文件还原；没有快照时退回备份还原。';
   if (!hasDsh(tg)) return s;
-  const { prompt, preset } = state.opts;
-  if (prompt && preset) {
-    s += '\n\nDSH 两项都勾着：本体提示词会还原，破甲模式目录也会一并删掉。';
-  } else if (prompt) {
-    s += '\n\nDSH 只勾了「注入提示词」：只还原本体，破甲模式目录留着。';
-  } else {
-    s += '\n\nDSH 只勾了「增加破甲模式」：只移除破甲模式目录，本体的提示词补丁保持不动。';
-  }
+  const mode = optMode(state.opts);
+  if (mode === 'both') s += '\n\nDSH：本体提示词会还原，破甲模式目录也会一并删掉。';
+  else if (mode === 'prompt') s += '\n\nDSH 只还原本体，破甲模式目录留着。';
+  else if (mode === 'preset') s += '\n\nDSH 只移除破甲模式目录，本体的提示词补丁保持不动。';
   return s;
+}
+
+// 滑块拨回左边：直接跑该席位的常规还原（.bak 备份 / 标记块剥离）。
+//
+// 这里**不能**优先走 tx 快照回退：
+//   · tx 只管"这次部署写过的文件"，对客户端自己后来改写的文件（WorkBuddy 的
+//     app-config.json、Codex 的 config.toml）同样会判冲突并整体中止；
+//   · 快照只是某一时刻的切片，拿它回拷等于把中间所有改动一起丢掉。
+// 常规 revert 会剥离标记块、逐字节还原原稿，客户端自己改过的地方不动。
+//
+// silent=true：滑块已经自己做了视觉反馈，不再弹确认框；滑块拨动本身就是授权。
+async function doSliderRevert(c) {
+  if (state.busy) return;
+  // ChatGPT 走 Astra 四落点（指令文件 / AGENTS.md / config.toml / SKILL.md），
+  // 事务快照管的是项目内文件，对 ~/.codex 一无所知 —— 这一席直接走 Astra restore：
+  // 备份回拷 + 摘指针 + 撤 skill，并把四路开关与指令页文档全部置为停用。
+  if (c.key === 'codex') {
+    logLine('dim', 'tx', 'ChatGPT 走 Astra 还原：回拷备份、撤下投放的四路落点');
+  } else {
+    logLine('dim', 'tx', seatOf(c.key) + ' 走常规还原：剥离标记块 / 回拷备份，客户端自有改动不动');
+  }
+  return doRun('revert', [c.key], true);
 }
 
 async function doTest() {
@@ -868,18 +763,9 @@ async function doTest() {
     toast('体检出错：' + (e.message || e), 'err');
   } finally {
     setBusy(false);
-    // 体检不改盘，走节流版即可（20 秒内的探测结果直接复用）
     await refreshStatus(true);
   }
 }
-
-// ────────────────────────── 破甲模式 ──────────────────────────
-// 它**不是独立卡片、也不走独立按钮** —— 它是 DSH 卡片里那个下拉的两个勾选框之一
-// （「增加破甲模式」）。勾着就用工具条上的 部署 / 恢复 连带处理：
-//   部署 → python 破甲一键通.py --dsh-preset deploy --yes
-//   恢复 → python 破甲一键通.py --dsh-preset remove --yes
-// 想单独建 / 单独删：只勾「增加破甲模式」（此时桥会传 preset-only，本体一个字节不碰）。
-// 命令行通道仍在：`python gui/bridge.py run preset-deploy|preset-remove|preset-status`。
 
 // ────────────────────────── 归一预览 ──────────────────────────
 
@@ -891,91 +777,1186 @@ async function doRoute() {
   const d = await api.route(s);
   if (d.error) {
     const c = document.createElement('span');
-    c.className = 'chip warn';
+    c.className = 'chip';
+    c.style.borderColor = 'var(--mg)';
     c.textContent = d.error;
     out.appendChild(c);
     return;
   }
   if (d.washed && d.washed.length) {
     const c = document.createElement('span');
-    c.className = 'chip mute';
+    c.className = 'chip';
     c.textContent = '洗口：' + d.washed.join('、');
     out.appendChild(c);
   }
   if (d.miss) {
     const c = document.createElement('span');
-    c.className = 'chip warn';
+    c.className = 'chip';
+    c.style.borderColor = 'var(--yl)';
     c.textContent = '未命中归一表 —— 建议补一行这种写法';
     out.appendChild(c);
     return;
   }
   d.hits.forEach((h, i) => {
     const c = document.createElement('span');
-    c.className = 'chip' + (i === 0 ? ' main' : '');
+    c.className = 'chip';
     c.textContent = '「' + h.frag + '」 → ' + h.term + ' → 【' + h.cat + '】';
     out.appendChild(c);
   });
 }
 
-// ────────────────────────── 事件绑定 ──────────────────────────
-
-// ────────────────────────── 部署历史（事务）──────────────────────────
-// 看得到改动、查得到完整性、回得去。
-// 每次 apply / revert 留一份快照；回退前先确认现场没被别的操作动过 —— 动过就中止。
+// ────────────────────────── 技能管理视图 ──────────────────────────
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-const TX_STATE = {
-  applied: ['ok', '已应用'], restored: ['dim', '已回退'],
-  partial: ['warn', '部分完成'], 'rolled-back': ['warn', '已回滚'],
-  preparing: ['dim', '进行中'],
-};
-
-async function openTx() {
-  $('txModal').classList.add('on');
-  await loadTx();
-}
-
-function closeTx() { $('txModal').classList.remove('on'); }
-
-async function loadTx() {
-  const body = $('txBody');
-  body.innerHTML = '<div class="txempty">正在读取……</div>';
+async function loadSkills() {
+  const seat = $('skSeat').value || 'dsh';
+  const body = $('skBody');
+  body.innerHTML = '<div class="pempty">正在读取 ' + esc(seat) + ' 的技能目录……</div>';
+  $('skHint').textContent = '';
   let d = null;
-  try { d = await api.tx(['list']); } catch (e) { d = { ok: false, error: String(e.message || e) }; }
+  try { d = await api.patches(seat); } catch (e) { d = { ok: false, error: String(e.message || e) }; }
   if (!d || d.ok === false) {
-    body.innerHTML = '<div class="txempty">读取失败：' + esc((d && d.error) || '未知错误') + '</div>';
+    body.innerHTML = '<div class="pempty err">读取失败：' + esc((d && d.error) || '未知错误') + '</div>';
     return;
   }
-  $('txRoot').textContent = d.root || '';
-  const items = d.items || [];
-  if (!items.length) {
-    body.innerHTML = '<div class="txempty">还没有部署记录 —— 跑一次「部署」或「恢复」就会出现。</div>';
-    return;
-  }
+  $('skBody').dataset.loaded = '1';
+  const groups = d.groups || [];
+  const skill = groups.find((g) => g.id === 'skill');
+  const all = groups.flatMap((g) => g.rows || []);
+  const nSkill = skill ? (skill.rows || []).length : 0;
+  $('skHint').textContent = seat + ' · ' + all.length + ' 个登记文件 · 技能 ' + nSkill + ' 个';
+
   body.innerHTML = '';
-  items.forEach((r) => {
-    const pair = TX_STATE[r.status] || ['dim', r.status];
-    const row = document.createElement('div');
-    row.className = 'txrow';
-    row.dataset.id = r.short;
-    row.innerHTML =
-      '<span class="txid">' + esc(r.short) + '</span>' +
-      '<span class="txseat">' + esc(r.seat) + '</span>' +
-      '<span class="txat">' + esc(String(r.at || '').slice(5, 16)) + '</span>' +
-      '<span class="txfiles">' + r.changed + ' / ' + r.files + '</span>' +
-      '<span class="txstate st-' + pair[0] + '">' + esc(pair[1]) + '</span>' +
-      '<div class="txspacer"></div>' +
-      '<button class="minibtn" data-txact="verify">校验</button>' +
-      '<button class="minibtn" data-txact="restore">回退</button>';
-    body.appendChild(row);
+  if (!all.length) {
+    body.innerHTML = '<div class="pempty">这个席位没有登记任何部署文件（未安装或未部署）。</div>';
+    return;
+  }
+  groups.forEach((g) => {
+    const rows = g.rows || [];
+    const card = document.createElement('div');
+    card.className = 'skcard';
+    const head = document.createElement('div');
+    head.className = 'skname';
+    head.textContent = g.name + '（' + rows.length + '）';
+    card.appendChild(head);
+    const tags = document.createElement('div');
+    tags.className = 'sktags';
+    rows.slice(0, 40).forEach((r) => {
+      const pill = PILL[r.state] || PILL.stale;
+      const t = document.createElement('span');
+      t.className = 'sktag ' + (r.state === 'current' ? 'on' : '');
+      const fn = (r.path || '').split(/[\\/]/).filter(Boolean).pop() || r.path;
+      t.textContent = pill[1] + ' · ' + fn;
+      t.title = r.path + '（' + r.role + '）— 点行可到「总览」里编辑';
+      t.style.cursor = 'pointer';
+      t.addEventListener('click', () => openPatch(seat));
+      tags.appendChild(t);
+    });
+    if (rows.length > 40) {
+      const more = document.createElement('span');
+      more.className = 'sktag';
+      more.textContent = '… 还有 ' + (rows.length - 40) + ' 个';
+      tags.appendChild(more);
+    }
+    card.appendChild(tags);
+    body.appendChild(card);
   });
 }
 
-/* ── 写入预览（先预览再确认写入）── */
+/* ── 指令提示词管理视图（Codex-X 式：Agent 切换 + 分类标签 + 卡片网格）── */
+
+let PROMPTS_INITED = false;
+let PM_AGENT = 'codex';    // 当前 Agent
+let PM_DOCS = [];          // 当前 Agent 的全部 md
+let PM_CATS = [];          // 分类（含计数）
+let PM_CAT = '';           // 当前分类（默认取该 Agent 的第一个分类）
+let PM_CURRENT = '';       // 当前编辑中的 id（相对路径）
+let PM_ORIG = '';          // 读入时的原文
+let PM_META = null;        // 当前编辑项的元信息
+
+// 每个 Agent 的真实客户端图标（从本机安装包提取，见 renderer/icons/）
+const PM_AGENTS = [
+  ['codex', 'ChatGPT', 'codex.svg'],
+  ['claude', 'Claude Code', 'claude.svg'],
+  ['dsh', 'DSH', 'dsh.png'],
+  ['workbuddy', 'WorkBuddy', 'workbuddy.png'],
+  ['zcode', 'ZCode', 'zcode.png'],
+  ['hermes', 'Hermes', 'hermes.png'],
+];
+
+function pmById(id) { return PM_DOCS.find((it) => it.id === id) || null; }
+
+function paintPmAgents() {
+  const box = $('pmAgents');
+  box.innerHTML = '';
+  PM_AGENTS.forEach(([id, label, icon]) => {
+    const el = document.createElement('button');
+    el.type = 'button';
+    el.className = 'pmagent' + (id === PM_AGENT ? ' on' : '');
+    el.dataset.agent = id;
+    el.setAttribute('role', 'tab');
+    el.setAttribute('aria-selected', id === PM_AGENT ? 'true' : 'false');
+    const glyph = document.createElement('span');
+    glyph.className = 'pmagent-glyph';
+    const img = document.createElement('img');
+    img.src = 'icons/' + icon;
+    img.alt = '';
+    img.width = 22;
+    img.height = 22;
+    img.draggable = false;
+    glyph.appendChild(img);
+    const nm = document.createElement('span');
+    nm.className = 'pmagent-name';
+    nm.textContent = label;
+    el.appendChild(glyph);
+    el.appendChild(nm);
+    el.addEventListener('click', () => pickAgent(id));
+    box.appendChild(el);
+  });
+}
+
+function pickAgent(id) {
+  if (PM_AGENT === id) return;
+  PM_AGENT = id;
+  PM_CAT = '';
+  PM_CURRENT = '';
+  paintPmAgents();
+  refreshDocs();
+}
+
+function paintPmCats() {
+  const box = $('pmCats');
+  box.innerHTML = '';
+  PM_CATS.forEach((cat) => {
+    const el = document.createElement('button');
+    el.type = 'button';
+    el.className = 'pmcat' + (cat.id === PM_CAT ? ' on' : '');
+    el.dataset.cat = cat.id;
+    el.setAttribute('aria-pressed', cat.id === PM_CAT ? 'true' : 'false');
+    const nm = document.createElement('span');
+    nm.textContent = cat.name;
+    const ct = document.createElement('small');
+    ct.textContent = String(cat.count || 0);
+    el.appendChild(nm);
+    el.appendChild(ct);
+    el.addEventListener('click', () => { PM_CAT = cat.id; paintPmCats(); paintPmGrid(); });
+    box.appendChild(el);
+  });
+}
+
+function pmCatName(id) {
+  const hit = PM_CATS.find((c) => c.id === id);
+  return hit ? hit.name : '其它';
+}
+
+// 调试入口（截图自检 / 排错用）
+if (typeof window !== 'undefined') {
+  window.__pmDebug = () => ({
+    cat: PM_CAT, cats: (PM_CATS || []).map((c) => c.id),
+    docs: (PM_DOCS || []).length,
+    docCats: [...new Set((PM_DOCS || []).map((d) => d.cat))],
+    agent: PM_AGENT,
+  });
+}
+
+function paintPmGrid() {
+  const box = $('pmGrid');
+  box.innerHTML = '';
+  const list = PM_DOCS.filter((it) => it.cat === PM_CAT);
+  const offN = list.filter((x) => !x.enabled).length;
+  const bar = document.createElement('div');
+  bar.className = 'pmbulk';
+  const barTxt = document.createElement('span');
+  barTxt.textContent = (pmCatName(PM_CAT) || '当前分类') + ' · ' + list.length + ' 份'
+    + (offN ? ' · 已停用 ' + offN : '');
+  const onBtn = document.createElement('button');
+  onBtn.className = 'minibtn';
+  onBtn.textContent = '本类启用';
+  onBtn.disabled = !list.some((x) => !x.enabled && !x.deployable);
+  onBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleMany(list.filter((x) => !x.enabled && !x.deployable), true);
+  });
+  const offBtn = document.createElement('button');
+  offBtn.className = 'minibtn';
+  offBtn.textContent = '本类停用';
+  offBtn.disabled = !list.some((x) => x.enabled && !x.deployable);
+  offBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleMany(list.filter((x) => x.enabled && !x.deployable), false);
+  });
+  bar.appendChild(barTxt);
+  const sp = document.createElement('div');
+  sp.className = 'pmbulk-sp';
+  bar.appendChild(sp);
+  bar.appendChild(onBtn);
+  bar.appendChild(offBtn);
+  box.appendChild(bar);
+  if (!list.length) {
+    const e = document.createElement('div');
+    e.className = 'pmempty';
+    e.textContent = '这个分类下还没有 Markdown 提示词';
+    box.appendChild(e);
+    return;
+  }
+  list.forEach((it) => box.appendChild(buildDocRow(it)));
+}
+
+// 一张卡 = 一份文档，照 Codex-X 的 cx-prompts-row：
+//   头部 = 图标 + 标题 + 右侧开关
+//   正文 = 说明（备注优先）
+//   底部 = 状态徽标 / 路径体积 + 图标操作
+// 点卡片只选中，编辑走铅笔图标 —— 拨开关不会把人带进编辑页。
+function buildDocRow(it) {
+  const row = document.createElement('article');
+  row.className = 'pmrow' + (it.enabled ? '' : ' off-doc')
+    + (it.id === PM_CURRENT ? ' on' : '');
+  row.dataset.id = it.id;
+
+  // 头部
+  const head = document.createElement('div');
+  head.className = 'pmrow-head';
+  const heading = document.createElement('div');
+  heading.className = 'pmrow-heading';
+  const icon = document.createElement('span');
+  icon.className = 'pmcicon';
+  icon.textContent = 'MD';
+  const title = document.createElement('div');
+  title.className = 'pmcname';
+  title.textContent = it.title ? it.title + ' · ' + it.name : it.name;
+  title.title = it.path;
+  heading.appendChild(icon);
+  heading.appendChild(title);
+  const swWrap = document.createElement('div');
+  swWrap.className = 'pmrow-switch';
+  swWrap.appendChild(buildDocToggle(it));
+  head.appendChild(heading);
+  head.appendChild(swWrap);
+  row.appendChild(head);
+
+  // 正文
+  const desc = document.createElement('div');
+  desc.className = 'pmcdesc' + (it.memo ? ' has-memo' : '');
+  desc.textContent = it.memo || rowDesc(it);
+  desc.title = it.memo ? '备注：' + it.memo : '';
+  row.appendChild(desc);
+
+  // 底部
+  const foot = document.createElement('div');
+  foot.className = 'pmrow-foot';
+  const meta = document.createElement('div');
+  meta.className = 'pmrow-meta';
+  // 类别标签（所有文件都有）：每张卡固定带上自己的类型与当前状态
+  (it.labels || []).forEach((lb) => {
+    if (!lb || !lb.tag) return;
+    const b = document.createElement('span');
+    b.className = PM_TAG_CLS[lb.tone] || PM_TAG_CLS[''];
+    b.textContent = lb.tag;
+    meta.appendChild(b);
+  });
+  if (it.generated) {
+    const b = document.createElement('span');
+    b.className = 'pmcbadge gen';
+    b.textContent = '生成';
+    meta.appendChild(b);
+  }
+  // 状态只由 bridge 给的 labels 表达一次 —— 这里不再补「注入中」徽标，
+  // 否则指令源卡片会同时出现两个「注入中」（标签 + 徽标）。
+  const path = document.createElement('span');
+  path.className = 'pmcpath';
+  // 分类名与标题/文件名重复时不再写一遍（config.toml · config.toml、AGENTS.md · AGENTS.md）
+  const catName = pmCatName(it.cat);
+  const dup = catName === it.name || catName === it.title
+    || catName === (it.title ? it.title + ' · ' + it.name : it.name);
+  if (!dup) {
+    path.textContent = catName;
+    path.title = it.id;
+    meta.appendChild(path);
+  }
+
+  const btns = document.createElement('div');
+  btns.className = 'pmcbtns';
+  btns.appendChild(iconBtn('memo', '备注 · ' + it.name, () => editMemo(it), 'iconbtn'));
+  btns.appendChild(iconBtn('pencil',
+    (it.live ? '查看 / 编辑本机文件 · ' : '编辑 · ') + it.name,
+    () => selectDoc(it.id), 'iconbtn'));
+  if (it.id.indexOf('seats/custom_') >= 0) {
+    btns.appendChild(iconBtn('trash', '删除这份自定义提示词', () => deleteDoc(it), 'iconbtn danger'));
+  }
+  foot.appendChild(meta);
+  foot.appendChild(btns);
+  row.appendChild(foot);
+  return row;
+}
+
+function rowDesc(it) {
+  if (it.deployable) {
+    // 状态已经由底部标签说过了，正文只讲"这份是什么"，不再重复「注入中」
+    return it.enabled ? '这份会整份写进客户端，成为当前指令文件'
+                      : '这份是备选指令源，拨右才部署';
+  }
+  if (!it.enabled) {
+    return it.cat === 'skill' ? '已停用 · 下次部署会撤下这份 SKILL.md'
+                              : '已停用 · 这一路不写盘';
+  }
+  return it.note || pmCatName(it.cat);
+}
+
+// 只刷新某一行，不动整张列表 —— 拨开关时列表不跳、不重建
+function updateDocRow(it) {
+  const row = $('pmGrid').querySelector('.pmrow[data-id="' + CSS.escape(it.id) + '"]');
+  if (!row) return;
+  row.classList.toggle('off-doc', !it.enabled);
+  const input = row.querySelector('.pmswitch input');
+  if (input) input.checked = !!it.enabled;
+  const desc = row.querySelector('.pmcdesc');
+  if (desc && !it.memo) {
+    desc.textContent = rowDesc(it);
+  }
+  // 状态标签跟着翻：按标签文字改，**不动语气 class**。
+  // 之前固定标 ok，拨左后「未部署」还是绿的 —— 状态和颜色对不上。
+  row.querySelectorAll('.pmtag').forEach((el) => {
+    const txt = el.textContent;
+    let next = null;
+    if (txt === '注入中' || txt === '未部署') next = it.enabled ? '注入中' : '未部署';
+    else if (txt === '已投放' || txt === '未投放') next = it.enabled ? '已投放' : '未投放';
+    else if (txt === '已启用' || txt === '已关闭') next = it.enabled ? '已启用' : '已关闭';
+    if (next) el.textContent = next;
+  });
+}
+
+// 标签语气 → class（写成完整字面量，接口契约自检能对得上）
+const PM_TAG_CLS = {
+  '': 'pmtag',
+  info: 'pmtag pmtag-info',
+  ok: 'pmtag pmtag-ok',
+  warn: 'pmtag pmtag-warn',
+  muted: 'pmtag pmtag-muted',
+};
+
+// ── 图标（lucide 路径，描边 1.9，跟 Codex-X 一致）──
+const ICONS = {
+  pencil: '<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
+  trash: '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
+  refresh: '<path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/>',
+  plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
+  copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+  undo: '<path d="M3 7v6h6"/><path d="M3.5 13a9 9 0 1 0 2.1-5.3L3 10"/>',
+  save: '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/>',
+  back: '<path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/>',
+  spin: '<path d="M21 12a9 9 0 1 1-6.22-8.56"/>',
+  memo: '<path d="M4 6h16"/><path d="M4 12h10"/><path d="M4 18h7"/>',
+};
+
+function svgIcon(name) {
+  return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" '
+    + 'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (ICONS[name] || '') + '</svg>';
+}
+
+function iconBtn(name, label, fn, cls) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = cls || 'iconbtn';
+  b.title = label;
+  b.setAttribute('aria-label', label);
+  b.innerHTML = svgIcon(name);
+  b.addEventListener('click', (e) => { e.stopPropagation(); fn(); });
+  return b;
+}
+
+// 每份文档的注入开关：拨右 = 参与注入 / 部署这一份，拨左 = 关掉。
+// 直接在行内拨，不弹窗、不跳页；状态写盘后只更新本行。
+function buildDocToggle(it) {
+    const deployMode = !!it.deployable;
+    const checked = deployMode ? !!it.active : !!it.enabled;
+    const wrap = document.createElement('label');
+    wrap.className = 'pmswitch';
+    wrap.title = deployMode
+      ? (checked ? '注入中：拨左关闭注入（删部署文件并摘掉 config 指针）'
+                 : '拨右把它部署为客户端指令文件')
+      : (it.enabled ? '已启用：重新部署后注入。拨左停用（只摘出清单，内容不动）'
+                    : '已停用：不参与合成。拨右重新启用');
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.checked = checked;
+    input.setAttribute('role', 'switch');
+    input.setAttribute('aria-label', (checked ? '停用 ' : '启用 ') + it.name);
+    const track = document.createElement('span');
+    track.className = 'pmswitch-track';
+    wrap.appendChild(input);
+    wrap.appendChild(track);
+  input.addEventListener('click', (e) => e.stopPropagation());
+  input.addEventListener('change', (e) => {
+    e.stopPropagation();
+    if (deployMode) {
+      if (input.checked) {
+        // 换源：另一份正在注入 → 日志里说明这次是替换
+        const prev = PM_DOCS.find((x) => x.deployable && x.active && x.name !== it.name);
+        if (prev) logLine('dim', 'prompt', '正在用 ' + it.name + ' 替换 ' + prev.name);
+        applyInstr(it.name, it);
+      } else {
+        disableInstr(it.name);
+      }
+    } else {
+      toggleDoc(it, input.checked);
+    }
+  });
+  return wrap;
+}
+
+// 页面内输入弹窗：Electron 渲染进程不支持 window.prompt，所以自己画一个居中弹窗。
+// Esc / 点遮罩 / 取消都能关；回车即保存。
+let PM_INPUT_RESOLVE = null;
+
+function askText(opts) {
+  const o = opts || {};
+  return new Promise((resolve) => {
+    PM_INPUT_RESOLVE = resolve;
+    $('pmInputTitle').textContent = o.title || '输入';
+    $('pmInputSub').textContent = o.sub || '';
+    $('pmInputHint').textContent = o.hint || '';
+    const tagBox = $('pmInputTags');
+    tagBox.innerHTML = '';
+    (o.tags || []).forEach((t, i) => {
+      const el = document.createElement('span');
+      el.className = i === 0 ? 'pmtag pmtag-info' : 'pmtag';
+      el.textContent = t;
+      tagBox.appendChild(el);
+    });
+    tagBox.hidden = !(o.tags || []).length;
+    $('pmInputLabel').textContent = o.label || '内容';
+    const inp = $('pmInputText');
+    // 已有备注要真的填进去 —— 清空 value 后再赋值，避免浏览器保留旧值
+    inp.value = '';
+    inp.value = o.value || '';
+    inp.maxLength = o.max || 200;
+    inp.placeholder = o.placeholder || '';
+    // "当前备注" 行已移除：直接看输入框
+    $('pmInputCount').textContent = inp.value.length + ' / ' + inp.maxLength;
+    $('pmInputModal').classList.add('on');
+    // 进入时只聚焦、不选中全文：光标落在末尾，接着往后补字即可
+    setTimeout(() => {
+      inp.focus();
+      const n = inp.value.length;
+      try { inp.setSelectionRange(n, n); } catch (_) { /* 非文本框时忽略 */ }
+    }, 30);
+  });
+}
+
+function closeAsk(value) {
+  $('pmInputModal').classList.remove('on');
+  const r = PM_INPUT_RESOLVE;
+  PM_INPUT_RESOLVE = null;
+  if (r) r(value);
+}
+
+// 页面内确认（同样不用系统弹窗）：items 是可选的要点列表。
+let PM_CFM_RESOLVE = null;
+
+function askConfirm(opts) {
+  const o = opts || {};
+  // 自检桩：check_boot.mjs 没有真人点按钮，用这个开关让确认直接通过
+  if (typeof window !== 'undefined' && window.__pojiaAutoConfirm) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    if (PM_CFM_RESOLVE) { const prev = PM_CFM_RESOLVE; PM_CFM_RESOLVE = null; prev(false); }
+    PM_CFM_RESOLVE = resolve;
+    $('cfmTitle').textContent = o.title || '确认';
+    $('cfmSub').textContent = o.sub || '';
+    $('cfmText').textContent = o.text || '';
+    const list = $('cfmList');
+    list.innerHTML = '';
+    (o.items || []).forEach((t) => {
+      const li = document.createElement('li');
+      li.textContent = t;
+      list.appendChild(li);
+    });
+    const ok = $('btnCfmOk');
+    ok.textContent = o.ok || '确定';
+    ok.className = 'btn ' + (o.danger ? 'danger' : 'primary');
+    $('cfmSheet').classList.add('on');
+  });
+}
+
+function closeConfirm(value) {
+  $('cfmSheet').classList.remove('on');
+  const r = PM_CFM_RESOLVE;
+  PM_CFM_RESOLVE = null;
+  if (r) r(!!value);
+}
+
+async function editMemo(it) {
+  // 用列表里的最新对象：卡片节点可能持着旧快照
+  it = PM_DOCS.find((x) => x.id === it.id) || it;
+  const builtin = '';
+  const next = await askText({
+    title: '备注 · ' + (it.title ? it.title + '（' + it.name + '）' : it.name),
+    sub: it.id,
+    tags: (it.labels || []).map((l) => l.tag).filter(Boolean),
+    hint: '留空即清除。备注只存在本地，不会写进源件、也不会被引擎读进注入内容。',
+    label: '备注',
+    value: it.memo || '',
+    max: 200,
+    placeholder: '例如：改之前先备份 / 这份是试验版',
+  });
+  if (next === null) return;
+  let r = null;
+  try { r = await api.docMemo(it.id, next); }
+  catch (e) { r = { ok: false, error: String(e.message || e) }; }
+  if (!r || r.ok === false) { toast('备注保存失败：' + ((r && r.error) || ''), 'err'); return; }
+  toast(r.memo ? '备注已保存' : '备注已清除', 'ok');
+  const cur = PM_DOCS.find((x) => x.id === it.id);
+  if (cur) {
+    cur.memo = r.memo || '';
+    const row = $('pmGrid').querySelector('.pmrow[data-id="' + CSS.escape(it.id) + '"]');
+    const desc = row && row.querySelector('.pmcdesc');
+    if (desc) {
+      desc.textContent = cur.memo || rowDesc(cur);
+      desc.classList.toggle('has-memo', !!cur.memo);
+      desc.title = cur.memo ? '备注：' + cur.memo : '';
+    }
+  }
+}
+
+async function toggleDoc(it, want) {
+  if (want === !!it.enabled) return;
+  // 就地翻状态：先让 UI 跟手，再落盘；失败才回滚
+  it.enabled = want;
+  updateDocRow(it);
+  let r = null;
+  try { r = await api.docToggle(it.id); }
+  catch (e) { r = { ok: false, error: String(e.message || e) }; }
+  if (!r || r.ok === false) {
+    it.enabled = !want;
+    updateDocRow(it);
+    toast((want ? '启用' : '停用') + '失败：' + ((r && r.error) || ''), 'err');
+  } else {
+    toast(it.name + (want ? ' 已启用' : ' 已停用') + ' —— 重新部署后生效', 'ok');
+  }
+  syncPmStatus();
+}
+
+async function toggleMany(list, want) {
+  if (!list.length) return;
+  const ids = list.map((x) => x.id);
+  // 先整批就地翻，再一趟过桥写盘
+  list.forEach((it) => { it.enabled = want; updateDocRow(it); });
+  let r = null;
+  try {
+    r = await api.docToggleMany(list.map((it) => ({ id: it.id, on: want })));
+  } catch (e) { r = { ok: false, error: String(e.message || e) }; }
+  const failed = (r && r.failed) || [];
+  if (!r || r.ok === false) {
+    // 整批失败：全部回滚
+    list.forEach((it) => { it.enabled = !want; updateDocRow(it); });
+    toast((want ? '启用' : '停用') + '失败：' + ((r && r.error) || ''), 'err');
+    syncPmStatus();
+    return;
+  }
+  failed.forEach((f) => {
+    const it = PM_DOCS.find((x) => x.id === f.id);
+    if (it) { it.enabled = !want; updateDocRow(it); }
+  });
+  toast((want ? '已启用 ' : '已停用 ') + (ids.length - failed.length) + ' 份'
+    + (failed.length ? '，' + failed.length + ' 份失败' : '') + ' —— 重新部署后生效',
+    failed.length ? 'warn' : 'ok');
+  syncPmStatus();
+  paintPmBulk();
+}
+
+// 只重算状态面板与批量条上的计数，不重建列表
+function syncPmStatus() {
+  const on = PM_DOCS.filter((x) => x.enabled).length;
+  const off = PM_DOCS.length - on;
+  const sw = PM_DOCS.filter((x) => !x.deployable);
+  const swOn = sw.filter((x) => x.enabled).length;
+  $('pmDeployInput').checked = sw.length > 0 && swOn === sw.length;
+  $('pmDot').classList.toggle('on', on > 0);
+  $('pmAgentHint').textContent = !PM_DOCS.length ? '这个 Agent 名下还没有 Markdown 提示词。'
+    : (on === 0 ? '全部文档已关闭 —— 部署时按官方原版处理，不写入任何提示词。'
+                : '已启用 ' + on + ' 份 · 已停用 ' + off + ' 份。开关实时生效，部署后要重启客户端才算数。');
+}
+
+function paintPmBulk() {
+  const bar = $('pmGrid').querySelector('.pmbulk');
+  if (!bar) return;
+  const list = PM_DOCS.filter((it) => it.cat === PM_CAT);
+  const offN = list.filter((x) => !x.enabled).length;
+  const t = bar.querySelector('span');
+  if (t) t.textContent = (pmCatName(PM_CAT) || '当前分类') + ' · ' + list.length + ' 份'
+    + (offN ? ' · 已停用 ' + offN : '');
+  const btns = bar.querySelectorAll('.minibtn');
+  if (btns[0]) btns[0].disabled = !list.some((x) => !x.enabled && !x.deployable);
+  if (btns[1]) btns[1].disabled = !list.some((x) => x.enabled && !x.deployable);
+}
+
+// 破甲候选的开关：拨右 = 部署这一份（写 ~/.codex + 改 config 指针），
+// 拨左 = 关闭注入。两种状态互斥，换一份时旧的那份自动落回停用。
+async function applyInstr(name, it) {
+  const cur = it || PM_DOCS.find((x) => x.name === name) || null;
+  setBusy(true, '正在部署指令：' + name);
+  let r = null;
+  try { r = await api.instrToggle('codex', name, true); }
+  catch (e) { r = { ok: false, error: String(e.message || e) }; }
+  setBusy(false);
+  if (!r || r.ok === false) {
+    toast('部署失败：' + ((r && r.error) || ''), 'err');
+    logLine('err', 'prompt', '切换指令源失败：' + ((r && r.error) || ''));
+  } else {
+    logHead('▶ 切换指令源 → ' + name);
+    logLine('ok', 'prompt', '指令源已切到 ' + name
+      + (r.written && r.written.length ? '（写入 ' + r.written.length + ' 个落点）' : '')
+      + (r.removed && r.removed.length ? '，撤下旧文件 ' + r.removed.length + ' 份' : ''));
+    // 先把开关就地翻过去，列表不闪烁；落盘后以桥的返回为准
+    PM_DOCS.filter((x) => x.deployable).forEach((x) => {
+      x.enabled = x.name === name;
+      x.active = x.enabled;
+      x.labels = (x.labels || []).map((lb) => (lb.tag === '注入中' || lb.tag === '未部署')
+        ? { tag: x.enabled ? '注入中' : '未部署', tone: x.enabled ? 'ok' : 'muted' } : lb);
+      updateDocRow(x);
+    });
+    toast(`已部署 ${name}` + (r.removed && r.removed.length ? `（清理旧文件：${r.removed.join('、')}）` : '')
+      + ' —— 重启客户端后生效', 'ok');
+  }
+  await refreshDocs();
+}
+
+async function disableInstr(name) {
+  setBusy(true, '正在关闭指令注入……');
+  let r = null;
+  try { r = await api.instrToggle('codex', name, false); }
+  catch (e) { r = { ok: false, error: String(e.message || e) }; }
+  setBusy(false);
+  if (!r || r.ok === false) {
+    toast('关闭失败：' + ((r && r.error) || ''), 'err');
+    logLine('err', 'prompt', '关闭指令注入失败：' + ((r && r.error) || ''));
+  } else {
+    logHead('▶ 关闭指令注入');
+    logLine('ok', 'prompt', '已撤下注入：部署文件、AGENTS 标记块、config 指针一并清掉；'
+      + 'AGENTS.md / SKILL.md 两路开关保持原样');
+    PM_DOCS.filter((x) => x.deployable).forEach((x) => {
+      x.enabled = false;
+      x.active = false;
+      x.labels = (x.labels || []).map((lb) => (lb.tag === '注入中' || lb.tag === '未部署')
+        ? { tag: '未部署', tone: 'muted' } : lb);
+      updateDocRow(x);
+    });
+    toast('已关闭指令注入 —— 重启客户端后生效', 'ok');
+  }
+  await refreshDocs();
+}
+
+async function deleteDoc(it) {
+  const okDel = await askConfirm({
+    title: '删除自定义提示词',
+    sub: it.id,
+    text: '删除后无法从界面恢复（源件备份仍在 状态/editor-backup）。',
+    ok: '删除', danger: true,
+  });
+  if (!okDel) return;
+  let r = null;
+  try { r = await api.docDelete(it.id); }
+  catch (e) { r = { ok: false, error: String(e.message || e) }; }
+  if (!r || r.ok === false) { toast('删除失败：' + ((r && r.error) || ''), 'err'); return; }
+  toast('已删除 ' + it.name, 'ok');
+  await refreshDocs();
+}
+
+function paintPmDirty() {
+  const area = $('pmArea');
+  const changed = area.value !== PM_ORIG;
+  const saved = PM_SAVE_STATE === 'saved';
+  area.classList.toggle('p-dirty', changed);
+  $('btnPmUndo').disabled = !changed;
+  $('pmHint').textContent = !PM_CURRENT ? '' : (changed
+    ? (PM_SAVE_STATE === 'saving' ? '正在保存…' : '● 有改动 · 正在自动保存')
+    : (saved ? '已保存' + (PM_SAVED_AT ? ' ' + PM_SAVED_AT : '')
+             : '已是最新'));
+}
+
+function showPmList() {
+  $('pmFormWrap').classList.add('off');
+  $('pmListWrap').classList.remove('off');
+  $('pmGrid').querySelectorAll('.pmrow.on').forEach((n) => n.classList.remove('on'));
+  PM_CURRENT = '';
+}
+
+// 编辑中的内容按 id 记在内存里：切到别的文档再回来，草稿还在
+const PM_DRAFTS = new Map();
+let PM_SAVE_TIMER = 0;
+let PM_SAVE_STATE = '';
+let PM_SAVED_AT = '';
+
+function schedulePmSave() {
+  if (!PM_CURRENT) return;
+  PM_DRAFTS.set(PM_CURRENT, $('pmArea').value);
+  clearTimeout(PM_SAVE_TIMER);
+  PM_SAVE_STATE = '';
+  paintPmDirty();
+  PM_SAVE_TIMER = setTimeout(() => { saveDoc(true); }, 900);
+}
+
+async function selectDoc(id) {
+  const it = pmById(id);
+  if (!it) return;
+  // 切走前先把上一份的草稿留住（还没落盘的，立刻落盘）
+  if (PM_CURRENT && PM_CURRENT !== id) {
+    PM_DRAFTS.set(PM_CURRENT, $('pmArea').value);
+    if (PM_ORIG !== $('pmArea').value) {
+      clearTimeout(PM_SAVE_TIMER);
+      await saveDoc(true);
+    }
+  }
+  PM_CURRENT = id;
+  PM_META = it;
+  $('pmGrid').querySelectorAll('.pmrow').forEach((n) => {
+    n.classList.toggle('on', n.dataset.id === id);
+  });
+  $('pmListWrap').classList.add('off');
+  $('pmFormWrap').classList.remove('off');
+  // 中文名和文件名相同时不要重复（config.toml · config.toml）
+  const headLabel = it.title && it.title !== it.name
+    ? it.title + '（' + it.name + '）' : it.name;
+  $('pmFormTitle').textContent = '编辑 · ' + headLabel;
+  $('pmFormTitle').title = it.path || '';
+  $('pmPath').textContent = it.path || '';
+  // 面板头：只在能补充信息时显示；与页头标题/文件名相同的就退成通用文案，
+  // 否则同一屏会连着出现两个 config.toml。
+  const catName = pmCatName(it.cat);
+  let headText;
+  if (it.title && it.title !== it.name) headText = it.title;
+  else if (catName && catName !== it.name) headText = catName;
+  else headText = '文件内容';
+  $('pmFileHead').textContent = headText;
+  // 只读字段：文件名跟随源件，分类跟随当前页
+  $('pmFieldName').value = it.name || '';
+  $('pmFieldCat').value = catName || '';
+  $('pmGenHint').hidden = !it.generated;
+
+  const area = $('pmArea');
+  area.value = '';
+  area.disabled = true;
+  PM_ORIG = '';
+  PM_SAVE_STATE = '';
+  paintPmDirty();
+  let d = null;
+  try { d = await api.docRead(id); }
+  catch (e) { d = { ok: false, error: String(e.message || e) }; }
+  if (!d || d.ok === false) {
+    $('pmHint').textContent = (d && d.error) || '读取失败';
+    return;
+  }
+  PM_ORIG = d.content || '';
+  if (d.hint) $('pmHint').textContent = d.hint;
+  // 有未保存的草稿就接着草稿，否则用盘上的内容
+  area.value = PM_DRAFTS.has(id) ? PM_DRAFTS.get(id) : PM_ORIG;
+  area.disabled = !d.editable;
+  paintPmDirty();
+}
+
+async function refreshDocs() {
+  let d = null;
+  try { d = await api.docs(PM_AGENT); }
+  catch (e) { d = { ok: false, error: String(e.message || e) }; }
+  if (!d || d.ok === false) {
+    $('pmHint').textContent = (d && d.error) || '清单读取失败';
+    toast('读取提示词库失败：' + ((d && d.error) || ''), 'err');
+    return;
+  }
+  PM_DOCS = d.items || [];
+  PM_CATS = d.categories || [];
+  const on = PM_DOCS.filter((x) => x.enabled).length;
+  const off = PM_DOCS.length - on;
+  $('pmAgentName').textContent = d.label || PM_AGENT;
+  $('pmAgentHint').textContent = !PM_DOCS.length ? '这个 Agent 名下还没有 Markdown 提示词。'
+    : (on === 0 ? '全部文档已关闭 —— 部署时按官方原版处理，不写入任何提示词。'
+                : '已启用 ' + on + ' 份 · 已停用 ' + off + ' 份。开关实时生效，部署后要重启客户端才算数。');
+  $('pmCount').textContent = String(PM_DOCS.length);
+  $('pmCustom').textContent = String(PM_DOCS.filter((x) => x.cat === 'custom').length);
+  const sw = PM_DOCS.filter((x) => !x.deployable);
+  const swOn = sw.filter((x) => x.enabled).length;
+  $('pmDeployInput').checked = sw.length > 0 && swOn === sw.length;
+  $('pmDeploySwitch').title = on === 0
+    ? '全部文档已关闭：部署等于回官方原版（拨右全部启用）'
+    : '总开关：拨左停用全部可停用的文档，拨右全部启用（' + on + ' 启用 / ' + off + ' 停用）';
+  $('pmDot').classList.toggle('on', on > 0);
+  if (!PM_CATS.some((c) => c.id === PM_CAT)) PM_CAT = PM_CATS.length ? PM_CATS[0].id : '';
+  paintPmCats();
+  paintPmGrid();
+}
+
+async function saveDoc(auto) {
+  if (!PM_CURRENT) return;
+  const id = PM_CURRENT;
+  const text = $('pmArea').value;
+  PM_SAVE_STATE = 'saving';
+  paintPmDirty();
+  const b64 = btoa(unescape(encodeURIComponent(text)));
+  let r = null;
+  try { r = await api.docWrite(id, b64); }
+  catch (e) { r = { ok: false, error: String(e.message || e) }; }
+  if (PM_CURRENT !== id) return;       // 已经切走了，别把结果画到别的文档上
+  if (!r || r.ok === false) {
+    PM_SAVE_STATE = '';
+    paintPmDirty();
+    if (!auto) toast('写回失败：' + ((r && r.error) || ''), 'err');
+    else logLine('warn', 'pm', '自动保存失败：' + ((r && r.error) || ''));
+    return;
+  }
+  PM_ORIG = text;
+  PM_DRAFTS.delete(id);
+  PM_SAVE_STATE = 'saved';
+  PM_SAVED_AT = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  paintPmDirty();
+  if (!auto) toast('已写回源件 · 备份在 状态/editor-backup —— 改完要重新部署才生效', 'ok');
+}
+
+async function newDoc() {
+  const cat = PM_CAT || 'custom';
+  const name = await askText({
+    title: '新建指令',
+    sub: pmCatName(cat) + ' · ' + (PM_AGENT || 'codex'),
+    hint: '名称只允许字母 / 数字 / _ / -，会落成 content/seats/custom_<名称>.md。',
+    label: '名称',
+    value: '',
+    max: 40,
+    placeholder: '例如：trial-v2',
+  });
+  if (name === null || !name.trim()) return;
+  let r = null;
+  try { r = await api.docNew(PM_AGENT, cat, name.trim()); }
+  catch (e) { r = { ok: false, error: String(e.message || e) }; }
+  if (!r || r.ok === false) { toast('新建失败：' + ((r && r.error) || ''), 'err'); return; }
+  await refreshDocs();
+  toast('已创建：' + (r.id || r.path), 'ok');
+  await selectDoc(r.id);
+}
+
+async function initPrompts() {
+  PROMPTS_INITED = true;
+  paintPmAgents();
+  $('pmArea').addEventListener('input', schedulePmSave);
+  $('pmArea').addEventListener('blur', () => {
+    if (PM_CURRENT && PM_ORIG !== $('pmArea').value) { clearTimeout(PM_SAVE_TIMER); saveDoc(true); }
+  });
+  $('btnPmUndo').addEventListener('click', () => {
+    $('pmArea').value = PM_ORIG;
+    if (PM_CURRENT) PM_DRAFTS.delete(PM_CURRENT);
+    clearTimeout(PM_SAVE_TIMER);
+    PM_SAVE_STATE = '';
+    paintPmDirty();
+  });
+  $('btnPmSave').addEventListener('click', () => {
+    clearTimeout(PM_SAVE_TIMER);
+    saveDoc(false);
+  });
+  $('btnPmClose').addEventListener('click', () => {
+    if (PM_CURRENT && PM_ORIG !== $('pmArea').value) {
+      PM_DRAFTS.set(PM_CURRENT, $('pmArea').value);
+      clearTimeout(PM_SAVE_TIMER);
+      saveDoc(true);           // 返回时先把改动落盘，不再拦一道确认
+    }
+    showPmList();
+  });
+  $('btnPmRefresh').addEventListener('click', refreshDocs);
+  $('btnPmNew').addEventListener('click', newDoc);
+  // 页面内输入弹窗
+  $('btnPmInputOk').addEventListener('click', () => closeAsk($('pmInputText').value));
+  $('btnPmInputCancel').addEventListener('click', () => closeAsk(null));
+  $('btnPmInputClose').addEventListener('click', () => closeAsk(null));
+  $('pmInputModal').addEventListener('click', (e) => {
+    if (e.target.id === 'pmInputModal') closeAsk(null);
+  });
+  $('pmInputText').addEventListener('input', () => {
+    $('pmInputCount').textContent = $('pmInputText').value.length + ' / ' + $('pmInputText').maxLength;
+  });
+  $('pmInputText').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); closeAsk($('pmInputText').value); }
+    if (e.key === 'Escape') { e.preventDefault(); closeAsk(null); }
+  });
+  // 页面内确认
+  $('btnCfmOk').addEventListener('click', () => closeConfirm(true));
+  $('btnCfmCancel').addEventListener('click', () => closeConfirm(false));
+  $('btnCfmClose').addEventListener('click', () => closeConfirm(false));
+  $('cfmSheet').addEventListener('click', (e) => {
+    if (e.target.id === 'cfmSheet') closeConfirm(false);
+  });
+  $('pmDeployInput').addEventListener('change', () => {
+    const on = PM_DOCS.filter((x) => x.enabled && !x.deployable);
+    const off = PM_DOCS.filter((x) => !x.enabled && !x.deployable);
+    if ($('pmDeployInput').checked) {
+      if (!off.length) { $('pmDeployInput').checked = on.length > 0; toast('没有停用的文档可启用', 'warn'); return; }
+      toggleMany(off, true);
+    } else {
+      if (!on.length) { $('pmDeployInput').checked = false; toast('没有启用的文档可停用', 'warn'); return; }
+      toggleMany(on, false);
+    }
+  });
+  $('btnPmCopy').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText($('pmArea').value);
+      toast('已复制全文', 'ok');
+    } catch (e) {
+      toast('复制失败：' + (e.message || e), 'err');
+    }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !$('pmFormWrap').classList.contains('off')) $('btnPmClose').click();
+  });
+  await refreshDocs();
+}
+
+/* ── 补丁总览（指标卡 → 进度条 → 分组表 + 状态 pill）── */
+
+const PILL = {
+  current:  ['pill-cur', '本版'],
+  stale:    ['pill-stale', '旧版'],
+  missing:  ['pill-miss', '缺失'],
+  external: ['pill-ext', '外来'],
+};
+
+let PATCH_FLAT = [];
+let PATCH_TARGET = '';
+let PATCH_OPEN_IDX = -1;
+const origRef = new Map();
+
+async function openPatch(target) {
+  PATCH_TARGET = target || (targets()[0] || '');
+  if (!PATCH_TARGET) { toast('先在卡片上勾选目标', 'warn'); return; }
+  $('patchModal').classList.add('on');
+  await loadPatch();
+}
+
+function closePatch() { $('patchModal').classList.remove('on'); }
+
+async function loadPatch() {
+  const body = $('patchBody');
+  body.innerHTML = '<div class="pempty">正在检测……</div>';
+  let d = null;
+  try { d = await api.patches(PATCH_TARGET); } catch (e) { d = { ok: false, error: String(e.message || e) }; }
+  if (!d || d.ok === false) {
+    body.innerHTML = '<div class="pempty err">读取失败：' + esc((d && d.error) || '未知错误') + '</div>';
+    return;
+  }
+  PATCH_FLAT = [];
+  const groups = d.groups || [];
+  const allRows = groups.flatMap((g) => g.rows || []);
+  allRows.forEach((r) => PATCH_FLAT.push(r));
+  $('patchTarget').textContent = (d.label || PATCH_TARGET) + ' · ' + (d.state || '');
+
+  body.innerHTML = '';
+  if (!groups.length) {
+    body.innerHTML = '<div class="pempty">这个席位没有登记任何部署文件（未安装或未部署）。</div>';
+    return;
+  }
+
+  const cur = allRows.filter((r) => r.state === 'current').length;
+  const stale = allRows.filter((r) => r.state === 'stale').length;
+  const miss = allRows.filter((r) => r.state === 'missing').length;
+  const ext = allRows.filter((r) => r.state === 'external').length;
+  const tracked = cur + stale + miss;
+  const pct = tracked ? Math.round(cur / tracked * 100) : 0;
+  const stateTone = miss ? 'p-bad' : (stale ? 'p-warn' : 'p-ok');
+  const stateTxt = miss ? (miss + ' 个文件缺失') : (stale ? (stale + ' 个文件待更新') : '全部本版');
+  const dep = d.deploy || {};
+  const extNote = ext ? ' · 另有外来 ' + ext : '';
+  const mets = document.createElement('div');
+  mets.className = 'pmetrics';
+  mets.innerHTML =
+    '<div class="pmetric ' + stateTone + '"><b>' + cur + ' / ' + tracked + '</b>' +
+    '<span>部署文件 · ' + stateTxt + extNote + '</span></div>' +
+    '<div class="pmetric"><b style="font-size:13px">' +
+      '<span class="pill ' + (miss ? 'pill-miss' : 'pill-cur') + '">缺失 ' + miss + '</span> ' +
+      '<span class="pill ' + (stale ? 'pill-stale' : 'pill-cur') + '">旧版 ' + stale + '</span> ' +
+      '<span class="pill ' + (ext ? 'pill-ext' : 'pill-cur') + '">外来 ' + ext + '</span> ' +
+      '<span class="pill pill-cur">本版 ' + cur + '</span></b>' +
+    '<span>' + esc(dep.text || '部署状态：' + (d.state || '—')) + '</span></div>' +
+    '<div class="pmetric"><b>' + pct + '%</b><span>关键段命中率</span></div>';
+  body.appendChild(mets);
+  const bar = document.createElement('div');
+  bar.className = 'pbar';
+  bar.innerHTML = '<i style="width:' + pct + '%"></i>';
+  body.appendChild(bar);
+
+  const GROUP_NOTE = {
+    inject: '注入到客户端读取的指令 / 角色文件',
+    patch:  '官方安装包里被打过补丁的文件',
+    output: '输出风格通道（output styles）',
+    skill:  '投放进技能目录的路由技能',
+    preset: '用户级 agent preset（模式下拉）',
+    other:  '其它落盘文件',
+    rows:   '体检与检测的逐项注记（含未知 / 异常标记）',
+  };
+  groups.forEach((g) => {
+    const rows = g.rows || [];
+    const grp = document.createElement('div');
+    grp.className = 'pgroup';
+    const gcur = rows.filter((r) => r.state === 'current').length;
+    const gext = rows.filter((r) => r.state === 'external').length;
+    const gbad = rows.some((r) => r.state === 'missing');
+    const gwarn = rows.some((r) => r.state === 'stale');
+    grp.classList.add(gbad ? 'g-bad' : (gwarn ? 'g-warn' : 'g-ok'));
+    const head = document.createElement('button');
+    head.type = 'button';
+    head.className = 'ghead';
+    head.innerHTML =
+      '<span class="gcaret">&#x25B8;</span>' + esc(g.name) +
+      '<span class="gnote">' + esc(GROUP_NOTE[g.id] || '') +
+      ' · <b>' + gcur + '</b>/' + rows.length + (gext ? ' + 外来 ' + gext : '') + '</span>';
+    const tbl = document.createElement('table');
+    tbl.className = 'ptable';
+    if (rows.length > 12) { tbl.style.display = 'none'; }
+    tbl.innerHTML =
+      '<thead><tr><th class="num">#</th><th>文件 / 落点</th><th>角色</th>' +
+      '<th>大小</th><th>状态</th></tr></thead><tbody></tbody>';
+    const tb = tbl.querySelector('tbody');
+    rows.forEach((r, i) => {
+      const idx = PATCH_FLAT.length - rows.length + i;
+      const pill = PILL[r.state] || PILL.stale;
+      const fn = (r.path || '').split(/[\\/]/).filter(Boolean).pop() || r.path;
+      const dir = (r.path || '').slice(0, Math.max(0, (r.path || '').length - fn.length));
+      const tr = document.createElement('tr');
+      tr.className = 'prow';
+      tr.dataset.idx = String(idx);
+      tr.innerHTML =
+        '<td class="num">' + (idx + 1) + '</td>' +
+        '<td><span class="pfile" title="' + esc(r.path) + '">' +
+          '<span class="fdir">' + esc(dir) + '</span>' +
+          '<span class="fname">' + esc(fn) + '</span></span></td>' +
+        '<td>' + esc(r.role) + '</td>' +
+        '<td class="szcol">' + (r.isdir ? '目录' : (typeof r.size === 'number' ? fmtBytes(r.size) : '—')) + '</td>' +
+        '<td><span class="pill ' + pill[0] + '">' + pill[1] + '</span></td>';
+      tr.addEventListener('click', () => showCat(idx));
+      tb.appendChild(tr);
+    });
+    head.addEventListener('click', () => {
+      const hide = tbl.style.display === 'none';
+      tbl.style.display = hide ? '' : 'none';
+      grp.classList.toggle('g-open', hide);
+    });
+    grp.appendChild(head);
+    grp.appendChild(tbl);
+    body.appendChild(grp);
+  });
+
+  if (PATCH_OPEN_IDX >= 0 && PATCH_OPEN_IDX < PATCH_FLAT.length) showCat(PATCH_OPEN_IDX, true);
+}
+
+function fmtBytes(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1024 / 1024).toFixed(2) + ' MB';
+}
+
+async function showCat(idx, silent) {
+  const row = PATCH_FLAT[idx];
+  if (!row) return;
+  const body = $('patchBody');
+  const old = body.querySelector('.pcat');
+  if (old) old.remove();
+  if (!silent && PATCH_OPEN_IDX === idx) {
+    PATCH_OPEN_IDX = -1;
+    return;
+  }
+  PATCH_OPEN_IDX = idx;
+
+  const box = document.createElement('div');
+  box.className = 'pcat';
+  box.innerHTML = '<div class="pops"><span>' + esc(row.path) + '</span>' +
+    '<span class="pdirty">' + esc(row.role) + ' · 读取中……</span></div>';
+  const tr = body.querySelector('.ptable tr[data-idx="' + idx + '"]');
+  const grp = tr && tr.closest('.pgroup');
+  if (grp) grp.after(box); else body.appendChild(box);
+  if (!silent) box.scrollIntoView({ block: 'nearest' });
+
+  let d = null;
+  try { d = await api.read(['' + PATCH_TARGET, '' + idx]); }
+  catch (e) { d = { ok: false, error: String(e.message || e) }; }
+  const note = box.querySelector('.pdirty');
+  if (!d || d.ok === false) {
+    note.textContent = (d && d.error) || '读取失败';
+    return;
+  }
+  if (d.isdir) { note.textContent = '目录 —— 点路径用资源管理器打开'; return; }
+
+  if (!d.editable) {
+    if (!d.content) { note.textContent = '空文件'; return; }
+    note.textContent = d.role + ' · 只读';
+    const pre = document.createElement('pre');
+    pre.className = 'parea';
+    pre.style.userSelect = 'text';
+    pre.textContent = d.content.length > 2400 ? d.content.slice(0, 2400) + '\n\n…… 只读预览截断 ……' : d.content;
+    box.appendChild(pre);
+    return;
+  }
+
+  const orig = d.content;
+  const shaTxt = (d.sha || '—').slice(0, 10);
+  note.textContent = 'SHA ' + shaTxt + ' · ' + fmtBytes(d.size || orig.length);
+
+  const area = document.createElement('textarea');
+  area.className = 'parea';
+  area.spellcheck = false;
+  area.value = orig;
+  box.appendChild(area);
+
+  const ops = document.createElement('div');
+  ops.className = 'pops';
+  const dirty = document.createElement('span');
+  dirty.className = 'pdirty';
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'minibtn';
+  saveBtn.textContent = '保存写回';
+  const undoBtn = document.createElement('button');
+  undoBtn.className = 'minibtn';
+  undoBtn.textContent = '还原';
+  const openBtn = document.createElement('button');
+  openBtn.className = 'minibtn';
+  openBtn.textContent = '外部打开';
+  ops.appendChild(saveBtn);
+  ops.appendChild(undoBtn);
+  ops.appendChild(openBtn);
+  ops.appendChild(dirty);
+  box.appendChild(ops);
+
+  const paintDirty = () => {
+    const changed = area.value !== origRef.get(idx);
+    area.classList.toggle('p-dirty', changed);
+    dirty.textContent = changed ? '● 有未保存的修改' : '';
+    saveBtn.disabled = !changed;
+    undoBtn.disabled = !changed;
+  };
+  origRef.set(idx, orig);
+  area.addEventListener('input', paintDirty);
+  paintDirty();
+
+  saveBtn.addEventListener('click', async () => {
+    saveBtn.disabled = true;
+    const b64 = btoa(unescape(encodeURIComponent(area.value)));
+    let r = null;
+    try { r = await api.write(['' + PATCH_TARGET, '' + idx, b64]); }
+    catch (e) { r = { ok: false, error: String(e.message || e) }; }
+    saveBtn.disabled = false;
+    if (!r || r.ok === false) {
+      dirty.textContent = '✗ 写回失败：' + ((r && r.error) || '');
+      return;
+    }
+    if (!r.written) { dirty.textContent = '内容没变，没写盘'; return; }
+    dirty.textContent = '✓ 已写回 · 备份在 状态/editor-backup';
+    origRef.set(idx, area.value);
+    paintDirty();
+  });
+  undoBtn.addEventListener('click', () => {
+    area.value = origRef.get(idx) || orig;
+    paintDirty();
+  });
+  openBtn.addEventListener('click', () => { if (row.path) api.openPath(row.path); });
+}
+
+/* ── 写入预览 ── */
 const DIFF_KINDS = new Set(['codex', 'zcode', 'claude', 'hermes']);
 
 async function doDiff() {
@@ -989,49 +1970,96 @@ async function doDiff() {
   if (skipped.length) logLine('dim', 'sys', '这几个（' + skipped.join('/') + '）文件太多，对照表装不下 —— 点「预演」看清单');
   $('diffModal').classList.add('on');
   const body = $('diffBody');
-  body.innerHTML = '<div class="txempty">正在对比……</div>';
   $('diffTarget').textContent = tg.join(' / ');
+  body.innerHTML = '<div class="pempty">正在对比……</div>';
   body.innerHTML = '';
   for (const k of tg) {
     let d = null;
     try { d = await api.diff([k]); } catch (e) { d = { error: String(e.message || e) }; }
     const item = document.createElement('div');
-    item.className = 'diffitem';
+    item.className = 'skcard';
     if (!d || d.error) {
-      item.innerHTML = '<div class="diffpath">' + esc(k) + '</div><div class="diffunchanged">读取失败：' +
+      item.innerHTML = '<div class="skname">' + esc(k) + '</div><div class="skdesc">读取失败：' +
         esc((d && d.error) || '未知错误') + '</div>';
       body.appendChild(item);
       continue;
     }
     if (d.support !== 'full') {
-      item.innerHTML = '<div class="diffpath">' + esc(d.label || k) + '</div><div class="diffunchanged">' +
+      item.innerHTML = '<div class="skname">' + esc(d.label || k) + '</div><div class="skdesc">' +
         esc(d.note || '该目标不支持全文预览') + '</div>';
       body.appendChild(item);
       continue;
     }
-    item.innerHTML = '<div class="diffpath">' + esc(d.label) + '</div>';
+    item.innerHTML = '<div class="skname">' + esc(d.label) + '</div>';
     body.appendChild(item);
     (d.items || []).forEach((it) => {
       const box = document.createElement('div');
-      let html = '<div class="diffpath" style="color:var(--fg)">' + esc(it.path) + '</div>' +
-        '<div class="diffnote">' + esc(it.note || '') + '</div>';
+      let html = '<div class="skname mono" style="font-style:normal">' + esc(it.path) + '</div>' +
+        '<div class="skdesc">' + esc(it.note || '') + '</div>';
       if (it.unchanged) {
-        html += '<div class="diffunchanged">内容一模一样，一个字都不用动</div>';
+        html += '<div class="pempty">内容一模一样，一个字都不用动</div>';
       } else {
-        html += '<div class="diffhead"><span>落盘现状</span><span>部署写入</span></div>' +
-          '<div class="diffgrid">' + (it.rows || []).map((r) =>
-            '<div class="drow t-' + r.t + '"><span class="l">' + esc(r.l) + '</span>' +
-            '<span class="r">' + esc(r.r) + '</span></div>').join('') + '</div>';
+        html += '<div class="diffwrap"><div class="diffcol"><div class="diffhead">落盘现状</div>' +
+          '<div class="diffbody">' + esc((it.rows || []).map((r) => r.l).join('\n')) + '</div></div>' +
+          '<div class="diffcol"><div class="diffhead">部署写入</div>' +
+          '<div class="diffbody">' + esc((it.rows || []).map((r) => r.r).join('\n')) + '</div></div></div>';
       }
       box.innerHTML = html;
       item.appendChild(box);
     });
   }
 }
-
 function closeDiff() { $('diffModal').classList.remove('on'); }
 
-async function onTxRowClick(e) {  const btn = e.target.closest('button[data-txact]');
+/* ── 部署历史（事务）── */
+const TX_STATE = {
+  applied: ['applied', '已应用'], restored: ['reverted', '已回退'],
+  partial: ['partial', '部分完成'], 'rolled-back': ['partial', '已回滚'],
+  preparing: ['reverted', '进行中'],
+};
+
+async function openTx() {
+  $('txModal').classList.add('on');
+  await loadTx();
+}
+function closeTx() { $('txModal').classList.remove('on'); }
+
+async function loadTx() {
+  const body = $('txBody');
+  body.innerHTML = '<div class="pempty">正在读取……</div>';
+  let d = null;
+  try { d = await api.tx(['list']); } catch (e) { d = { ok: false, error: String(e.message || e) }; }
+  if (!d || d.ok === false) {
+    body.innerHTML = '<div class="pempty err">读取失败：' + esc((d && d.error) || '未知错误') + '</div>';
+    return;
+  }
+  $('txRoot').textContent = d.root || '';
+  const items = d.items || [];
+  if (!items.length) {
+    body.innerHTML = '<div class="pempty">还没有部署记录 —— 跑一次「部署」就会出现。</div>';
+    return;
+  }
+  body.innerHTML = '';
+  items.forEach((r) => {
+    const pair = TX_STATE[r.status] || ['', r.status];
+    const row = document.createElement('div');
+    row.className = 'txrow';
+    row.dataset.id = r.short;
+    row.innerHTML =
+      '<span class="txid">' + esc(r.short) + '</span>' +
+      '<span class="txseat">' + esc(r.seat) + '</span>' +
+      '<span class="txat">' + esc(String(r.at || '').slice(5, 16)) + '</span>' +
+      '<span class="txfn">' + r.changed + ' / ' + r.files + '</span>' +
+      '<span class="txstat ' + pair[0] + '">' + esc(pair[1]) + '</span>' +
+      '<div class="txops">' +
+      '<button class="minibtn" data-txact="verify">校验</button>' +
+      '<button class="minibtn danger" data-txact="restore">回退</button></div>';
+    body.appendChild(row);
+  });
+}
+
+async function onTxRowClick(e) {
+  const btn = e.target.closest('button[data-txact]');
   if (!btn) return;
   const row = btn.closest('.txrow');
   const id = row && row.dataset.id;
@@ -1056,7 +2084,16 @@ async function onTxRowClick(e) {  const btn = e.target.closest('button[data-txac
   }
 
   if (act === 'restore') {
-    if (!confirm('回退到 ' + id + ' 这次部署之前？\n\n· 文件被别的操作改过时会中止，不硬覆盖\n· 目标程序需要重启才会重新读取文件')) return;
+    const okGo = await askConfirm({
+      title: '回退快照',
+      sub: id,
+      text: '回到这次部署之前的状态。',
+      items: ['逐文件回拷快照备份，不是二进制基线',
+              '文件被别的操作改过时会中止，不硬覆盖',
+              '目标程序需要重启才会重新读取文件'],
+      ok: '回退', danger: true,
+    });
+    if (!okGo) return;
     btn.disabled = true;
     const d = await api.tx(['restore', id]);
     btn.disabled = false;
@@ -1068,132 +2105,27 @@ async function onTxRowClick(e) {  const btn = e.target.closest('button[data-txac
     logLine('ok', 'tx', '已回退 ' + id + '：还原 ' + d.result.restored + ' 个文件（状态 ' + d.result.status + '）');
     toast('已回退 ' + d.result.restored + ' 个文件', '');
     await loadTx();
-    // 回退真改了盘，且改的范围不一定就是当前勾选 —— 全量强制重探一次
     refreshStatus(true, null, true);
   }
 }
 
 async function doTxPurge() {
-  if (!confirm('清理旧快照，只保留最近 12 次？')) return;
+  const okPurge = await askConfirm({
+    title: '清理旧快照',
+    text: '只保留最近 12 次部署快照，更早的会被删除。',
+    ok: '清理', danger: true,
+  });
+  if (!okPurge) return;
   const d = await api.tx(['purge']);
   if (d && d.ok) { toast('已清理 ' + d.dropped + ' 个旧快照', ''); await loadTx(); }
   else toast('清理失败：' + ((d && d.error) || ''), 'err');
 }
 
-function bind() {
-  $('btnDeploy').addEventListener('click', () => doRun('apply'));
-  $('btnDry').addEventListener('click', () => doRun('dry'));
-  $('btnRevert').addEventListener('click', () => doRun('revert'));
-  $('btnTest').addEventListener('click', doTest);
-  $('btnRefresh').addEventListener('click', () => refreshStatus(false, null, true));
+// ────────────────────────── 更新检查 ──────────────────────────
 
-  document.querySelectorAll('.chipbtn[data-sel]').forEach((b) => {
-    b.addEventListener('click', () => {
-      const m = b.dataset.sel;
-      // 只认 ORDER 里的真目标 —— 任何非目标卡片都不该被"全选"卷进来
-      const all = state.cards.map((c) => c.key).filter((k) => ORDER.includes(k));
-      if (m === 'all') state.selected = new Set(all);
-      else if (m === 'none') state.selected = new Set();
-      else state.selected = new Set(all.filter((k) => !state.selected.has(k)));
-      renderCards(state.cards);
-      updateToolbarHint();
-    });
-  });
-
-  document.querySelectorAll('.wbtn').forEach((b) => {
-    b.addEventListener('click', () => api.win(b.dataset.win));
-  });
-
-  $('btnLogClear').addEventListener('click', () => {
-    $('logBody').innerHTML = '';
-    state.logCount = 0;
-    $('logCount').textContent = '0';
-  });
-
-  $('btnCollapse').addEventListener('click', () => {
-    const hid = document.querySelector('.workspace').classList.toggle('loghidden');
-    $('logPanel').classList.toggle('collapsed', hid);
-    $('btnCollapse').textContent = hid ? '\u21E4' : '\u21E5';
-    $('btnCollapse').title = hid ? '展开日志' : '折叠日志';
-  });
-
-  $('btnLogFile').addEventListener('click', async () => {
-    const r = await api.readLog();
-    if (!r.ok) { toast('读不到日志：' + (r.error || ''), 'err'); return; }
-    logHead('状态/破甲日志.txt（末尾 ' + r.lines.length + ' 行）');
-    r.lines.forEach((ln) => { if (ln.trim()) logLine('dim', 'file', ln); });
-  });
-
-  $('btnConsole').addEventListener('click', async () => {
-    const r = await api.openConsole();
-    if (!r.ok) toast('打不开控制台：' + (r.error || ''), 'err');
-  });
-
-  const changePy = async () => {
-    const r = await api.pickPython();
-    if (r.canceled) return;
-    if (!r.ok) { toast(r.error || '设置失败', 'err'); return; }
-    toast('已切换解释器：' + r.python, 'ok');
-    $('sbPython').textContent = r.python.split('\\').pop() + ' · ' + r.version;
-    // 换了解释器，之前所有探测结果都不可信 —— 强制全量重探
-    await refreshStatus(true, null, true);
-  };
-  $('btnPy').addEventListener('click', changePy);
-  $('sbPython').addEventListener('click', changePy);
-
-  $('sbRoot').addEventListener('click', () => {
-    if (state.meta && state.meta.root) api.openPath(state.meta.root);
-  });
-
-  $('btnRoute').addEventListener('click', doRoute);
-
-  $('btnTx').addEventListener('click', openTx);
-  $('btnTxClose').addEventListener('click', closeTx);
-  $('btnTxReload').addEventListener('click', loadTx);
-  $('btnTxPurge').addEventListener('click', doTxPurge);
-  $('txModal').addEventListener('click', (e) => { if (e.target.id === 'txModal') closeTx(); });
-  $('txBody').addEventListener('click', onTxRowClick);
-  $('btnDiff').addEventListener('click', doDiff);
-  $('btnDiffClose').addEventListener('click', closeDiff);
-  $('diffModal').addEventListener('click', (e) => { if (e.target.id === 'diffModal') closeDiff(); });
-  $('routeInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') doRoute(); });
-
-  $('tbVersion').addEventListener('click', openUpdate);
-  $('btnUpClose').addEventListener('click', closeUpdate);
-  $('btnUpReload').addEventListener('click', () => checkUpdate(true));
-  $('upModal').addEventListener('click', (e) => { if (e.target.id === 'upModal') closeUpdate(); });
-
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'F5') { e.preventDefault(); refreshStatus(false, null, true); }
-    if (e.key === 'F9') { e.preventDefault(); doTest(); }
-  });
-
-  const GO_WORDS = ['撸起袖子开工 → ', '学姐上手了 → ', '轮到它了 → ', '这就动手 → ', '安排上 → '];
-  const goWord = () => GO_WORDS[Math.floor(Math.random() * GO_WORDS.length)];
-  const DONE_OK = ['收工，漂亮', '干完了，干净利落', '搞定，没留尾巴', '活儿齐了'];
-  const doneOk = () => DONE_OK[Math.floor(Math.random() * DONE_OK.length)];
-
-  api.onLog((evt) => {
-    if (!evt) return;
-    if (evt.type === 'line') logLine(evt.level, evt.target, evt.text);
-    else if (evt.type === 'step') logLine('step', evt.target, '── ' + goWord() + evt.action + ' ──');
-    else if (evt.type === 'done') logLine(evt.code ? 'err' : 'ok', evt.target, evt.code ? ('翻车了 · 退出码 ' + evt.code) : doneOk());
-    else if (evt.type === 'start') logHead('开工咯：' + evt.action + ' → ' + (evt.targets || []).join(' / '));
-    else if (evt.type === 'exit' && evt.code) logLine('err', 'sys', '整体退出码 ' + evt.code + '（有目标没干利索，往上翻翻）');
-  });
-
-  // ── DSH卡片里的「破甲模式」下拉 ──
-  //   控件本体在 buildCard 里建、事件也在那儿绑（卡片会 upsert 重建）。
-  //   这里只负责一件事：启动时把 state.opts 的回显画上去。
-  paintDshOpts();
-}
-
-// ── 更新检查（点版本号 / 启动时静默查一次） ─────────────────────────────────
-
-let UP_CACHE = null;          // { ok, local, latest, url, body, hasUpdate }
+let UP_CACHE = null;
 
 function mdToHtml(md) {
-  // 只解析 release body 里实际会出现的语法：# 标题 / - 列表 / `code` / ``` 块 / **加粗** / [链接](url)
   const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const out = [];
   let inCode = false, codeBuf = [];
@@ -1226,25 +2158,21 @@ function paintUpdate(d) {
   if (!d || !d.ok) {
     meta.textContent = '—';
     hint.textContent = '检查失败（网络不通或 GitHub 限流），稍后再试。';
-    body.innerHTML = '<div class="upempty">拿不到最新版本信息。</div>';
+    body.innerHTML = '<div class="pempty">拿不到最新版本信息。</div>';
     foot.innerHTML = '';
     return;
   }
   const when = d.published ? d.published.slice(0, 10) : '';
   meta.textContent = '最新 v' + d.latest + (when ? ' · ' + when : '') + ' · 本地 v' + d.local;
-  body.innerHTML = '<div class="uplog">' + (mdToHtml(d.body) || '<p>（无描述）</p>') + '</div>';
+  body.innerHTML = '<div>' + (mdToHtml(d.body) || '<p>（无描述）</p>') + '</div>';
   if (d.hasUpdate) {
     hint.textContent = '有新版本 v' + d.latest + '（本地 v' + d.local + '）。';
-    foot.innerHTML = '<button class="btn primary" id="btnUpGo">去更新</button>'
-      + '<span class="ltext" style="color:var(--dim);font-size:11px">打开 GitHub Release 页面下载</span>';
-    badge.classList.add('has-update');
-    badge.title = '有新版本 v' + d.latest + ' — 点击查看';
+    foot.innerHTML = '<button class="btn primary" id="btnUpGo">去更新</button>';
     const go = $('btnUpGo');
     if (go) go.addEventListener('click', () => { if (d.url) window.open(d.url, '_blank'); });
   } else {
     hint.textContent = '已是最新版本 v' + d.local + '。';
     foot.innerHTML = '';
-    badge.classList.remove('has-update');
   }
   body.querySelectorAll('.uplink').forEach((a) => a.addEventListener('click', (e) => {
     e.preventDefault();
@@ -1256,7 +2184,7 @@ async function checkUpdate(manual) {
   if (manual) {
     $('upMeta').textContent = '—';
     $('upHint').textContent = '正在检查最新版本……';
-    $('upBody').innerHTML = '<div class="upempty">请求 GitHub 中……</div>';
+    $('upBody').innerHTML = '<div class="pempty">请求 GitHub 中……</div>';
     $('upFoot').innerHTML = '';
   }
   try { UP_CACHE = await api.checkUpdate(); }
@@ -1270,9 +2198,156 @@ async function openUpdate() {
   if (UP_CACHE) { paintUpdate(UP_CACHE); return; }
   await checkUpdate(true);
 }
-
 function closeUpdate() { $('upModal').classList.remove('on'); }
 
+// ────────────────────────── 事件绑定 ──────────────────────────
+
+function bind() {
+  // 左侧菜单
+  document.querySelectorAll('.snav').forEach((b) => {
+    b.addEventListener('click', () => switchView(b.dataset.view));
+  });
+
+  // 工具栏
+  $('btnDeploy').addEventListener('click', () => doRun('apply'));
+  $('btnDry').addEventListener('click', () => doRun('dry'));
+  $('btnDiff').addEventListener('click', doDiff);
+  $('btnTest').addEventListener('click', doTest);
+  $('btnRevert').addEventListener('click', () => doRun('revert'));
+  $('btnRefresh').addEventListener('click', () => refreshStatus(false, null, true));
+  $('btnTx').addEventListener('click', openTx);
+  $('btnPatchAll').addEventListener('click', () => openPatch());
+  $('btnConsole').addEventListener('click', async () => {
+    const r = await api.openConsole();
+    if (!r.ok) toast('打不开控制台：' + (r.error || ''), 'err');
+  });
+
+  document.querySelectorAll('.chipbtn[data-sel]').forEach((b) => {
+    b.addEventListener('click', () => {
+      const m = b.dataset.sel;
+      const all = state.cards.map((c) => c.key).filter((k) => ORDER.includes(k));
+      if (m === 'all') state.selected = new Set(all);
+      else if (m === 'none') state.selected = new Set();
+      else state.selected = new Set(all.filter((k) => !state.selected.has(k)));
+      renderCards(state.cards);
+    });
+  });
+
+  document.querySelectorAll('.wbtn[data-win]').forEach((b) => {
+    b.addEventListener('click', () => api.win(b.dataset.win));
+  });
+
+  // 日志：隐藏 / 恢复 + 拖拽调高
+  const logPanel = $('logPanel');
+  const toggleLog = () => {
+    logPanel.classList.toggle('hidden');
+    $('btnLogRestore').style.display = logPanel.classList.contains('hidden') ? '' : 'none';
+  };
+  $('btnCollapse').addEventListener('click', toggleLog);
+  $('btnLogRestore').addEventListener('click', toggleLog);
+
+  // 手柄拖拽：上拖加高、下拖减高（min 60 / max 视口-卡片区最低 160）
+  const grip = $('logGrip');
+  grip.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    logPanel.classList.add('dragging');
+    const startY = e.clientY;
+    const startH = logPanel.getBoundingClientRect().height;
+    const move = (ev) => {
+      const h = Math.min(Math.max(startH + (startY - ev.clientY), 60), window.innerHeight - 220);
+      logPanel.style.flex = '0 0 ' + h + 'px';
+    };
+    const up = () => {
+      logPanel.classList.remove('dragging');
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  });
+  $('btnLogClear').addEventListener('click', () => {
+    $('logBody').innerHTML = '';
+    state.logCount = 0;
+    $('logCount').textContent = '0';
+  });
+  $('btnLogFile').addEventListener('click', async () => {
+    const r = await api.readLog();
+    if (!r.ok) { toast('读不到日志：' + (r.error || ''), 'err'); return; }
+    logHead('状态/破甲日志.txt（末尾 ' + r.lines.length + ' 行）');
+    r.lines.forEach((ln) => { if (ln.trim()) logLine('dim', 'file', ln); });
+  });
+
+  // 归一
+  $('btnRoute').addEventListener('click', doRoute);
+  $('routeInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') doRoute(); });
+
+  // 技能管理视图
+  ORDER.forEach((k) => {
+    if (k === 'dsh-desktop') return;   // 与 dsh 同一份目录，不重复列
+    const o = document.createElement('option');
+    o.value = k;
+    o.textContent = LABELS[k];
+    $('skSeat').appendChild(o);
+  });
+  $('btnSkLoad').addEventListener('click', () => { $('skBody').dataset.loaded = ''; loadSkills(); });
+
+  // 设置视图
+  const changePy = async () => {
+    const r = await api.pickPython();
+    if (r.canceled) return;
+    if (!r.ok) { toast(r.error || '设置失败', 'err'); return; }
+    toast('已切换解释器：' + r.python, 'ok');
+    $('setPy').textContent = r.python.split('\\').pop() + ' · ' + r.version;
+    await refreshStatus(true, null, true);
+  };
+  $('btnSetPy').addEventListener('click', changePy);
+  $('btnSetRoot').addEventListener('click', () => {
+    if (state.meta && state.meta.root) api.openPath(state.meta.root);
+  });
+  $('btnSetConsole').addEventListener('click', async () => {
+    const r = await api.openConsole();
+    if (!r.ok) toast('打不开控制台：' + (r.error || ''), 'err');
+  });
+  $('btnSetTx').addEventListener('click', openTx);
+
+  // 关于视图
+  $('btnAboutUp').addEventListener('click', openUpdate);
+  $('btnAboutRepo').addEventListener('click', () => {
+    window.open('https://github.com/', '_blank');
+  });
+
+  // 模态
+  $('btnTxClose').addEventListener('click', closeTx);
+  $('btnTxReload').addEventListener('click', loadTx);
+  $('btnTxPurge').addEventListener('click', doTxPurge);
+  $('txModal').addEventListener('click', (e) => { if (e.target.id === 'txModal') closeTx(); });
+  $('txBody').addEventListener('click', onTxRowClick);
+  $('btnDiffClose').addEventListener('click', closeDiff);
+  $('diffModal').addEventListener('click', (e) => { if (e.target.id === 'diffModal') closeDiff(); });
+  $('btnPatchClose').addEventListener('click', closePatch);
+  $('btnPatchReload').addEventListener('click', loadPatch);
+  $('patchModal').addEventListener('click', (e) => { if (e.target.id === 'patchModal') closePatch(); });
+
+  // 版本 / 更新
+  $('tbVersion').addEventListener('click', openUpdate);
+  $('btnUpClose').addEventListener('click', closeUpdate);
+  $('btnUpReload').addEventListener('click', () => checkUpdate(true));
+  $('upModal').addEventListener('click', (e) => { if (e.target.id === 'upModal') closeUpdate(); });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'F5') { e.preventDefault(); refreshStatus(false, null, true); }
+    if (e.key === 'F9') { e.preventDefault(); doTest(); }
+  });
+
+  api.onLog((evt) => {
+    if (!evt) return;
+    if (evt.type === 'line') logLine(evt.level, evt.target, evt.text);
+    else if (evt.type === 'step') logLine('step', evt.target, '── ' + evt.action + ' ──');
+    else if (evt.type === 'done') logLine(evt.code ? 'err' : 'ok', evt.target, evt.code ? ('翻车了 · 退出码 ' + evt.code) : '收工，漂亮');
+    else if (evt.type === 'start') logHead('开工：' + evt.action + ' → ' + (evt.targets || []).join(' / '));
+    else if (evt.type === 'exit' && evt.code) logLine('err', 'sys', '整体退出码 ' + evt.code + '（有目标没干利索，往上翻翻）');
+  });
+}
 
 loadOpts();
 bind();

@@ -117,23 +117,41 @@ def render_leaf(leaf_id: str) -> str:
 
 
 def leaf_meta(leaf_id: str) -> dict:
-    """读叶子首部 frontmatter。"""
+    """读叶子首部 frontmatter → 界面要用的元信息。
+
+    返回 name（中文小类名）/ category_name（中文类目）/ keywords / desc。
+    frontmatter 里的 `name:` 只是 id，真正给人看的是正文第一行 `# 接口对接 · AUTO-API`，
+    或者 description 里「小类三拍 · 接口对接（脚本自动化）」那一段。
+    """
     text = render_leaf(leaf_id)
     meta = {"id": leaf_id, "name": leaf_id, "parent": "", "category": leaf_id.split("-", 1)[0],
-            "keywords": "", "desc": ""}
+            "category_name": "", "keywords": "", "desc": ""}
+    head = ""
     if text.startswith("---"):
         end = text.find("\n---", 3)
         if end > 0:
-            for line in text[3:end].splitlines():
+            head = text[3:end]
+            for line in head.splitlines():
                 s = line.strip()
-                if s.startswith("name:"):
-                    meta["name"] = s.split(":", 1)[1].strip()
-                elif s.startswith("parent:"):
+                if s.startswith("parent:"):
                     meta["parent"] = s.split(":", 1)[1].strip()
-                elif s.startswith("小类三拍"):
+                elif "小类三拍" in s:
                     meta["desc"] = s
                     if "命中关键词：" in s:
                         meta["keywords"] = s.split("命中关键词：", 1)[1].rstrip("。").strip()
+    # 中文名：优先正文标题行 `# 接口对接 · AUTO-API`
+    for line in text.splitlines():
+        if line.startswith("# ") and "·" in line:
+            meta["name"] = line[2:].split("·", 1)[0].strip()
+            break
+    if meta["name"] == leaf_id and meta["desc"]:
+        seg = meta["desc"].split("小类三拍 · ", 1)[-1]
+        meta["name"] = seg.split("。", 1)[0].split("（", 1)[0].strip() or leaf_id
+    # 中文类目名：从三拍描述里的括号取，兜底用 CATEGORIES
+    if meta["desc"] and "（" in meta["desc"]:
+        meta["category_name"] = meta["desc"].split("（", 1)[1].split("）", 1)[0].strip()
+    elif meta["category"] in CATEGORIES:
+        meta["category_name"] = CATEGORIES[meta["category"]][1]
     return meta
 
 

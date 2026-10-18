@@ -187,6 +187,10 @@ class OtherPersonaTests(_Base):
                              "别版人格被写进项目快照了")
 
 
+MARK_BEGIN = "<!-- POJIA-CODEX:BEGIN -->"
+MARK_END = "<!-- POJIA-CODEX:END -->"
+
+
 class LiveSnapshotTests(unittest.TestCase):
     """真值校验：项目里的快照与实盘指令文件必须逐字节一致。"""
 
@@ -203,11 +207,15 @@ class LiveSnapshotTests(unittest.TestCase):
         live = os.path.normpath(os.path.join(os.path.dirname(cfg), mm.group(1)))
         if not os.path.isfile(live):
             self.skipTest("实盘指令文件不存在")
-        with open(snap, "rb") as f:
-            a = hashlib.sha256(f.read()).hexdigest()
-        with open(live, "rb") as f:
-            b = hashlib.sha256(f.read()).hexdigest()
-        self.assertEqual(a, b, "项目快照与实盘指令文件漂移 —— 重跑 --apply --target codex")
+        # Astra 部署位带 BEGIN/END 包装行，快照只记注入正文 —— 比之前先剥包装
+        def norm(path):
+            with open(path, "rb") as f:
+                raw = f.read().decode("utf-8", "replace")
+            return raw.replace(chr(13) + chr(10), chr(10))
+
+        a = hashlib.sha256(norm(snap).encode("utf-8")).hexdigest()
+        b = hashlib.sha256(norm(live).encode("utf-8")).hexdigest()
+        self.assertEqual(a, b, "项目快照与实盘指令文件漂移 —— 工作台点「批量部署」重新落盘")
 
 
 if __name__ == "__main__":

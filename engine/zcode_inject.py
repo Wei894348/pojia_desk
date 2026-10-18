@@ -326,7 +326,7 @@ def _backup(cjs):
         return bak
     bdir = os.path.join(os.path.dirname(cjs), "pojia-backups")
     os.makedirs(bdir, exist_ok=True)
-    bak = os.path.join(bdir, "zcode.cjs.%s%s" % (time.strftime("%Y%m%d-%H%M%S"), BAK_SUFFIX))
+    bak = os.path.join(bdir, "zcode.cjs%s" % BAK_SUFFIX)
     shutil.copy2(cjs, bak)
     st["backup"] = bak
     save_state(st)

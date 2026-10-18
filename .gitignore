@@ -26,3 +26,7 @@ targets/codex/切换创作通道.py
 
 # 说明：docs/ 与 README.md 是生成产物（tools/build_readme.py），但要对 GitHub
 # 可见，所以**不**忽略；改正文请改生成器再重新生成。
+
+# 本地虚拟环境 与 GUI 的解释器缓存（各机器不同，不入库）
+.venv/
+gui/.python-path

@@ -28,7 +28,7 @@ import importlib.util
 
 CJS = r"F:/Softstore/ZCode/resources/glm/zcode.cjs"
 BAK_GLOB = os.path.join(os.path.expanduser("~"), ".zcode", "zcode-unlock-backups",
-                        "zcode.cjs.*.bak")
+                        "zcode.cjs*.bak")
 HERE = os.path.dirname(os.path.abspath(__file__))
 DUAL = os.path.join(HERE, "..", "engine", "zcode_inject.py")
 STATE = os.path.join(HERE, "..", "状态", "zcode-cjs-state.json")
