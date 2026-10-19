@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""bridge.py -- 破甲工作台 GUI 与 破甲一键通 之间的 JSON 桥。
+"""bridge.py -- Muse 工作台 GUI 与 破甲一键通 之间的 JSON 桥。
 
 Electron 主进程只跟这个脚本对话，不直接碰 破甲一键通.py。
 两种输出形态：
@@ -319,6 +319,12 @@ def card_codex():
                 "rows": [{"level": "err", "path": dep_p, "note": "engine/codex_deploy.py 缺失"}],
                 "files": [], "metrics": []}
 
+    # 旧版 restore 矛盾态自愈：全局技能开着、80 片叶子却全 false
+    try:
+        if getattr(ad, "repair_leaf_defaults", None):
+            ad.repair_leaf_defaults()
+    except Exception:
+        pass
     v = ad.verify("codex")
     for c in v["checks"]:
         role = c["role"]
@@ -439,7 +445,7 @@ def card_zcode():
     if miss:
         rows.append({"level": "warn", "path": ag, "note": "缺关键段：%s" % "、".join(miss)})
     else:
-        rows.append({"level": "ok", "path": ag, "note": "角色档 · 本版"})
+        rows.append({"level": "ok", "path": ag, "note": "角色档 · 已部署"})
     if jb:
         rows.append({"level": "err", "path": ag, "note": "越狱腔残留（会被判为注入）：%s" % "、".join(jb)})
     else:
@@ -466,7 +472,7 @@ def card_zcode():
 # 「当前到底部署了什么，还是什么都没部署」—— DSH 两个落点：
 # ① 提示词（~/.dsh/AGENTS.md 标记块）② 路由 skills（~/.dsh/skills）。
 # 两者各自独立，卡片上合成一句话，不用点开明细去数。
-_FACE = {"current": "本版", "other": "旧版", "absent": "", "broken": "异常"}
+_FACE = {"current": "已部署", "other": "", "absent": "", "broken": "异常"}
 _DEPLOY_LEVEL = {"on": "ok", "half": "warn", "idle": "dim"}
 
 
@@ -499,7 +505,7 @@ def _deploy_summary(astate, sstate):
 def _desktop_card_state(prompt_state, skill_state):
     """桌面版卡的徽章状态 + 卡片那行说明。
 
-    两半都本版 = current；只有一半 = warn；都没有 = none；异常 = broken。
+    两半都已部署 = current；只有一半 = warn；都没有 = none；异常 = broken。
     返回 (state, deploy_summary)。
     """
     dsum = _deploy_summary(prompt_state, skill_state)
@@ -587,8 +593,7 @@ def card_dsh():
                    else ("none" if not summ["any"] else "warn")))
     rows = _dsh_rows(t, astate, anote, apath, abytes, sstate, sn)
     home = t.dsh_home()
-    metrics = [{"name": "提示词", "value": "已写入" if astate == "current" else
-                                   ("旧版" if astate == "other" else "未写入"),
+    metrics = [{"name": "提示词", "value": "已部署" if astate == "current" else "未部署",
                 "ok": astate == "current"},
                {"name": "路由 skills", "value": "%d 份" % sn, "ok": sn > 0},
                {"name": "预算", "value": "%d / %d" % (abytes, t.AGENTS_MAX_BYTES),
@@ -680,210 +685,116 @@ def card_dsh_desktop():
 
 
 def card_wb():
-    m = mod()
-    t = m.TARGETS["wb"]()
-    install = ""
-    data = ""
+    """WorkBuddy 卡片：只跑新引擎的分层 verify，不再读 23MB 产物/全树模板。
+
+    旧实现先做一遍七层靶点扫描（find_targets + 每份文件 read_text_safe），
+    光 codebuddy.js 就 23MB ×2，指令页/部署页会卡 5 秒；新引擎已经把这些
+    检查收进 verify 的分层缓存里，这里直接取结果拼卡片。
+    """
+    wd = _wb_deploy()
+    if wd is None:
+        return {"key": "wb", "label": "WorkBuddy", "home": "",
+                "state": "broken", "rows": [{"level": "err", "path": "",
+                                             "note": "engine/workbuddy_deploy.py 缺失"}],
+                "files": [], "metrics": []}
     try:
-        install = t.resolve_install_dir("")
-        data = t.resolve_data_dir("")
+        if getattr(wd, "repair_leaf_defaults", None):
+            wd.repair_leaf_defaults()
     except Exception:
         pass
-    rows, files = [], []
+    data = wd.home_of()
+    install = ""
+    try:
+        insts = wd.install_dirs()
+        install = insts[0] if insts else ""
+    except Exception:
+        pass
     if not install:
-        return {"key": "wb", "label": t.label, "home": "(未找到安装目录)", "state": "broken",
-                "rows": [{"level": "err", "path": "(自动探测)", "note": "未找到 WorkBuddy 安装目录"}],
+        return {"key": "wb", "label": "WorkBuddy", "home": data,
+                "state": "broken",
+                "rows": [{"level": "err", "path": "(自动探测)",
+                          "note": "未找到 WorkBuddy 安装目录"}],
                 "files": [], "metrics": []}
 
-    _user, _src = m.load_user_persona("")
-    want = m.seat_want("workbuddy", _user)
-    targets = []
-    try:
-        targets = t.find_targets(data, install)
-    except Exception as e:
-        rows.append({"level": "err", "path": install, "note": "靶点扫描失败：%s" % e})
+    v = wd.verify("wb")
+    st = wd.state()
+    checks = v.get("checks", [])
 
-    pol_n = loose = other = 0
-    for p in targets:
-        txt = m.read_text_safe(p) or ""
-        if "<content_policy>" not in txt or not t.is_prompt_tpl(txt):
+    def pick(role):
+        return [c for c in checks if c.get("role") == role]
+
+    def ratio(role):
+        cs = pick(role)
+        return sum(1 for c in cs if c["ok"]), len(cs)
+
+    roles = [
+        ("自定义指令", "自定义指令"),
+        ("模板政策块", "模板"),
+        ("CLI 提示词层", "CLI 提示词"),
+        ("削弱层", "削弱层"),
+        ("权限层", "权限位"),
+        ("代码层", "代码层"),
+        ("身份层", "身份层"),
+        ("SKILL.md", "SKILL.md"),
+    ]
+    rows = []
+    for role, label in roles:
+        ok_n, n = ratio(role)
+        cs = pick(role)
+        path = cs[0]["path"] if cs else (data or install)
+        if not n:
+            rows.append({"level": "dim", "path": path, "note": "%s：未启用或未探测到" % label})
             continue
-        pol_n += 1
-        lv = m.loose_state(txt, want)
-        if lv == "current":
-            loose += 1
-        elif lv == "other":
-            other += 1
-    if pol_n and loose == pol_n:
-        state = "current"
-    elif pol_n and (loose + other) >= pol_n:
-        state = "stale"
-    elif pol_n:
-        state = "warn"
-    else:
+        rows.append({"level": "ok" if ok_n == n else "warn", "path": path,
+                     "note": "%s：%d / %d 就位" % (label, ok_n, n)})
+
+    def metric(name, role, fallback="—"):
+        ok_n, n = ratio(role)
+        return {"name": name, "value": ("%d / %d" % (ok_n, n)) if n else fallback,
+                "ok": bool(n) and ok_n == n}
+
+    pack = wd.pack_name()
+    pack_on = st.get("pack_on") is not False
+    metrics = [
+        {"name": "指令源", "value": pack or "—", "ok": bool(pack) and pack_on},
+        metric("身份层", "身份层"),
+        metric("模板", "模板政策块"),
+        metric("CLI 提示词", "CLI 提示词层"),
+        metric("权限位", "权限层"),
+        metric("代码层", "代码层"),
+        metric("SKILL.md", "SKILL.md"),
+    ]
+
+    if st.get("restoredAt") and not pack_on:
         state = "none"
-
-    rows.append({"level": "ok" if state == "current" else ("warn" if pol_n else "dim"),
-                 "path": install,
-                 "note": "模板靶点：含政策块 %d，本版宽松 %d，旧版宽松 %d" % (pol_n, loose, other)})
-
-    js_files = []
-    try:
-        js_files = t.js_files(install)
-    except Exception:
-        pass
-    gate_ok = 0
-    wf_ok = 0
-    gate_missing, wf_missing = [], []
-    for p in js_files:
-        txt = m.read_text_safe(p) or ""
-        try:
-            gate = t.test_js_gate_open(txt)
-        except Exception:
-            gate = False
-        wf = "never refuse a summary request" in txt
-        if gate:
-            gate_ok += 1
-        else:
-            gate_missing.append(os.path.basename(p))
-        if wf:
-            wf_ok += 1
-        else:
-            wf_missing.append(os.path.basename(p))
-        rows.append({"level": "ok" if gate else "warn", "path": p,
-                     "note": "命令闸门 %s · 网页过滤 %s" % ("已解锁" if gate else "未解锁",
-                                                           "已解除" if wf else "未解除")})
-        files.append({"path": p, "exists": True, "size": size_of(p), "sha": sha_of(p),
-                      "role": "闸门脚本", "hit": ["闸门已解锁"] if gate else [],
-                      "miss": [] if gate else ["闸门未解锁"]})
-    # 网页过滤属于 --full 档。它必须进 state / metrics —— 否则 revert 撤掉它之后
-    # 卡片依旧报「本版」，和 console 侧的判定不一致。
-    full_ok = (not js_files) or (not gate_missing and not wf_missing)
-
-    guard = 0
-    for p in targets:
-        txt = m.read_text_safe(p) or ""
-        if "<personal_files_safety>" in txt or "<removed_by_unlock_v4>" in txt:
-            guard += 1
-    rows.append({"level": "ok" if guard == 0 else "warn", "path": "(全部靶点)",
-                 "note": "文件保护：%s" % ("已中和" if guard == 0 else "%d 个未中和" % guard)})
-    if guard == 0:
-        rows.append({"level": "ok", "path": "(全部靶点)", "note": "文件操作限制已解除（无残留标签）"})
-    cache = os.path.join(data, "cache", "acc-product-config-v3.json")
-    rows.append({"level": "dim", "path": cache,
-                 "note": "运行时缓存 %s" % ("存在" if os.path.exists(cache) else "已清除（下次启动重建）")})
-
-    # 身份层：~/.workbuddy 的 SOUL/IDENTITY/USER/MEMORY 每轮被塞进
-    # prompt **末尾**的 <identity_context>（user 角色）+ 一句 "embody SOUL.md"，
-    # 会盖掉前头 system 里的注入人格 —— 症状是"卡片全绿、行为却是另一个人"。
-    # 所以它必须进 state / metrics：这层不绿，卡片就不许报 current。
-    id_big = [p for p in t.identity_files(data) if os.path.basename(p) in m.ID_BIG_FILES]
-    id_cur = 0
-    id_paths = []
-    for p in id_big:
-        if m.identity_state(m.read_text_safe(p) or "", want) == "current":
-            id_cur += 1
-        else:
-            id_paths.append(p)
-    id_res = t.identity_residue(data)
-    id_ok = bool(id_big) and id_cur == len(id_big) and id_res == 0
-    if id_big:
-        rows.append({"level": "ok" if id_ok else "warn",
-                     "path": os.path.join(data, "user-*-personal" if not id_paths else id_paths[0]),
-                     "note": "身份层（prompt 末尾，会盖过前置人格）：SOUL/IDENTITY 本版 %d/%d，"
-                             "USER/MEMORY 冲突行残留 %d" % (id_cur, len(id_big), id_res)})
-    else:
-        rows.append({"level": "dim", "path": data,
-                     "note": "身份层：未找到 SOUL.md/IDENTITY.md（未启用或路径不同）"})
-
-    metrics = [{"name": "模板靶点", "value": "%d 宽松 / %d 命中" % (loose, pol_n), "ok": pol_n > 0 and loose == pol_n},
-               {"name": "命令闸门", "value": "%d / %d" % (gate_ok, len(js_files)), "ok": js_files and gate_ok == len(js_files)},
-               {"name": "网页过滤", "value": "%d / %d" % (wf_ok, len(js_files)), "ok": js_files and wf_ok == len(js_files)},
-               {"name": "文件保护", "value": "已中和" if guard == 0 else "%d 残留" % guard, "ok": guard == 0},
-               {"name": "身份层", "value": "%d / %d" % (id_cur, len(id_big)) if id_big else "—", "ok": id_ok},
-               {"name": "数据目录", "value": data or "—", "ok": bool(data)}]
-    if state == "current" and not full_ok:
-        state = "warn"
-    if state == "current" and id_big and not id_ok:
-        # 前面几层全绿、身份层不绿 —— 正是"破甲看着成功、行为不是本人"那种状态，
-        # 判 stale 而不是 warn：语义就是"该重打一遍"。
+    elif v.get("ok") and pack_on:
+        state = "current"
+    elif v.get("ok") or any(c["ok"] for c in checks):
         state = "stale"
+    else:
+        state = "warn"
 
-    # 新版四落点（workbuddy_deploy.py）接管后，卡片以它为准：老那套模板 / 闸门
-    # 指标会和新落点给出相反结论（旧的看 product.json，新的是自定义指令 + 32 份模板）。
-    dep = None
-    try:
-        wd = _wb_deploy()
-        if wd is not None:
-            v = wd.verify("wb")
-            stt = wd.state()
-            dep = {
-                "pack": wd.pack_name(), "packOn": stt.get("pack_on") is not False,
-                "custom": {"on": stt.get("custom") is not False,
-                           "ok": any(c["ok"] for c in v["checks"] if c["role"] == "自定义指令"),
-                           "spots": sum(1 for c in v["checks"] if c["role"] == "自定义指令")},
-                "templates": {"on": stt.get("templates") is not False,
-                              "ok": sum(1 for c in v["checks"]
-                                        if c["role"] == "模板政策块" and c["ok"]),
-                              "total": sum(1 for c in v["checks"] if c["role"] == "模板政策块")},
-                "identity": {"on": stt.get("identity") is not False,
-                             "ok": sum(1 for c in v["checks"]
-                                       if c["role"] == "身份层" and c["ok"]),
-                             "total": sum(1 for c in v["checks"] if c["role"] == "身份层")},
-                "skills": {"on": stt.get("skills") is not False,
-                           "ok": sum(1 for c in v["checks"]
-                                     if c["role"] == "SKILL.md" and c["ok"]),
-                           "total": sum(1 for c in v["checks"] if c["role"] == "SKILL.md")},
-                "verify": {"ok": v["ok"], "done": v["done"], "total": v["total"]},
-            }
-            ok_all = (dep["packOn"] and dep["custom"]["ok"] and dep["templates"]["on"]
-                      and dep["templates"]["ok"] == dep["templates"]["total"]
-                      and dep["identity"]["ok"] == dep["identity"]["total"]
-                      and dep["skills"]["ok"] == dep["skills"]["total"])
-            if stt.get("restoredAt") and not stt.get("pack_on"):
-                state = "none"
-            elif v["ok"] and ok_all:
-                state = "current"
-            elif v["ok"] or ok_all:
-                state = "stale"
-            else:
-                state = "warn"
-            metrics = [
-                {"name": "指令源", "value": dep["pack"] or "—", "ok": bool(dep["pack"])},
-                {"name": "自定义指令", "value": "已写入" if dep["custom"]["ok"] else "未写入",
-                 "ok": dep["custom"]["ok"]},
-                {"name": "模板政策块", "value": "%d / %d" % (dep["templates"]["ok"],
-                                                          dep["templates"]["total"]),
-                 "ok": dep["templates"]["ok"] == dep["templates"]["total"]},
-                {"name": "身份层", "value": "%d / %d" % (dep["identity"]["ok"],
-                                                      dep["identity"]["total"]),
-                 "ok": dep["identity"]["ok"] == dep["identity"]["total"]},
-                {"name": "SKILL.md", "value": "%d / %d" % (dep["skills"]["ok"],
-                                                         dep["skills"]["total"]),
-                 "ok": dep["skills"]["ok"] == dep["skills"]["total"]},
-            ]
-            try:
-                nb = len(os.listdir(os.path.join(data, "pojia-backups")))
-            except OSError:
-                nb = 0
-            metrics.append({"name": "备份", "value": "有" if nb else "无", "ok": nb > 0})
-            rows = [{"level": "ok" if v["ok"] else "warn", "path": install,
-                     "note": "四路落点：%d / %d 就位" % (v["done"], v["total"])}]
-            files = []
-    except Exception as e:
-        rows.append({"level": "warn", "path": data, "note": "新引擎探测失败：%s" % e})
-
-    card = {"key": "wb", "label": t.label, "home": install, "state": state,
-            "rows": rows, "files": files, "metrics": metrics}
-    if dep:
-        card["deploy"] = dep
-    return card
+    dep = {
+        "pack": pack, "packOn": pack_on,
+        "custom": {"on": st.get("custom") is not False,
+                   "ok": bool(pick("自定义指令")) and all(c["ok"] for c in pick("自定义指令")),
+                   "spots": len(pick("自定义指令"))},
+        "templates": {"on": st.get("templates") is not False,
+                      "ok": ratio("模板政策块")[0], "total": ratio("模板政策块")[1]},
+        "identity": {"on": st.get("identity") is not False,
+                     "ok": ratio("身份层")[0], "total": ratio("身份层")[1]},
+        "skills": {"on": st.get("skills") is not False,
+                   "ok": ratio("SKILL.md")[0], "total": ratio("SKILL.md")[1]},
+        "verify": {"ok": v.get("ok"), "done": v.get("done"), "total": v.get("total")},
+    }
+    return {"key": "wb", "label": "WorkBuddy", "home": install or data, "state": state,
+            "rows": rows, "files": [], "metrics": metrics, "deploy": dep}
 
 
 def card_seat_deploy(key):
     """Claude / Hermes / ZCode 卡片：以 seats_deploy 的落点核对为准。
 
-    旧 card_seat_md 按「标记块哈希 + 旧版 output style 哈希」判定，
+    旧 card_seat_md 按「标记块哈希 + 当时 output style 哈希」判定，
     与新的三落点引擎口径不同（新版主落点是整份写入的文件，没有标记块），
     会给出「verify 全过、卡片却报未部署」的矛盾结论。
     """
@@ -892,6 +803,11 @@ def card_seat_deploy(key):
         return {"key": key, "label": key, "home": "", "state": "broken",
                 "rows": [{"level": "err", "path": "", "note": "engine/seats_deploy.py 缺失"}],
                 "files": [], "metrics": []}
+    try:
+        if getattr(sd, "repair_leaf_defaults", None):
+            sd.repair_leaf_defaults(key)
+    except Exception:
+        pass
     spec = sd.SEATS[key]
     home = sd.home_of(key)
     v = sd.verify(key)
@@ -1030,10 +946,10 @@ def card_seat_md(key):
         state = lv if lv in ("current", "stale") else "none"
         if state == "current":
             rows.append({"level": "ok", "path": style_p,
-                         "note": "output style · 主通道 · 本版"})
+                         "note": "output style · 主通道 · 已部署"})
         elif state == "stale":
             rows.append({"level": "warn", "path": style_p,
-                         "note": "output style 在但哈希旧（apply 自动升级）"})
+                         "note": "未部署（内容与本版不一致 —— 点一次部署即恢复）"})
         else:
             rows.append({"level": "warn", "path": style_p,
                          "note": "未部署（output style 不存在）"})
@@ -1083,7 +999,7 @@ def card_seat_md(key):
                     "value": (os.path.basename(cli_where) if cli_found
                               else ("未检测到" if cli_found is False else "—")),
                     "ok": cli_found is not False},
-                   {"name": "标记块", "value": {"current": "本版", "stale": "旧版",
+                   {"name": "标记块", "value": {"current": "已部署", "stale": "未部署",
                                                "none": "未部署"}.get(state, state),
                     "ok": state == "current"},
                    {"name": "路由 skills", "value": "%d / %d" % (ours, total) if total else "未投放",
@@ -1110,7 +1026,7 @@ def card_seat_md(key):
     if state == "current" and cli_found is False:
         state = "orphan"                          # 标记块在位，但客户端已经没了
     if state == "current":
-        rows.append({"level": "ok", "path": md_p, "note": "%s · 标记块·本版" % t.md_name})
+        rows.append({"level": "ok", "path": md_p, "note": "%s · 标记块·已部署" % t.md_name})
     elif state == "orphan":
         rows.append({"level": "warn", "path": md_p,
                      "note": "%s · 标记块在位，但未检测到 %s 可执行文件 —— 这份不会被读取"
@@ -1118,7 +1034,7 @@ def card_seat_md(key):
         rows.append({"level": "dim", "path": t.label,
                      "note": "PATH / npm 全局 / npx 缓存都没找到；已卸载，或装在自定义路径"})
     elif state == "stale":
-        rows.append({"level": "warn", "path": md_p, "note": "标记块在但哈希旧（apply 自动升级）"})
+        rows.append({"level": "warn", "path": md_p, "note": "未部署（内容与本版不一致 —— 点一次部署即恢复）"})
     else:
         rows.append({"level": "warn", "path": md_p, "note": "未部署（无标记块）"})
 
@@ -1141,8 +1057,8 @@ def card_seat_md(key):
                 "value": (os.path.basename(cli_where) if cli_found
                           else ("未检测到" if cli_found is False else "—")),
                 "ok": cli_found is not False},
-               {"name": "标记块", "value": {"current": "本版", "stale": "旧版",
-                                            "orphan": "本版·无客户端", "none": "未部署"}.get(state, state),
+               {"name": "标记块", "value": {"current": "已部署", "stale": "未部署",
+                                            "orphan": "已部署·无客户端", "none": "未部署"}.get(state, state),
                 "ok": state == "current"},
                {"name": "路由 skills", "value": "%d / %d" % (ours, total) if total else "未投放",
                 "ok": ours > 0},
@@ -1210,7 +1126,7 @@ _PATCH_GROUPS = [
     ("skill", "技能投放", ("技能目录（路由三拍 + mature-fiction）", "技能目录")),
 ]
 
-# 状态判定：与部署面的 want 对齐 = 本版；有标记/存在 = 已装；否则未装。
+# 状态判定：与部署面的 want 对齐 = 已部署；有标记/存在 = 已装；否则未装。
 def _patch_state(f, card_state):
     if not f.get("exists"):
         return "missing"
@@ -1225,11 +1141,11 @@ def _patch_state(f, card_state):
 
 
 def _skill_rows(skills_root, card_state):
-    """把技能目录展开成逐技能行：每个子目录一行，SKILL.md 在且带路由标记 = 本版。
+    """把技能目录展开成逐技能行：每个子目录一行，SKILL.md 在且带路由标记 = 已部署。
 
     三态：带 pojia-route-skill 标记 = current；SKILL.md 在但没标记 = external
     （外来技能 —— ctf-*、mature-fiction 这类别的来源装的，不是部署产物，
-    判「旧版」是误导）；连 SKILL.md 都没有 = missing。
+    判「未部署」是误导）；连 SKILL.md 都没有 = missing。
     """
     rows = []
     if not skills_root or not os.path.isdir(skills_root):
@@ -1517,6 +1433,7 @@ def cmd_instr_apply(seat, name):
     文件名跟着候选走（Argon.md → ~/.codex/Argon.md），config.toml 的
     model_instructions_file 指针同步改写 —— 不是只换内容。
     """
+    _docs_touch()
     m_ = mod()
     if seat != "codex":
         return {"ok": False, "error": "暂只支持 codex 席位的指令部署"}
@@ -1615,6 +1532,7 @@ def cmd_instr_disable(seat):
     与 cmd_instr_apply 对称 —— 对应界面上那张开关拨回左边。
     删除前先把文件和 config 备份到 editor-backup。
     """
+    _docs_touch()
     m_ = mod()
     if seat != "codex":
         return {"ok": False, "error": "暂只支持 codex 席位的指令部署"}
@@ -1659,10 +1577,11 @@ def cmd_instr_disable(seat):
 
 
 def cmd_instr_toggle(seat, name, on):
-    """指令文件的滑块：拨右 = 部署这一份，落点一起写；拨左 = 还原。
+    """指令文件的滑块：拨右 = 立刻部署这一份，拨左 = 立刻还原。
 
     ChatGPT / WorkBuddy / Claude / Hermes / ZCode 各用各的引擎，正文互不共享。
     """
+    _docs_touch()
     if seat == "dsh":
         # DSH 只有一个指令源：拨右 = 写入 AGENTS.md 标记块，拨左 = 摘掉标记块
         st = _dsh_state()
@@ -1932,28 +1851,38 @@ DOC_MIRRORS = {
     "targets/codex/AGENTS.md",
 }
 
-# 注入开关的状态文件：id（相对路径）→ false 表示不注入。
-# 改名 / 移动源件是错的 —— 那会让引擎找不到源、生成脚本对不上；
-# 开关只动这张表，真正的合成在 deploy 时按表拼装。
+# 旧版共享开关表：只作为迁移来源。新状态按 Agent 写到 _doc_inject_<agent>.json。
 DOC_STATE_FILE = os.path.join(ROOT, "状态", "_doc_inject.json")
 
-# 用户备注：id（相对路径）→ 一句话。存 状态/_doc_notes.json，不进 content/targets，
-# 免得把 GUI 的元数据混进注入源件。
+# 旧版共享备注表：只作为迁移来源。新备注写到 _doc_notes_<agent>.json。
 DOC_NOTES_FILE = os.path.join(ROOT, "状态", "_doc_notes.json")
 
 
-def _doc_notes():
-    """读备注表。文件损坏时先备份，再当空表 —— 不能因为解析失败就把用户备注冲掉。
+def _doc_notes_path(agent):
+    a = _agent_key(agent)
+    if not a:
+        return DOC_NOTES_FILE
+    return os.path.join(ROOT, "状态", "_doc_notes_%s.json" % a)
 
-    旧版按 `.md.off` 存过键，读的时候统一折回原文件名，否则改名方案留下的备注
-    会"看起来消失了"。
+
+def _doc_notes(agent=""):
+    """读这个 Agent 的备注表；旧共享表只做首次迁移。
+
+    文件损坏时先备份，再当空表 —— 不能因为解析失败就把用户备注冲掉。
+    早期版本按 `.md.off` 存过键，读的时候统一折回原文件名。
     """
+    path = _doc_notes_path(agent)
+    if path != DOC_NOTES_FILE and not os.path.exists(path) and os.path.isfile(DOC_NOTES_FILE):
+        try:
+            shutil.copyfile(DOC_NOTES_FILE, path)
+        except OSError:
+            pass
     try:
-        with open(DOC_NOTES_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             d = json.load(f)
     except ValueError:
         try:
-            shutil.copyfile(DOC_NOTES_FILE, DOC_NOTES_FILE + ".bad-%d" % int(time.time()))
+            shutil.copyfile(path, path + ".bad-%d" % int(time.time()))
         except OSError:
             pass
         return {}
@@ -1967,17 +1896,15 @@ def _doc_notes():
     return out
 
 
-def _doc_notes_save(d):
-    """原子写：先写临时文件再替换，进程中途退出也不会留下半截 JSON。
-
-    半截文件下次读会走 ValueError，用户所有备注就"重启后消失"了。
-    """
-    tmp = DOC_NOTES_FILE + ".tmp"
+def _doc_notes_save(d, agent=""):
+    """原子写这个 Agent 的备注表。"""
+    path = _doc_notes_path(agent)
+    tmp = path + ".tmp"
     try:
-        os.makedirs(os.path.dirname(DOC_NOTES_FILE), exist_ok=True)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(d, f, ensure_ascii=False, indent=1)
-        os.replace(tmp, DOC_NOTES_FILE)
+        os.replace(tmp, path)
         return True
     except OSError:
         try:
@@ -1997,6 +1924,16 @@ def _doc_skip(rel):
 
 def _doc_rel(p):
     return os.path.relpath(os.path.abspath(p), ROOT).replace("\\", "/")
+
+
+def _user_doc(path):
+    """是不是指令页新建/导入的用户文件（头或尾带归属标记）。"""
+    try:
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
+            t = f.read()
+        return "<!-- pojia:user-doc " in t[:400] or "<!-- pojia:user-doc " in t[-400:]
+    except OSError:
+        return False
 
 
 def _doc_cat(rel, agent):
@@ -2034,16 +1971,28 @@ def _doc_allowed(path):
     return low.endswith(".md") or low.endswith(".md.off")
 
 
-def _doc_enabled(p):
-    """文件存在且没被开关关掉。"""
+def _agent_key(agent):
+    a = str(agent or "").strip().lower()
+    return {"wb": "workbuddy"}.get(a, a)
+
+
+def _doc_state_path(agent):
+    a = _agent_key(agent)
+    if not a:
+        return DOC_STATE_FILE
+    return os.path.join(ROOT, "状态", "_doc_inject_%s.json" % a)
+
+
+def _doc_enabled(p, agent=""):
+    """文件存在且没被这个 Agent 的开关关掉。"""
     if not os.path.isfile(p):
         return False
-    off = _doc_state().get(_doc_rel(p))
+    off = _doc_state(agent).get(_doc_rel(p))
     return off is not False
 
 
 def _doc_base(p):
-    """兼容旧版 .off 改名方案：把 <x>.md.off 还原成 <x>.md。"""
+    """兼容早期的 .off 改名方案：把 <x>.md.off 还原成 <x>.md。"""
     return p[:-4] if p.lower().endswith(".md.off") else p
 
 
@@ -2055,41 +2004,47 @@ def _doc_actual(p):
     return off if os.path.isfile(off) else ""
 
 
-def _doc_state():
-    """读开关表。缺文件 / 坏 JSON 一律当"全开"。"""
+def _doc_state(agent=""):
+    """读这个 Agent 的开关表。旧共享表只作为迁移来源，之后各写各的。"""
+    path = _doc_state_path(agent)
+    if path != DOC_STATE_FILE and not os.path.exists(path) and os.path.isfile(DOC_STATE_FILE):
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            shutil.copyfile(DOC_STATE_FILE, path)
+        except OSError:
+            pass
     try:
-        with open(DOC_STATE_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             d = json.load(f)
         return d if isinstance(d, dict) else {}
     except (OSError, ValueError):
         return {}
 
 
-def _doc_state_save(d):
-    """原子写：先落 .tmp 再 os.replace。
-
-    非原子写在崩溃 / 被杀时会留下半截 JSON，读回一律当"全开" —— 用户刚关掉的
-    文档会在重启后又出现"怎么都关不掉"。
-    """
+def _doc_state_save(d, agent=""):
+    """原子写这个 Agent 的表；不同 Agent 不再互相覆盖。"""
+    path = _doc_state_path(agent)
     try:
-        os.makedirs(os.path.dirname(DOC_STATE_FILE), exist_ok=True)
-        tmp = DOC_STATE_FILE + ".tmp"
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(d, f, ensure_ascii=False, indent=1, sort_keys=True)
-        os.replace(tmp, DOC_STATE_FILE)
+        os.replace(tmp, path)
         return True
     except OSError:
         return False
 
 
-def _doc_set_enabled(rel, on):
-    d = _doc_state()
+def _doc_set_enabled(rel, on, agent=""):
+    d = _doc_state(agent)
     key = _doc_rel(os.path.join(ROOT, _doc_base(rel)))
     if on:
         d.pop(key, None)
     else:
         d[key] = False
-    return _doc_state_save(d)
+    ok = _doc_state_save(d, agent)
+    _docs_touch()
+    return ok
 
 
 # 注入动作的元信息：哪个席位最近一次换指令 / 关闭注入是什么时候。
@@ -2196,9 +2151,14 @@ def _doc_scan_seat(agent, label):
     if not spec:
         return {"ok": False, "error": "未知席位：%s" % agent}
     home = sd.home_of(agent)
+    try:
+        if getattr(sd, "repair_leaf_defaults", None):
+            sd.repair_leaf_defaults(agent)
+    except Exception:
+        pass
     v = sd.verify(agent)
     st = sd.state(agent)
-    notes = _doc_notes()
+    notes = _doc_notes(agent)
     o = sd.opts(agent)
     out = []
     lib = sd.lib_dir(agent)
@@ -2213,10 +2173,12 @@ def _doc_scan_seat(agent, label):
         if not p or not os.path.isfile(p):
             continue
         is_active = fn == active
+        cat = "custom" if fn.startswith("custom_") else "instruction"
         out.append({
-            "id": _doc_rel(p), "path": p, "name": fn, "cat": "instruction",
+            "id": _doc_rel(p), "path": p, "name": fn, "cat": cat,
             "size": os.path.getsize(p), "exists": True,
             "enabled": is_active, "active": is_active, "deployable": True,
+            "userDoc": _user_doc(p),
             "note": ("注入中 · 写入 %s" % os.path.basename(spec["primary"])) if is_active
                     else "拨右把它部署为 %s 的指令文件" % spec["label"],
             "labels": [_label("指令源", "info"),
@@ -2334,7 +2296,7 @@ def _dsh_skill_on(sid):
     """单个路由 skill 的开关：叶子统一开关表优先，没登记就看 DSH 自己的表。"""
     leaf = os.path.join(ROOT, "content", "routes", "leaves", sid + ".md")
     if os.path.isfile(leaf):
-        return _doc_enabled(leaf)
+        return _doc_enabled(leaf, "dsh")
     return _dsh_state().get("dsh:skill/%s" % sid) is not False
 
 
@@ -2347,7 +2309,7 @@ def _doc_scan_dsh(label):
     m = mod()
     t = m.TARGETS["dsh"]()
     home = t.dsh_home()
-    notes = _doc_notes()
+    notes = _doc_notes("dsh")
     st = _dsh_state()
     astate, apath, anote, abytes = _dsh_agents(t)
     sstate, sn = _dsh_skill_state(t)
@@ -2366,11 +2328,13 @@ def _doc_scan_dsh(label):
         os.path.basename(seed)
     for p in cands:
         fn = os.path.basename(p)
-        is_active = st.get("pack_on") is not False
+        is_active = (st.get("pack_on") is not False) and (fn == active_name)
+        cat = "custom" if fn.startswith("custom_") else "instruction"
         out.append({
-            "id": _doc_rel(p), "path": p, "name": fn, "cat": "instruction",
+            "id": _doc_rel(p), "path": p, "name": fn, "cat": cat,
             "size": os.path.getsize(p), "exists": True,
             "enabled": is_active, "active": is_active, "deployable": True,
+            "userDoc": _user_doc(p),
             "note": ("注入中 · 写入 ~/.dsh/AGENTS.md") if is_active
                     else "拨右把它部署为 DSH 的提示词",
             "labels": [_label("指令源", "info"),
@@ -2378,7 +2342,6 @@ def _doc_scan_dsh(label):
                               "ok" if is_active else "muted")],
             "memo": notes.get(_doc_rel(p), ""),
         })
-        active_name = fn if is_active else active_name
 
     # 2) AGENTS.md 标记块（落点）
     out.append({
@@ -2465,7 +2428,7 @@ def _doc_scan(agent):
         if rel in seen:
             return
         seen.add(rel)
-        enabled = _doc_enabled(real)
+        enabled = _doc_enabled(real, agent)
         out.append({
             "id": rel,
             "path": os.path.abspath(real),
@@ -2525,8 +2488,13 @@ def _doc_scan_codex(label):
     if ad is None:
         return {"ok": False, "error": "engine/codex_deploy.py 缺失"}
     home = ad.home_of("codex")
-    state = _doc_state()
-    notes = _doc_notes()
+    state = _doc_state("codex")
+    notes = _doc_notes("codex")
+    try:
+        if getattr(ad, "repair_leaf_defaults", None):
+            ad.repair_leaf_defaults()
+    except Exception:
+        pass
     v = ad.verify("codex")
     by_path = {c["path"]: c for c in v["checks"]}
     st = ad.state()
@@ -2542,10 +2510,12 @@ def _doc_scan_codex(label):
             continue
         p = os.path.join(lib, fn)
         is_active = fn == active
+        cat = "custom" if fn.startswith("custom_") else "instruction"
         out.append({
-            "id": _doc_rel(p), "path": p, "name": fn, "cat": "instruction",
+            "id": _doc_rel(p), "path": p, "name": fn, "cat": cat,
             "size": os.path.getsize(p), "exists": True,
             "enabled": is_active, "active": is_active, "deployable": True,
+            "userDoc": _user_doc(p),
             "note": ("注入中 · 部署到 ~/.codex/prompts/%s" % fn) if is_active
                     else "拨右把它部署为 ChatGPT 的指令文件",
             "labels": [_label("指令源", "info"),
@@ -2637,8 +2607,13 @@ def _doc_scan_wb(label):
     if wd is None:
         return {"ok": False, "error": "engine/workbuddy_deploy.py 缺失"}
     home = wd.home_of()
-    state = _doc_state()
-    notes = _doc_notes()
+    state = _doc_state("workbuddy")
+    notes = _doc_notes("workbuddy")
+    try:
+        if getattr(wd, "repair_leaf_defaults", None):
+            wd.repair_leaf_defaults()
+    except Exception:
+        pass
     v = wd.verify("wb")
     by_path = {os.path.normcase(c["path"]): c for c in v["checks"]}
     st = wd.state()
@@ -2653,10 +2628,12 @@ def _doc_scan_wb(label):
             continue
         p = os.path.join(lib, fn)
         is_active = fn == active
+        cat = "custom" if fn.startswith("custom_") else "instruction"
         out.append({
-            "id": _doc_rel(p), "path": p, "name": fn, "cat": "instruction",
+            "id": _doc_rel(p), "path": p, "name": fn, "cat": cat,
             "size": os.path.getsize(p), "exists": True,
             "enabled": is_active, "active": is_active, "deployable": True,
+            "userDoc": _user_doc(p),
             "note": ("注入中 · 写入 WorkBuddy 自定义指令与 32 份模板政策块" if is_active
                      else "拨右把它部署为 WorkBuddy 的指令源"),
             "labels": [_label("指令源", "info"),
@@ -2769,7 +2746,7 @@ def _doc_finish(out, agent, label, home, cats=None):
         order = _DOC_CAT_ORDER
         names = _DOC_CAT_NAME
     out.sort(key=lambda it: (order.get(it["cat"], 99), it["name"].lower()))
-    notes = _doc_notes()
+    notes = _doc_notes(agent)
 
     def memo_of(it):
         """按 id 找备注；再按旧键兜底（codex:skill/<id> ↔ leaves/<id>.md）。"""
@@ -2836,12 +2813,9 @@ def _inside(p):
         return False
 
 
-def cmd_doc_memo(rel, memo):
-    """给某份文档写一句备注（存 状态/_doc_notes.json，不碰源件）。
-
-    ChatGPT 页的 id（codex:agents / codex:config / codex:skill/<id>）直接用 id 当键 ——
-    备注是本地元数据，不需要文件落在项目里；本机落点（~/.codex）同理。
-    """
+def cmd_doc_memo(rel, memo, agent=""):
+    """给某份文档写一句备注（按 Agent 存，不碰源件）。"""
+    agent = _agent_key(agent) or "codex"
     text = (memo or "").strip()
     if len(text) > 200:
         return {"ok": False, "error": "备注最多 200 字"}
@@ -2858,12 +2832,12 @@ def cmd_doc_memo(rel, memo):
             if not _doc_actual(p):
                 return {"ok": False, "error": "文件不存在：%s" % rel}
             key = _doc_rel(p)
-    notes = _doc_notes()
+    notes = _doc_notes(agent)
     if text:
         notes[key] = text
     else:
         notes.pop(key, None)
-    if not _doc_notes_save(notes):
+    if not _doc_notes_save(notes, agent):
         return {"ok": False, "error": "备注写盘失败"}
     return {"ok": True, "id": key, "memo": text}
 
@@ -2888,7 +2862,7 @@ def _seat_toggle(sd, seat, flag, want):
 def _seat_skill_toggle(sd, seat, sid, want):
     leaf = os.path.join(ROOT, "content", "routes", "leaves", sid + ".md")
     if os.path.isfile(leaf):
-        ok = _doc_set_enabled(_doc_rel(leaf), want)
+        ok = _doc_set_enabled(_doc_rel(leaf), want, seat)
     else:
         st = sd.state(seat)
         st["seat:skill/%s" % sid] = bool(want)
@@ -2917,7 +2891,7 @@ def _wb_toggle(doc_id, want):
         sid = doc_id[len("wb:skill/"):]
         leaf = os.path.join(ROOT, "content", "routes", "leaves", sid + ".md")
         if os.path.isfile(leaf):
-            ok = _doc_set_enabled(_doc_rel(leaf), want)
+            ok = _doc_set_enabled(_doc_rel(leaf), want, "workbuddy")
         else:
             st = wd.state()
             st["wb:skill/%s" % sid] = bool(want)
@@ -3063,9 +3037,9 @@ def _wb_read_landing(doc_id):
                 "hint": "这是落点说明与已写入内容；正文请在「指令文件」里改"}
     if doc_id == "wb:templates":
         files = wd.policy_files()
-        lines = ["# 模板政策块落点（只读）", "",
-                 "WorkBuddy 安装目录里有 %d 份提示词模板带 <content_policy> 块：" % len(files),
-                 "部署时把同一份指令正文整块替换进去。正文在「指令文件」里编辑。", ""]
+        lines = ["# 提示词补丁落点（只读）", "",
+                 "WorkBuddy 安装目录与插件树里共有 %d 份模板 / product.json：" % len(files),
+                 "部署时做安全段挖除 + 中性工作区块注入（workspace_environment / delivery_baseline）。", ""]
         for p in files:
             lines.append("- " + p)
         return {"ok": True, "id": doc_id, "path": os.path.dirname(files[0]) if files else home,
@@ -3100,14 +3074,14 @@ def _codex_toggle(doc_id, want):
             ad.save_state(st)
             return {"ok": True, "id": doc_id, "enabled": bool(want),
                     "note": "已%s · 下次部署后生效" % ("启用" if want else "停用")}
-        ok = _doc_set_enabled(key, want)
+        ok = _doc_set_enabled(key, want, "codex")
         return {"ok": ok, "id": doc_id, "enabled": bool(want),
                 "note": ("已启用 · 下次部署会重新投放" if want
                          else "已停用 · 下次部署会撤下这一份 skill")}
     p = os.path.abspath(os.path.join(ROOT, _doc_base(doc_id)))
     if not _doc_allowed(p):
         return {"ok": False, "error": "不允许操作：%s" % doc_id}
-    ok = _doc_set_enabled(_doc_rel(p), want)
+    ok = _doc_set_enabled(_doc_rel(p), want, "codex")
     return {"ok": ok, "id": doc_id, "enabled": bool(want),
             "note": ("已启用 · 下次部署会重新投放" if want else "已停用 · 下次部署会撤下这一份 skill")}
 
@@ -3118,7 +3092,7 @@ def _codex_skill_on(sid):
     if key.startswith("codex:"):
         st = ad.state() if ad else {}
         return st.get(key) is not False
-    return _doc_enabled(os.path.join(ROOT, key))
+    return _doc_enabled(os.path.join(ROOT, key), "codex")
 
 
 def _dsh_toggle(doc_id):
@@ -3135,8 +3109,8 @@ def _dsh_toggle(doc_id):
         sid = doc_id[len("dsh:skill/"):]
         leaf = os.path.join(ROOT, "content", "routes", "leaves", sid + ".md")
         if os.path.isfile(leaf):
-            want = not _doc_enabled(leaf)
-            ok = _doc_set_enabled(_doc_rel(leaf), want)
+            want = not _doc_enabled(leaf, "dsh")
+            ok = _doc_set_enabled(_doc_rel(leaf), want, "dsh")
         else:
             want = st.get(doc_id) is False
             st[doc_id] = bool(want)
@@ -3148,7 +3122,20 @@ def _dsh_toggle(doc_id):
     return {"ok": False, "error": "未知开关：%s" % doc_id}
 
 
-def cmd_doc_toggle(rel):
+def _codex_note_leaf_toggle(on):
+    """用户手动拨 SKILL 叶子时记一笔，避免状态页的遗留态自愈把用户选择顶掉。"""
+    try:
+        ad = _codex_deploy()
+        if ad is None:
+            return
+        st = ad.state()
+        st["leaves_manual_off"] = not bool(on)
+        ad.save_state(st)
+    except Exception:
+        pass
+
+
+def cmd_doc_toggle(rel, agent=""):
     """每个文档的注入开关：写状态表，不动盘上的源件。
 
     关闭只是把这份文档从"合成清单"里摘掉，源文件一个字节不改 ——
@@ -3178,7 +3165,7 @@ def cmd_doc_toggle(rel):
             sid = rest[len("skill/"):]
             leaf = os.path.join(ROOT, "content", "routes", "leaves", sid + ".md")
             if os.path.isfile(leaf):
-                return _seat_skill_toggle(sd, seat, sid, not _doc_enabled(leaf))
+                return _seat_skill_toggle(sd, seat, sid, not _doc_enabled(leaf, seat))
             return _seat_skill_toggle(sd, seat, sid, st.get("seat:skill/%s" % sid) is False)
         return {"ok": False, "error": "未知开关：%s" % rel}
     if rel.startswith("wb:"):
@@ -3190,7 +3177,7 @@ def cmd_doc_toggle(rel):
         if rel.startswith("wb:skill/"):
             sid = rel[len("wb:skill/"):]
             leaf = os.path.join(ROOT, "content", "routes", "leaves", sid + ".md")
-            want = (not _doc_enabled(leaf)) if os.path.isfile(leaf) \
+            want = (not _doc_enabled(leaf, "workbuddy")) if os.path.isfile(leaf) \
                 else (st.get(rel) is False)
             return _wb_toggle(rel, want)
         return {"ok": False, "error": "未知开关：%s" % rel}
@@ -3212,21 +3199,24 @@ def cmd_doc_toggle(rel):
         return {"ok": False, "error": "这是部署快照，不能停用：它跟着实际注入内容自动同步"}
     if not _doc_actual(p):
         return {"ok": False, "error": "文件不存在：%s" % base_rel}
-    was_on = _doc_enabled(p)
-    if not _doc_set_enabled(base_rel, not was_on):
+    agent = _agent_key(agent) or "codex"
+    was_on = _doc_enabled(p, agent)
+    if not _doc_set_enabled(base_rel, not was_on, agent):
         return {"ok": False, "error": "开关状态写盘失败"}
     note = "已启用 · 重新部署后生效" if not was_on else "已停用 · 重新部署后生效"
     if base_rel in DOC_GENERATED:
         note = ("已启用 · 下次生成按钮重新生成并部署后生效" if not was_on
                 else "已停用 · 引擎改用内置兜底骨架，不属于生成产物、可随拨随生效")
     if base_rel.startswith("content/routes/leaves/"):
+        if agent in ("codex", ""):
+            _codex_note_leaf_toggle(not was_on)
         note = ("已启用 · 重新部署后 skill 会重新投放" if not was_on
                 else "已停用 · 下次部署会撤下这一份 skill")
     return {"ok": True, "id": base_rel, "path": p,
             "enabled": not was_on, "note": note}
 
 
-def cmd_doc_toggle_many(items, on):
+def cmd_doc_toggle_many(items, on, agent=""):
     """批量开关：一次桥调用写完，界面只等一趟。
 
     items = [{"id": 相对路径, "on": true/false}]；单项失败不影响其余，
@@ -3234,7 +3224,9 @@ def cmd_doc_toggle_many(items, on):
     """
     if not isinstance(items, list):
         return {"ok": False, "error": "items 必须是数组"}
+    agent = _agent_key(agent) or "codex"
     done, failed = [], []
+    touched_leaf = False
     for it in items:
         rel = (it or {}).get("id") if isinstance(it, dict) else it
         want = bool((it or {}).get("on", on)) if isinstance(it, dict) else bool(on)
@@ -3244,7 +3236,7 @@ def cmd_doc_toggle_many(items, on):
                 if not rel.startswith("codex:"):
                     # 折成叶子路径后走通用表，别再按 codex: 处理
                     p2 = os.path.abspath(os.path.join(ROOT, rel))
-                    ok2 = _doc_set_enabled(rel, want) if _doc_allowed(p2) else False
+                    ok2 = _doc_set_enabled(rel, want, agent) if _doc_allowed(p2) else False
                     (done if ok2 else failed).append(
                         {"id": rel, "enabled": want} if ok2
                         else {"id": rel, "error": "写盘失败"})
@@ -3259,26 +3251,135 @@ def cmd_doc_toggle_many(items, on):
             failed.append({"id": rel, "error": "不允许操作"})
             continue
         base_rel = _doc_rel(p)
+        if base_rel.startswith("content/routes/leaves/"):
+            touched_leaf = True
         if base_rel == "targets/codex/codex-unlock-instructions.md":
             failed.append({"id": base_rel, "error": "部署快照不可停用"})
             continue
         if not _doc_actual(p):
             failed.append({"id": base_rel, "error": "文件不存在"})
             continue
-        if not _doc_set_enabled(base_rel, want):
+        if not _doc_set_enabled(base_rel, want, agent):
             failed.append({"id": base_rel, "error": "写盘失败"})
             continue
         done.append({"id": base_rel, "enabled": want})
+    if touched_leaf and _agent_key(agent) in ("codex", ""):
+        try:
+            leaves = _routes_mod().leaf_ids()
+            all_off = all(not _doc_enabled(os.path.join(ROOT, "content", "routes",
+                                                        "leaves", sid + ".md"), agent)
+                          for sid in leaves)
+            _codex_note_leaf_toggle(not all_off)
+        except Exception:
+            pass
     return {"ok": True, "done": done, "failed": failed,
             "onCount": sum(1 for d in done if d["enabled"]),
             "offCount": sum(1 for d in done if not d["enabled"])}
 
 
+DOCS_CACHE_DIR = os.path.join(ROOT, "状态", "_docs_cache")
+DOCS_DIRTY_FILE = os.path.join(ROOT, "状态", "_docs_dirty")
+
+
+def _docs_touch():
+    """任何文档写操作后打一个脏标记，让列表缓存键变化。"""
+    try:
+        os.makedirs(os.path.dirname(DOCS_DIRTY_FILE), exist_ok=True)
+        with open(DOCS_DIRTY_FILE, "w", encoding="utf-8") as f:
+            f.write(str(time.time_ns()))
+    except OSError:
+        pass
+
+
+def _docs_cache_key(agent):
+    """文档列表缓存键：状态文件 + 源件目录 mtime。
+
+    指令页每次切换 Agent 都会新起一个 bridge 进程（main.js 的 callBridge 是
+    一次性子进程），所以内存缓存跨不过去，必须落盘。键带上开关表/备注/部署
+    状态/源码目录的 mtime；开关、新建、删除、部署都会让键变化。
+    """
+    key = [agent]
+    home = os.path.expanduser("~")
+    for p in (_doc_state_path(agent), _doc_notes_path(agent),
+              DOC_STATE_FILE, DOC_NOTES_FILE, DOC_META_FILE, DOCS_DIRTY_FILE,
+              os.path.join(ROOT, "状态", "_wb_deploy.json"),
+              os.path.join(ROOT, "状态", "_codex_deploy.json"),
+              os.path.join(ROOT, "状态", "_%s_deploy.json" % _agent_key(agent)),
+              os.path.join(ROOT, "content"),
+              os.path.join(ROOT, "content", "seats"),
+              os.path.join(ROOT, "targets"),
+              os.path.join(ROOT, "targets", "workbuddy", "instructions"),
+              os.path.join(home, ".workbuddy"),
+              os.path.join(home, ".workbuddy", "skills")):
+        try:
+            key.append(os.stat(p).st_mtime_ns)
+        except OSError:
+            key.append(0)
+    # 各 Agent 自己的指令目录：外部新建/删除文件也能让缓存失效
+    targets = os.path.join(ROOT, "targets")
+    try:
+        for n in sorted(os.listdir(targets)):
+            d = os.path.join(targets, n, "instructions")
+            try:
+                key.append("%s|%s" % (n, os.stat(d).st_mtime_ns))
+            except OSError:
+                key.append("%s|0" % n)
+    except OSError:
+        pass
+    return key
+
+
+def _docs_cache_load(agent, key):
+    p = os.path.join(DOCS_CACHE_DIR, agent + ".json")
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        if d.get("key") == key and isinstance(d.get("result"), dict):
+            return d["result"]
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _docs_cache_save(agent, key, result):
+    try:
+        os.makedirs(DOCS_CACHE_DIR, exist_ok=True)
+        p = os.path.join(DOCS_CACHE_DIR, agent + ".json")
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"key": key, "result": result}, f, ensure_ascii=False)
+        os.replace(tmp, p)
+    except OSError:
+        pass
+
+
 def cmd_docs(agent):
-    return _doc_scan(agent if agent in _DOC_AGENT_MAP else "codex")
+    a = agent if agent in _DOC_AGENT_MAP else "codex"
+    key = _docs_cache_key(a)
+    hit = _docs_cache_load(a, key)
+    if hit is not None:
+        return hit
+    res = _doc_scan(a)
+    _docs_cache_save(a, key, res)
+    return res
 
 
-def _doc_scan_all():
+def cmd_docs_warm():
+    """后台预热：一次进程内扫完所有 Agent，把列表写进磁盘缓存。
+
+    渲染层在首屏画完后调一次；之后切换 Agent 直接读缓存（毫秒级）。
+    """
+    done = []
+    for a in ("codex", "workbuddy", "dsh", "claude", "hermes", "zcode"):
+        try:
+            cmd_docs(a)
+            done.append(a)
+        except Exception:
+            pass
+    return {"ok": True, "agents": done}
+
+
+def _doc_scan_all(agent="codex"):
     """全库汇总（保留给命令行用，界面不再提供入口）。"""
     out = []
     seen = set()
@@ -3295,7 +3396,7 @@ def _doc_scan_all():
         if rel in seen:
             return
         seen.add(rel)
-        enabled = _doc_enabled(real)
+        enabled = _doc_enabled(real, agent)
         out.append({
             "id": rel, "path": os.path.abspath(real), "name": os.path.basename(p),
             "cat": _doc_cat(_doc_rel(p), ""), "size": os.path.getsize(real), "exists": True,
@@ -3340,7 +3441,7 @@ def _doc_scan_all():
             it["active"] = it["enabled"] and it["name"] == active_name
 
     out.sort(key=lambda it: (_DOC_CAT_ORDER.get(it["cat"], 99), it["name"].lower()))
-    notes = _doc_notes()
+    notes = _doc_notes("codex")
     for it in out:
         it["memo"] = notes.get(_doc_rel(_doc_base(it["path"])), "")
     counts = {}
@@ -3384,7 +3485,7 @@ def _codex_edit_path(doc_id):
     return "", ""
 
 
-def cmd_doc_read(rel):
+def cmd_doc_read(rel, agent=""):
     """整文件读出（编辑用）。ChatGPT 页的 id 折到项目里的源件。"""
     path, note = (_codex_edit_path(rel) if rel.startswith("codex:")
                   else _wb_edit_path(rel) if rel.startswith("wb:") else ("", ""))
@@ -3428,7 +3529,7 @@ def cmd_doc_read(rel):
         except Exception:
             kw = ""
     return {"ok": True, "id": _doc_rel(real), "path": real, "content": content,
-            "size": sz, "editable": True, "enabled": _doc_enabled(real),
+            "size": sz, "editable": True, "enabled": _doc_enabled(real, agent),
             "keywords": kw,
             "generated": base_rel in DOC_GENERATED or base_rel.startswith("content/routes/leaves/")}
 
@@ -3456,6 +3557,7 @@ def _write_outside(doc_id, path, content):
 
 def cmd_doc_write(rel, content):
     """写回 md（停用的 .md.off 也能写）。先备份原内容到 状态/editor-backup。"""
+    _docs_touch()
     if rel.startswith("codex:") or rel.startswith("wb:"):
         path, note = (_codex_edit_path(rel) if rel.startswith("codex:")
                       else _wb_edit_path(rel))
@@ -3488,32 +3590,112 @@ def cmd_doc_write(rel, content):
             "size": len(new), "note": "已写回 · 备份在 状态/editor-backup"}
 
 
+def _agent_instr_dir(agent):
+    """某个 Agent 自己的指令候选目录（各席位互不共享）。"""
+    if agent not in _DOC_AGENT_MAP:
+        return ""
+    return os.path.join(ROOT, "targets", agent, "instructions")
+
+
 def cmd_doc_new(agent, cat, name):
-    """在 content/seats/ 下新建 custom_<name>.md（统一落点，好备份、好迁移）。"""
+    """在当前 Agent 自己的指令目录里新建候选，而不是共享的 content/seats。
+
+    - 指令文件 / 自定义：写到 targets/<agent>/instructions/
+      instruction → <name>.md；custom → custom_<name>.md
+    - AGENTS.md / config.toml / SKILL.md 是固定落点，没有“新建”语义，明确拒绝。
+    """
+    _docs_touch()
+    agent = (agent or "").strip().lower()
+    if agent not in _DOC_AGENT_MAP:
+        return {"ok": False, "error": "未知 Agent：%s" % (agent or "(空)")}
     if not re.fullmatch(r"[A-Za-z0-9_\-]{1,40}", name or ""):
         return {"ok": False, "error": "名称只允许字母 / 数字 / _ / -（1-40 字符）"}
-    p = os.path.join(CONTENT, "seats", "custom_%s.md" % name)
-    if os.path.exists(p):
+    cat = (cat or "instruction").strip().lower()
+    if cat not in ("instruction", "custom"):
+        return {"ok": False,
+                "error": "「%s」是固定落点，不能新建文件；请切到「指令文件」再新建"
+                         % _DOC_CAT_NAME.get(cat, cat)}
+    lib = _agent_instr_dir(agent)
+    os.makedirs(lib, exist_ok=True)
+    fname = ("custom_%s.md" % name) if cat == "custom" else (name + ".md")
+    p = os.path.join(lib, fname)
+    if os.path.exists(p) or os.path.exists(p + ".off"):
         return {"ok": False, "error": "同名文件已存在：%s" % _doc_rel(p)}
     title = _DOC_CAT_NAME.get(cat, "自定义")
+    head = ("<!-- pojia:user-doc agent=%s cat=%s -->\n"
+            "<!-- %s · %s -->\n\n# %s\n\n" % (agent, cat, title, agent, name))
     try:
         with open(p, "wb") as f:
-            f.write(("<!-- %s · %s -->\n\n# %s\n\n" % (title, agent, name)).encode("utf-8"))
+            f.write(head.encode("utf-8"))
     except OSError as e:
         return {"ok": False, "error": str(e)}
-    return {"ok": True, "id": _doc_rel(p), "path": p}
+    return {"ok": True, "id": _doc_rel(p), "path": p, "agent": agent, "cat": cat}
+
+
+def cmd_doc_import(agent, src):
+    """把外部 .md 导入当前 Agent 自己的指令目录。
+
+    文件内容原样保留（只补一个归属标记），文件名冲突时自动加 -2/-3。
+    """
+    _docs_touch()
+    agent = (agent or "").strip().lower()
+    if agent not in _DOC_AGENT_MAP:
+        return {"ok": False, "error": "未知 Agent：%s" % (agent or "(空)")}
+    src = os.path.abspath(os.path.expanduser(src or ""))
+    if not os.path.isfile(src):
+        return {"ok": False, "error": "文件不存在：%s" % src}
+    stem, ext = os.path.splitext(os.path.basename(src))
+    if ext.lower() not in (".md", ".markdown"):
+        return {"ok": False, "error": "只支持导入 .md / .markdown 文件"}
+    try:
+        with open(src, "rb") as f:
+            raw = f.read()
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+    if b"\x00" in raw[:4096]:
+        return {"ok": False, "error": "看起来是二进制文件，不是 Markdown"}
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = raw.decode("gbk", "replace")
+    if not text.strip():
+        return {"ok": False, "error": "文件是空的"}
+
+    safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", stem).strip(" .") or "imported"
+    lib = _agent_instr_dir(agent)
+    os.makedirs(lib, exist_ok=True)
+    p = os.path.join(lib, safe + ".md")
+    n = 2
+    while os.path.exists(p) or os.path.exists(p + ".off"):
+        p = os.path.join(lib, "%s-%d.md" % (safe, n))
+        n += 1
+    marker = "<!-- pojia:user-doc agent=%s cat=instruction imported -->" % agent
+    if "pojia:user-doc" not in text[-400:]:
+        text = text.rstrip("\r\n") + "\n\n" + marker + "\n"
+    try:
+        with open(p, "wb") as f:
+            f.write(text.encode("utf-8"))
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "id": _doc_rel(p), "path": p,
+            "agent": agent, "name": os.path.basename(p)}
 
 
 def cmd_doc_delete(rel):
-    """删自定义 md；内置 / 生成产物不让删。"""
+    """删用户自建 md；内置 / 生成产物不让删。"""
+    _docs_touch()
     p = os.path.abspath(os.path.join(ROOT, rel))
     if not _doc_allowed(p):
         return {"ok": False, "error": "不允许删除：%s" % rel}
     base = os.path.basename(p)
-    if not re.fullmatch(r"custom_[A-Za-z0-9_\-]+\.md", base):
-        return {"ok": False, "error": "只允许删除 custom_*.md 自建文件"}
     if not os.path.isfile(p):
         return {"ok": False, "error": "文件不存在"}
+    user_built = bool(re.fullmatch(r"custom_[A-Za-z0-9_\-]+\.md", base))
+    if not user_built:
+        # 指令文件页新建/导入的普通 <name>.md：只认归属标记（头或尾）
+        user_built = _user_doc(p)
+    if not user_built:
+        return {"ok": False, "error": "只允许删除本项目自建的指令文件"}
     try:
         os.remove(p)
     except OSError as e:
@@ -3635,8 +3817,13 @@ def cmd_write(target, index, content):
 
 
 def cmd_status(targets):
-    m = mod()  # 预热：模块加载是全局惰性的，别让第一次调用落在工作线程里
-    want = m.sha1_short("|" + m.POLICY_BASE + "|" + m.OVERLAY + "|False")
+    # 只有 wb 走新引擎，不需要为了它 import 7000 行的主脚本；
+    # 其它席位仍要 mod() 预热，避免第一次加载落在工作线程里。
+    if any(k != "wb" for k in targets):
+        m = mod()
+        want = m.sha1_short("|" + m.POLICY_BASE + "|" + m.OVERLAY + "|False")
+    else:
+        want = ""
 
     def one(k):
         try:
@@ -4317,8 +4504,11 @@ def main(argv):
                               (argv[3] if len(argv) > 3 else "1") not in ("0", "false", "off")))
     elif cmd == "docs":
         emit(cmd_docs(argv[1] if len(argv) > 1 else "codex"))
+    elif cmd == "docs-warm":
+        emit(cmd_docs_warm())
     elif cmd == "doc-read":
-        emit(cmd_doc_read(argv[1] if len(argv) > 1 else ""))
+        emit(cmd_doc_read(argv[1] if len(argv) > 1 else "",
+                          argv[2] if len(argv) > 2 else ""))
     elif cmd == "doc-write":
         try:
             content = base64.b64decode(argv[2] if len(argv) > 2 else "").decode("utf-8")
@@ -4330,10 +4520,14 @@ def main(argv):
         emit(cmd_doc_new(argv[1] if len(argv) > 1 else "codex",
                          argv[2] if len(argv) > 2 else "custom",
                          argv[3] if len(argv) > 3 else ""))
+    elif cmd == "doc-import":
+        emit(cmd_doc_import(argv[1] if len(argv) > 1 else "codex",
+                            argv[2] if len(argv) > 2 else ""))
     elif cmd == "doc-delete":
         emit(cmd_doc_delete(argv[1] if len(argv) > 1 else ""))
     elif cmd == "doc-toggle":
-        emit(cmd_doc_toggle(argv[1] if len(argv) > 1 else ""))
+        emit(cmd_doc_toggle(argv[1] if len(argv) > 1 else "",
+                            argv[2] if len(argv) > 2 else ""))
     elif cmd == "doc-toggle-many":
         # doc-toggle-many <base64 JSON [{"id":..,"on":..}]>
         try:
@@ -4341,10 +4535,12 @@ def main(argv):
         except Exception:
             emit({"ok": False, "error": "doc-toggle-many 参数必须是 JSON 数组的 base64"})
             return 2
-        emit(cmd_doc_toggle_many(payload, True))
+        emit(cmd_doc_toggle_many(payload, True,
+                                 argv[2] if len(argv) > 2 else ""))
     elif cmd == "doc-memo":
         emit(cmd_doc_memo(argv[1] if len(argv) > 1 else "",
-                          argv[2] if len(argv) > 2 else ""))
+                          argv[2] if len(argv) > 2 else "",
+                          argv[3] if len(argv) > 3 else ""))
     elif cmd == "patches":
         tgt = argv[1] if len(argv) > 1 else ""
         emit(cmd_patches(tgt))

@@ -147,6 +147,10 @@ def pack_name():
         return name
     cands = sorted(n for n in os.listdir(INSTR_LIB) if n.lower().endswith(".md")) \
         if os.path.isdir(INSTR_LIB) else []
+    # 默认源保持原版（Argon → unlock），可选包（haiou / gemini 等）只能手动切
+    for pref in ("Argon.md", "unlock.md"):
+        if pref in cands:
+            return pref
     return cands[0] if cands else ""
 
 
@@ -319,7 +323,8 @@ def _enabled_fn():
     那样拿到的模块没有 enabled，报 `module 'doc_inject' has no attribute 'enabled'`。
     统一走 _doc_inject()：它按文件路径显式加载并做完整性校验。
     """
-    return _doc_inject().enabled
+    di = _doc_inject()
+    return lambda p: di.enabled(p, "codex")
 
 
 def skill_on(sid):
@@ -329,11 +334,14 @@ def skill_on(sid):
     · 父类目：默认投放，只有状态表里显式记了 codex:skill/<id> = false 才撤。
     父类目没有同名叶子文件，不能拿"注入表缺键"当开关。
     """
+    st = state()
+    if st.get("skills") is False:
+        return False
     mod = _routes()
     leaf_p = os.path.join(mod.LEAVES_DIR, sid + ".md")
     if os.path.isfile(leaf_p):
         return _enabled_fn()(leaf_p)
-    return state().get("codex:skill/%s" % sid) is not False
+    return st.get("codex:skill/%s" % sid) is not False
 
 
 def _skill_items(all_items=False):
@@ -495,23 +503,82 @@ def enable_all():
     """把四路开关和指令页文档开关一起拨回「注入」—— 还原之后重新部署用。"""
     st = state()
     st.update({"pack": st.get("pack") or pack_name(), "pack_on": True,
-               "agents": True, "config": True, "skills": True})
+               "agents": True, "config": True, "skills": True,
+               "leaves_manual_off": False})
     for k in list(st):
         if k.startswith("codex:skill/") and st[k] is False:
             st[k] = True
     save_state(st)
     try:
         di = _doc_inject()
-        table = di._table()
+        table = di._table("codex")
         for k in list(table):
             if k.startswith("targets/codex/instructions/") or k.startswith("content/routes/leaves/"):
                 table.pop(k, None)          # 缺键 = 注入
-        di.set_table(table)
+        di.set_table(table, "codex")
     except Exception:
         pass
 
 
+def _all_leaf_markers_off():
+    """指令页 80 片叶子是否全被还原时打成了 false（旧版 restore 的遗留）。
+
+    这不是用户逐项关掉的正常状态：只要全 false，就视为「上次还原后还没
+    重新部署」，下一次部署按默认全开处理，避免卡片永远显示 6/86。
+    """
+    try:
+        mod = _routes()
+        table = _doc_inject()._table("codex")
+        leaves = mod.leaf_ids()
+        if not leaves:
+            return False
+        return all(table.get("content/routes/leaves/%s.md" % sid) is False
+                   for sid in leaves)
+    except Exception:
+        return False
+
+
+def _reset_leaf_markers():
+    try:
+        di = _doc_inject()
+        table = di._table("codex")
+        for sid in _routes().leaf_ids():
+            table.pop("content/routes/leaves/%s.md" % sid, None)
+        di.set_table(table, "codex")
+        return True
+    except Exception:
+        return False
+
+
+def repair_leaf_defaults():
+    """只读路径（卡片 / 指令页）遇到「80 片全 false + 全局 skills 仍开」时自愈。
+
+    这是旧版 restore 留下的矛盾态：全局开关说技能开着，注入表却把每片叶子
+    都关了。自愈只清叶子表，不动用户真正逐项关掉的混合状态。
+    """
+    st = state()
+    if st.get("skills") is False:
+        return False
+    if st.get("leaves_manual_off") is True:
+        return False
+    if not _all_leaf_markers_off():
+        return False
+    _reset_leaf_markers()
+    for k in list(st):
+        if k.startswith("codex:skill/") and st[k] is False:
+            st[k] = True
+    save_state(st)
+    return True
+
+
 def deploy(seat="codex", opts_override=None, dry=False):
+    # 旧版 restore 会把 80 片叶子全写成 false；之后从部署页/指令页重新部署时
+    # 不是「用户逐项关掉」，而是遗留态。清掉这些 false，默认恢复全量投放。
+    if not dry:
+        o0 = dict(opts())
+        o0.update({k: v for k, v in (opts_override or {}).items() if v is not None})
+        if o0.get("skills", True) and _all_leaf_markers_off():
+            _reset_leaf_markers()
     spec = plan(seat, opts_override)
     home = spec["home"]
     if not spec["writes"]:
@@ -865,7 +932,7 @@ def restore(seat="codex"):
 
     st = state()
     st.update({"pack_on": False, "agents": False, "config": False, "skills": False,
-               "toml_pointer": None,
+               "toml_pointer": None, "leaves_manual_off": False,
                "restoredAt": time.strftime("%Y-%m-%d %H:%M:%S")})
     save_state(st)
 
@@ -873,18 +940,18 @@ def restore(seat="codex"):
     # 而不是清空整表（清空等于"缺键 = 注入"，会把刚关掉的又全打开）。
     try:
         doc_inject = _doc_inject()
-        table = doc_inject._table()
+        table = doc_inject._table("codex")
         for name in sorted(os.listdir(INSTR_LIB)) if os.path.isdir(INSTR_LIB) else []:
             if name.lower().endswith(".md"):
                 table[doc_inject.rel(os.path.join(INSTR_LIB, name))] = False
         mod = _routes()
         leaves = set(mod.leaf_ids())
         for sid, _body in _skill_items(all_items=True):
-            if sid in leaves:
-                table["content/routes/leaves/%s.md" % sid] = False
-            else:
+            if sid not in leaves:
                 st["codex:skill/%s" % sid] = False   # 父类目开关在部署状态表
-        doc_inject.set_table(table)
+        # 叶子不写全局 leaf 表：它被所有席位共用，codex 还原一次会让
+        # wb / claude / hermes / zcode 的 80 片叶子全变 false。
+        doc_inject.set_table(table, "codex")
         save_state(st)
     except Exception:
         pass

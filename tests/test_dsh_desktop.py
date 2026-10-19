@@ -266,7 +266,7 @@ class BridgeFoldTests(unittest.TestCase):
         self.assertNotIn("pojia", b.ORDER)
 
     def test_33_desktop_card_state_when_nothing_deployed(self):
-        """什么都没部署时徽章必须报 none —— 不能写「已部署 · 旧版」。"""
+        """什么都没部署时徽章必须报 none —— 不能写成已部署。"""
         b = self._bridge()
         state, dsum = b._desktop_card_state("absent", "absent")
         self.assertEqual(state, "none")

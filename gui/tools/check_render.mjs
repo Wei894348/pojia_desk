@@ -171,7 +171,7 @@ check('滑块挂了 seat（桥要按席位查快照）', sliderCur.dataset.seat 
 const cardNone = buildCard(CARD('wb', { state: 'none' }));
 check('未部署卡：滑块在「还原」位（off）', !cardNone.querySelector('.slider').classList.contains('on'));
 const cardStale = buildCard(CARD('wb', { state: 'stale' }));
-check('旧版卡：滑块也在部署位（on）', cardStale.querySelector('.slider').classList.contains('on'));
+check('内容不一致卡：滑块在还原位（未部署）', !cardStale.querySelector('.slider').classList.contains('on'));
 check('滑块态文案映射齐四档',
   ['current', 'stale', 'none', 'broken'].every((s) => {
     const c = buildCard(CARD('wb', { state: s }));

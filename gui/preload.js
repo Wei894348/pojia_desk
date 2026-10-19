@@ -1,4 +1,4 @@
-// 破甲工作台 · preload —— 渲染层唯一的对外通道
+// Muse 工作台 · preload —— 渲染层唯一的对外通道
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('pojia', {
@@ -22,13 +22,15 @@ contextBridge.exposeInMainWorld('pojia', {
   instrDisable: (seat) => ipcRenderer.invoke('pojia:instrDisable', seat),
   instrToggle: (seat, name, on) => ipcRenderer.invoke('pojia:instrToggle', { seat, name, on }),
   docs: (agent) => ipcRenderer.invoke('pojia:docs', agent),
-  docRead: (id) => ipcRenderer.invoke('pojia:docRead', id),
+  docsWarm: () => ipcRenderer.invoke('pojia:docsWarm'),
+  docImport: (agent) => ipcRenderer.invoke('pojia:docImport', agent),
+  docRead: (id, agent) => ipcRenderer.invoke('pojia:docRead', id, agent),
   docWrite: (id, b64) => ipcRenderer.invoke('pojia:docWrite', { id, b64 }),
   docNew: (agent, cat, name) => ipcRenderer.invoke('pojia:docNew', { agent, cat, name }),
   docDelete: (id) => ipcRenderer.invoke('pojia:docDelete', id),
-  docToggle: (id) => ipcRenderer.invoke('pojia:docToggle', id),
-  docToggleMany: (items) => ipcRenderer.invoke('pojia:docToggleMany', items),
-  docMemo: (id, memo) => ipcRenderer.invoke('pojia:docMemo', { id, memo }),
+  docToggle: (id, agent) => ipcRenderer.invoke('pojia:docToggle', id, agent),
+  docToggleMany: (items, agent) => ipcRenderer.invoke('pojia:docToggleMany', items, agent),
+  docMemo: (id, memo, agent) => ipcRenderer.invoke('pojia:docMemo', { id, memo, agent }),
   run: (action, targets, flags) => ipcRenderer.invoke('pojia:run', { action, targets, flags }),
   abort: () => ipcRenderer.send('pojia:abort'),
   setPython: (exe) => ipcRenderer.invoke('pojia:setPython', exe),

@@ -1,6 +1,8 @@
-// 破甲工作台 · 主进程
+// Muse 工作台 · 主进程
 // 与渲染层之间只走 IPC；所有真实操作都转发给 gui/bridge.py（它再驱动 console.py）。
 const { app, BrowserWindow, ipcMain, shell, dialog, screen } = require('electron');
+
+app.setName('Muse');
 const path = require('path');
 const fs = require('fs');
 const { spawn, spawnSync } = require('child_process');
@@ -170,7 +172,8 @@ function createWindow() {
   mainWin = new BrowserWindow({
     width, height, minWidth: Math.min(900, width), minHeight: Math.min(600, height),
     frame: false, backgroundColor: '#f3f4f6', show: false,
-    title: '破甲工作台',
+    title: 'Muse',
+    icon: path.join(ROOT, 'assets', 'logo.png'),
     webPreferences: {
       preload: path.join(GUI_DIR, 'preload.js'),
       contextIsolation: true, nodeIntegration: false, sandbox: false,
@@ -1986,8 +1989,27 @@ ipcMain.handle('pojia:docs', async (_e, agent) => {  try { return await callBrid
   catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
 
-ipcMain.handle('pojia:docRead', async (_e, id) => {
-  try { return await callBridge(['doc-read', id], 60000); }
+ipcMain.handle('pojia:docsWarm', async () => {
+  try { return await callBridge(['docs-warm'], 120000); }
+  catch (e) { return { ok: false, error: String(e.message || e) }; }
+});
+
+ipcMain.handle('pojia:docImport', async (_e, agent) => {
+  try {
+    const r = await dialog.showOpenDialog(mainWin, {
+      title: '导入指令 Markdown',
+      properties: ['openFile'],
+      filters: [{ name: 'Markdown', extensions: ['md', 'markdown'] }],
+    });
+    if (r.canceled || !r.filePaths.length) return { ok: false, canceled: true };
+    return await callBridge(['doc-import', agent || 'codex', r.filePaths[0]], 60000);
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) };
+  }
+});
+
+ipcMain.handle('pojia:docRead', async (_e, id, agent) => {
+  try { return await callBridge(['doc-read', id, agent || ''], 60000); }
   catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
 
@@ -2008,22 +2030,22 @@ ipcMain.handle('pojia:docDelete', async (_e, id) => {
   catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
 
-ipcMain.handle('pojia:docToggle', async (_e, id) => {
-  try { return await callBridge(['doc-toggle', id], 60000); }
+ipcMain.handle('pojia:docToggle', async (_e, id, agent) => {
+  try { return await callBridge(['doc-toggle', id, agent || ''], 60000); }
   catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
 
 // 批量开关：一次过桥写完，界面不用为每份文档各等一趟
-ipcMain.handle('pojia:docToggleMany', async (_e, items) => {
+ipcMain.handle('pojia:docToggleMany', async (_e, items, agent) => {
   try {
     const b64 = Buffer.from(JSON.stringify(items || []), 'utf8').toString('base64');
-    return await callBridge(['doc-toggle-many', b64], 90000);
+    return await callBridge(['doc-toggle-many', b64, agent || ''], 90000);
   } catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
 
 ipcMain.handle('pojia:docMemo', async (_e, payload) => {
-  const { id, memo } = payload || {};
-  try { return await callBridge(['doc-memo', id || '', memo || ''], 60000); }
+  const { id, memo, agent } = payload || {};
+  try { return await callBridge(['doc-memo', id || '', memo || '', agent || ''], 60000); }
   catch (e) { return { ok: false, error: String(e.message || e) }; }
 });
 

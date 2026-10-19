@@ -198,10 +198,10 @@ def test_codex():
             ok = False
             print("    [FAIL] AGENTS.md 不存在（第二注入位未部署）")
         elif ag_lv == "current":
-            print("    [OK  ] AGENTS.md 标记块: 本版（%d B）" % os.path.getsize(ag_p))
+            print("    [OK  ] AGENTS.md 标记块: 已部署（%d B）" % os.path.getsize(ag_p))
         elif ag_lv == "other":
             ok = False
-            print("    [FAIL] AGENTS.md 标记块哈希旧 —— 跑 apply 升级")
+            print("    [FAIL] AGENTS.md 标记块未部署（内容与本版不一致）—— 跑 apply")
         else:
             ok = False
             print("    [FAIL] AGENTS.md 无本工具标记块")
@@ -285,85 +285,40 @@ def test_dsh():
 
 
 def test_wb():
-    """WorkBuddy 验证：不能只打印状态，要落成判定。
+    """WorkBuddy 验证：按 workbuddy_deploy 的分层校验逐项落成判定。
 
-    判定项 = "wb revert 能撤掉的东西，apply 必须能补回来"：
-      ① 模板靶点：含政策块的模板全部是本版本宽松态
-      ② 命令闸门：codebuddy.js / codebuddy-headless.js 均已解锁
-      ③ 网页过滤：已解除（--full 档，build_args 默认开）
-      ④ 文件保护：所有靶点均已中和
-    （原实现直接 `return True`，是四个目标里唯一不做断言的 —— 所以网页过滤被
-     revert 撤掉后 test 依旧报「[OK] 通过」。）
+    覆盖范围（与 Susu 的 verify-install 同口径）：
+      身份层标记块 / 自定义指令 / 模板安全段与 Jinja / product.json 中性块 /
+      settings 权限位 / codebuddy* 的 R1/R2 / 削弱层与 Ask 模式。
+    反向断言（对抗式探针=0、安全段=0、旧标记=0）由补丁层自己完成。
     """
-    ok = True
-    args = build_args("wb")
-    t = m.TARGETS["wb"]()
-    print("  [WorkBuddy] 状态核对：")
-    n0 = len(m._log_buf)
+    import importlib.util
+    p = os.path.join(HERE, "workbuddy_deploy.py")
     try:
-        t.dump(args)
+        spec = importlib.util.spec_from_file_location("wb_deploy_test", p)
+        wd = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(wd)
+        v = wd.verify("wb")
     except Exception as e:
-        print("    [FAIL] 检测出错：%s" % e)
+        print("  [WorkBuddy] 校验出错：%s" % e)
         return False
-    rows = m._log_buf[n0:]
 
-    def grab(pat):
-        for ln in rows:
-            mm = re.search(pat, ln)
-            if mm:
-                return mm
-        return None
+    print("  [WorkBuddy] 分层核对：")
+    by_role = {}
+    for c in v["checks"]:
+        role = c.get("role") or "其他"
+        done, total = by_role.get(role, (0, 0))
+        by_role[role] = (done + (1 if c["ok"] else 0), total + 1)
+    for role in sorted(by_role):
+        done, total = by_role[role]
+        print("    [%s] %s: %d/%d" % ("OK  " if done == total else "FAIL", role, done, total))
 
-    mm = grab(r"含政策块 (\d+) 个，本版本宽松 (\d+) 个，旧人格宽松 (\d+) 个")
-    if mm:
-        pol, loose, other = int(mm.group(1)), int(mm.group(2)), int(mm.group(3))
-        good = pol > 0 and (loose + other) == pol
-        ok = ok and good
-        print("    [%s] 模板靶点: 含政策块 %d，本版本宽松 %d，旧人格宽松 %d"
-              % ("OK  " if good else "FAIL", pol, loose, other))
-    else:
-        print("    [WARN] 未读到模板靶点统计")
-
-    gates = []
-    for ln in rows:
-        mm = re.search(r"命令闸门 : (\S+)\s+(已解锁|未解锁)\s+网页过滤 (已解除|未解除)", ln)
-        if mm:
-            gates.append(mm.groups())
-    if gates:
-        bad = [g[0] for g in gates if g[1] != "已解锁"]
-        ok = ok and not bad
-        print("    [%s] 命令闸门: %d/%d 已解锁%s"
-              % ("OK  " if not bad else "FAIL", len(gates) - len(bad), len(gates),
-                 "" if not bad else "（未解锁：%s）" % ", ".join(bad)))
-        wf = [g[0] for g in gates if g[2] != "已解除"]
-        ok = ok and not wf
-        print("    [%s] 网页过滤: %d/%d 已解除%s"
-              % ("OK  " if not wf else "FAIL", len(gates) - len(wf), len(gates),
-                 "" if not wf else "（未解除：%s —— 跑 apply 补回）" % ", ".join(wf)))
-    else:
-        print("    [WARN] 未读到命令闸门状态")
-
-    mm = grab(r"文件保护 : (.+)$")
-    if mm:
-        val = mm.group(1).strip()
-        good = (val == "已中和")
-        ok = ok and good
-        print("    [%s] 文件保护: %s" % ("OK  " if good else "FAIL", val))
-    else:
-        print("    [WARN] 未读到文件保护状态")
-
-    # 身份层：prompt 末尾的 <identity_context> —— 不修就会盖掉前面注入的人格，
-    # 症状是"磁盘全绿、行为却是另一个人"。判定：SOUL/IDENTITY 全部注入 + 冲突行 0 残留。
-    mm = grab(r"身份层\s*: SOUL/IDENTITY 已注入 (\d+)/(\d+)，USER/MEMORY 冲突行残留 (\d+)")
-    if mm:
-        cur, tot, resid = int(mm.group(1)), int(mm.group(2)), int(mm.group(3))
-        good = (tot > 0 and cur == tot and resid == 0)
-        ok = ok and good
-        print("    [%s] 身份层: SOUL/IDENTITY 已注入 %d/%d，冲突行残留 %d"
-              % ("OK  " if good else "FAIL", cur, tot, resid))
-    else:
-        print("    [WARN] 未读到身份层状态（老版本脚本？跑 apply 补上）")
-    return ok
+    bad = [c for c in v["checks"] if not c["ok"]]
+    for c in bad[:12]:
+        note = (" — " + c["note"]) if c.get("note") else ""
+        print("    [FAIL] %s%s" % (c["path"], note))
+    print("    [%s] 总计 %d/%d" % ("OK  " if v["ok"] else "FAIL", v["done"], v["total"]))
+    return bool(v["ok"])
 
 
 def test_zcode():
@@ -934,8 +889,40 @@ def dispatch(target, action, extra=None):
     if action == "status":
         m.run_status(args, targets=tset)
     else:
-        m.run_action(args, action, targets=tset)
+        # apply / revert / dry 一律走席位引擎。
+        # 旧实现直接 m.run_action() —— 那是**旧版单文件引擎**，WB 走的是
+        # 「把共用 policy 整块塞进 <content_policy>」的老路径，而实际部署用的
+        # 是 workbuddy_deploy.py 的四落点引擎（写的是席位源 + pojia-wb-policy
+        # 哈希头）。两套口径并存 → 刚部署完，console 就说"旧人格 1 个"。
+        _run_seat_engines(tset, action, args)
     return 0
+
+
+def _run_seat_engines(tset, action, args):
+    """按席位分派到各自的部署引擎（与 gui/bridge.py 的 cmd_run 同口径）。"""
+    import subprocess
+    engine = os.path.join(HERE) if False else HERE
+    argv_action = {"apply": "apply", "revert": "restore", "dry-run": "deploy"}.get(action, action)
+    code = 0
+    for k in tset:
+        if k == "codex":
+            p = os.path.join(engine, "codex_deploy.py")
+            cmd = [sys.executable, p, argv_action]
+        elif k == "wb":
+            p = os.path.join(engine, "workbuddy_deploy.py")
+            cmd = [sys.executable, p, argv_action]
+        elif k in ("claude", "hermes", "zcode"):
+            p = os.path.join(engine, "seats_deploy.py")
+            cmd = [sys.executable, p, k, argv_action]
+        else:
+            # DSH：提示词在 ~/.dsh/AGENTS.md，安装目录补丁仍走主脚本
+            m.run_action(args, action, targets=[k])
+            continue
+        if action == "dry-run":
+            cmd.append("--dry")
+        r = subprocess.run(cmd)
+        code = code or (0 if r.returncode == 0 else 1)
+    return code
 
 
 def menu():

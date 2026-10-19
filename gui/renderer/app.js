@@ -1,20 +1,20 @@
-// 破甲工作台 · 渲染层逻辑 —— 2077 版：左菜单四视图 / 块状席位卡 / 部署⇄还原滑块 / 底部日志
+// Muse 工作台 · 渲染层逻辑 —— 2077 版：左菜单四视图 / 块状席位卡 / 部署⇄还原滑块 / 底部日志
 const $ = (id) => document.getElementById(id);
 const api = window.pojia;
 
 const STATE_MAP = {
-  current: { cls: 'on',     label: '已部署 · 本版' },
-  stale:   { cls: 'on',     label: '已部署 · 旧版' },
+  current: { cls: 'on',     label: '已部署' },
+  stale:   { cls: '',       label: '未部署' },
   none:    { cls: '',       label: '未部署' },
   broken:  { cls: 'err',    label: '未安装 / 异常' },
   foreign: { cls: '',       label: '外部配置' },
-  warn:    { cls: '',       label: '部分命中' },
+  warn:    { cls: '',       label: '部分部署' },
   orphan:  { cls: '',       label: 'CLI 未检测到' },
 };
 // 滑块态：卡上的部署状态 → 开关位置 + 文案
 const SLIDER_STATE = {
-  current: ['s-current', '本版'],
-  stale:   ['s-stale',   '旧版'],
+  current: ['s-current', '已部署'],
+  stale:   ['s-missing', '未部署'],
   none:    ['s-missing', '未部署'],
   broken:  ['s-missing', '未安装'],
   foreign: ['s-unknown', '外部'],
@@ -426,15 +426,18 @@ function buildCardBody(c) {
   });
   if (nDet) box.appendChild(detail);
 
-  // DSH 动作下拉（两张 DSH 卡共享 state.opts）
+  // DSH 动作下拉（两张 DSH 卡共享 state.opts）——放进动作排，和按钮同一行；
+  // 不再单独占一行，否则 DSH 卡与其它卡的动作区/滑块对不齐。
+  let optrow = null;
   if (c.key === 'dsh' || c.key === 'dsh-desktop') {
-    const optrow = document.createElement('div');
-    optrow.className = 'sliderwrap';
+    optrow = document.createElement('div');
+    optrow.className = 'copt';
     const lbl = document.createElement('span');
     lbl.className = 'sliderlbl';
-    lbl.textContent = '本次动作';
+    lbl.textContent = '动作';
     const sel = document.createElement('select');
     sel.className = 'skselect';
+    sel.title = '本次动作：只写提示词 / 只投放 skills / 两者都做';
     Object.entries(MODE_TEXT).forEach(([v, t]) => {
       const o = document.createElement('option');
       o.value = v;
@@ -450,12 +453,12 @@ function buildCardBody(c) {
     });
     optrow.appendChild(lbl);
     optrow.appendChild(sel);
-    box.appendChild(optrow);
   }
 
   // ── 动作排：明细 · 路径 · 日志（各一行点击动作） ──
   const acts = document.createElement('div');
   acts.className = 'cactions';
+  if (optrow) acts.appendChild(optrow);
   const mkAct = (label, fn, hot) => {
     const b = document.createElement('button');
     b.textContent = label;
@@ -503,7 +506,7 @@ function buildSlider(c) {
   lblR.className = 'sliderlbl rgt';
   lblR.textContent = '部署';
 
-  const isOn = c.state === 'current' || c.state === 'stale';
+  const isOn = c.state === 'current';
   slider.classList.toggle('on', isOn);
   slider.dataset.seat = c.key;
 
@@ -610,7 +613,7 @@ async function runRefresh(quiet, keys, force) {
       }
     });
     setStatus(bad ? (bad + ' / ' + want.length + ' 个目标需要处理')
-                  : (want.length + ' 个目标均为本版状态'), bad ? 'warn' : 'ok');
+                  : (want.length + ' 个目标均已部署'), bad ? 'warn' : 'ok');
   } catch (e) {
     toast('检测出错：' + (e.message || e), 'err');
   } finally {
@@ -645,7 +648,7 @@ async function boot() {
       toast('没找到可用的 Python，去「设置」里指定解释器', 'err');
       logLine('err', 'sys', '未找到 Python 解释器 —— 到「设置」页手动指定。');
     } else {
-      logHead('破甲工作台 v' + ((info.meta && info.meta.version) || '?') + ' · 解释器 ' + info.python);
+      logHead('Muse v' + ((info.meta && info.meta.version) || '?') + ' · 解释器 ' + info.python);
       if (info.meta && info.meta.route) {
         logLine('info', 'rt', '任务路由层 ' + info.meta.route.size + ' B · 关键段 '
           + info.meta.route.hit.length + ' / ' + (info.meta.route.hit.length + info.meta.route.miss.length));
@@ -659,11 +662,13 @@ async function boot() {
   }
   await refreshStatus(true);
 
-  if (typeof document !== 'undefined' && document.addEventListener) {
-    document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) refreshStatus(true);
-    });
+  // 后台预热指令页六个 Agent 的列表缓存：首屏画完后跑，切换 Agent 时直接读缓存
+  if (api.docsWarm) {
+    setTimeout(() => { api.docsWarm().catch(() => {}); }, 400);
   }
+
+  // 不再在窗口重新获得焦点时自动全量检测：检测只在部署/还原/切换指令/
+  // 回退快照这些“文件真的变了”的动作之后跑。外部手改文件用「刷新」或 F5。
 }
 
 // ────────────────────────── 执行动作 ──────────────────────────
@@ -850,7 +855,7 @@ async function loadSkills() {
     const tags = document.createElement('div');
     tags.className = 'sktags';
     rows.slice(0, 40).forEach((r) => {
-      const pill = PILL[r.state] || PILL.stale;
+      const pill = PILL[r.state] || PILL.missing;
       const t = document.createElement('span');
       t.className = 'sktag ' + (r.state === 'current' ? 'on' : '');
       const fn = (r.path || '').split(/[\\/]/).filter(Boolean).pop() || r.path;
@@ -950,6 +955,14 @@ function paintPmCats() {
     el.addEventListener('click', () => { PM_CAT = cat.id; paintPmCats(); paintPmGrid(); });
     box.appendChild(el);
   });
+  // 固定落点（AGENTS.md / config.toml / SKILL.md…）没有“新建”语义
+  const nb = $('btnPmNew');
+  if (nb) {
+    const can = !PM_CAT || PM_CAT === 'instruction' || PM_CAT === 'custom';
+    nb.disabled = !can;
+    nb.title = can ? '在当前 Agent 自己的指令目录中新建'
+                   : '当前分类是固定落点，不能新建；请切到「指令文件」';
+  }
 }
 
 function pmCatName(id) {
@@ -1003,7 +1016,15 @@ function paintPmGrid() {
   if (!list.length) {
     const e = document.createElement('div');
     e.className = 'pmempty';
-    e.textContent = '这个分类下还没有 Markdown 提示词';
+    const tx = document.createElement('div');
+    tx.textContent = '这个分类下还没有 Markdown 提示词';
+    e.appendChild(tx);
+    const imp = document.createElement('button');
+    imp.type = 'button';
+    imp.className = 'btn';
+    imp.textContent = '导入 .md 指令';
+    imp.addEventListener('click', importDoc);
+    e.appendChild(imp);
     box.appendChild(e);
     return;
   }
@@ -1091,7 +1112,20 @@ function buildDocRow(it) {
   btns.appendChild(iconBtn('pencil',
     (it.live ? '查看 / 编辑本机文件 · ' : '编辑 · ') + it.name,
     () => selectDoc(it.id), 'iconbtn'));
-  if (it.id.indexOf('seats/custom_') >= 0) {
+  // 指令候选：一键切到这一份（后端 irtoggle 会立刻写落点，不需要再点部署）
+  if (it.deployable && !it.active) {
+    const use = document.createElement('button');
+    use.type = 'button';
+    use.className = 'minibtn';
+    use.textContent = '设为当前';
+    use.title = '立即切到这份指令并写入当前 Agent 的落点';
+    use.addEventListener('click', (e) => {
+      e.stopPropagation();
+      applyInstr(it.name, it);
+    });
+    btns.appendChild(use);
+  }
+  if (it.id.indexOf('seats/custom_') >= 0 || it.userDoc) {
     btns.appendChild(iconBtn('trash', '删除这份自定义提示词', () => deleteDoc(it), 'iconbtn danger'));
   }
   foot.appendChild(meta);
@@ -1311,7 +1345,7 @@ async function editMemo(it) {
   });
   if (next === null) return;
   let r = null;
-  try { r = await api.docMemo(it.id, next); }
+  try { r = await api.docMemo(it.id, next, PM_AGENT); }
   catch (e) { r = { ok: false, error: String(e.message || e) }; }
   if (!r || r.ok === false) { toast('备注保存失败：' + ((r && r.error) || ''), 'err'); return; }
   toast(r.memo ? '备注已保存' : '备注已清除', 'ok');
@@ -1334,7 +1368,7 @@ async function toggleDoc(it, want) {
   it.enabled = want;
   updateDocRow(it);
   let r = null;
-  try { r = await api.docToggle(it.id); }
+  try { r = await api.docToggle(it.id, PM_AGENT); }
   catch (e) { r = { ok: false, error: String(e.message || e) }; }
   if (!r || r.ok === false) {
     it.enabled = !want;
@@ -1342,6 +1376,7 @@ async function toggleDoc(it, want) {
     toast((want ? '启用' : '停用') + '失败：' + ((r && r.error) || ''), 'err');
   } else {
     toast(it.name + (want ? ' 已启用' : ' 已停用') + ' —— 重新部署后生效', 'ok');
+    await refreshAgentStatus(PM_AGENT);
   }
   syncPmStatus();
 }
@@ -1353,7 +1388,7 @@ async function toggleMany(list, want) {
   list.forEach((it) => { it.enabled = want; updateDocRow(it); });
   let r = null;
   try {
-    r = await api.docToggleMany(list.map((it) => ({ id: it.id, on: want })));
+    r = await api.docToggleMany(list.map((it) => ({ id: it.id, on: want })), PM_AGENT);
   } catch (e) { r = { ok: false, error: String(e.message || e) }; }
   const failed = (r && r.failed) || [];
   if (!r || r.ok === false) {
@@ -1372,6 +1407,7 @@ async function toggleMany(list, want) {
     failed.length ? 'warn' : 'ok');
   syncPmStatus();
   paintPmBulk();
+  if (r && r.ok !== false) await refreshAgentStatus(PM_AGENT);
 }
 
 // 只重算状态面板与批量条上的计数，不重建列表
@@ -1403,6 +1439,18 @@ function paintPmBulk() {
   if (btns[1]) btns[1].disabled = !list.some((x) => x.enabled && !x.deployable);
 }
 
+// 指令页 Agent → 部署卡 key（切换指令后只刷新这一张卡）
+const AGENT_CARD = {
+  codex: 'codex', workbuddy: 'wb', dsh: 'dsh',
+  claude: 'claude', hermes: 'hermes', zcode: 'zcode',
+};
+
+async function refreshAgentStatus(agent) {
+  const key = AGENT_CARD[agent];
+  if (!key) return;
+  try { await refreshStatus(true, new Set([key]), true); } catch (_) { /* 忽略 */ }
+}
+
 // 破甲候选的开关：拨右 = 部署这一份（写 ~/.codex + 改 config 指针），
 // 拨左 = 关闭注入。两种状态互斥，换一份时旧的那份自动落回停用。
 async function applyInstr(name, it) {
@@ -1428,10 +1476,12 @@ async function applyInstr(name, it) {
         ? { tag: x.enabled ? '注入中' : '未部署', tone: x.enabled ? 'ok' : 'muted' } : lb);
       updateDocRow(x);
     });
-    toast(`已部署 ${name}` + (r.removed && r.removed.length ? `（清理旧文件：${r.removed.join('、')}）` : '')
-      + ' —— 重启客户端后生效', 'ok');
+    toast(`已切换 ${name} 并写入落点，不需要再点部署` + (r.removed && r.removed.length
+      ? `（清理旧文件：${r.removed.join('、')}）` : '')
+      + ' · 客户端下一轮/新会话读取', 'ok');
   }
   await refreshDocs();
+  if (r && r.ok !== false) await refreshAgentStatus(PM_AGENT);
 }
 
 async function disableInstr(name) {
@@ -1454,9 +1504,10 @@ async function disableInstr(name) {
         ? { tag: '未部署', tone: 'muted' } : lb);
       updateDocRow(x);
     });
-    toast('已关闭指令注入 —— 重启客户端后生效', 'ok');
+    toast('已关闭指令注入并撤下落点，不需要再点还原 · 客户端下一轮/新会话读取', 'ok');
   }
   await refreshDocs();
+  if (r && r.ok !== false) await refreshAgentStatus(PM_AGENT);
 }
 
 async function deleteDoc(it) {
@@ -1553,7 +1604,7 @@ async function selectDoc(id) {
   PM_SAVE_STATE = '';
   paintPmDirty();
   let d = null;
-  try { d = await api.docRead(id); }
+  try { d = await api.docRead(id, PM_AGENT); }
   catch (e) { d = { ok: false, error: String(e.message || e) }; }
   if (!d || d.ok === false) {
     $('pmHint').textContent = (d && d.error) || '读取失败';
@@ -1624,10 +1675,14 @@ async function saveDoc(auto) {
 
 async function newDoc() {
   const cat = PM_CAT || 'custom';
+  if (cat !== 'instruction' && cat !== 'custom') {
+    toast('「' + pmCatName(cat) + '」是固定落点，不能新建；请切到「指令文件」', 'warn');
+    return;
+  }
   const name = await askText({
     title: '新建指令',
     sub: pmCatName(cat) + ' · ' + (PM_AGENT || 'codex'),
-    hint: '名称只允许字母 / 数字 / _ / -，会落成 content/seats/custom_<名称>.md。',
+    hint: '名称只允许字母 / 数字 / _ / -；会创建在 targets/<当前 Agent>/instructions/ 下，只属于这个 Agent。',
     label: '名称',
     value: '',
     max: 40,
@@ -1641,6 +1696,24 @@ async function newDoc() {
   await refreshDocs();
   toast('已创建：' + (r.id || r.path), 'ok');
   await selectDoc(r.id);
+}
+
+async function importDoc() {
+  if (!api.docImport) { toast('当前版本不支持导入', 'warn'); return; }
+  setBusy(true, '正在导入指令……');
+  let r = null;
+  try { r = await api.docImport(PM_AGENT); }
+  catch (e) { r = { ok: false, error: String(e.message || e) }; }
+  setBusy(false);
+  if (r && r.canceled) return;
+  if (!r || r.ok === false) {
+    toast('导入失败：' + ((r && r.error) || ''), 'err');
+    return;
+  }
+  PM_CAT = 'instruction';
+  await refreshDocs();
+  toast('已导入 ' + (r.name || r.id) + ' 到当前 Agent', 'ok');
+  if (r.id) await selectDoc(r.id);
 }
 
 async function initPrompts() {
@@ -1671,6 +1744,7 @@ async function initPrompts() {
   });
   $('btnPmRefresh').addEventListener('click', refreshDocs);
   $('btnPmNew').addEventListener('click', newDoc);
+  if ($('btnPmImport')) $('btnPmImport').addEventListener('click', importDoc);
   // 页面内输入弹窗
   $('btnPmInputOk').addEventListener('click', () => closeAsk($('pmInputText').value));
   $('btnPmInputCancel').addEventListener('click', () => closeAsk(null));
@@ -1720,8 +1794,8 @@ async function initPrompts() {
 /* ── 补丁总览（指标卡 → 进度条 → 分组表 + 状态 pill）── */
 
 const PILL = {
-  current:  ['pill-cur', '本版'],
-  stale:    ['pill-stale', '旧版'],
+  current:  ['pill-cur', '已部署'],
+  stale:    ['pill-miss', '未部署'],
   missing:  ['pill-miss', '缺失'],
   external: ['pill-ext', '外来'],
 };
@@ -1767,8 +1841,8 @@ async function loadPatch() {
   const ext = allRows.filter((r) => r.state === 'external').length;
   const tracked = cur + stale + miss;
   const pct = tracked ? Math.round(cur / tracked * 100) : 0;
-  const stateTone = miss ? 'p-bad' : (stale ? 'p-warn' : 'p-ok');
-  const stateTxt = miss ? (miss + ' 个文件缺失') : (stale ? (stale + ' 个文件待更新') : '全部本版');
+  const stateTone = miss || stale ? 'p-warn' : 'p-ok';
+  const stateTxt = miss ? (miss + ' 个文件缺失') : (stale ? (stale + ' 个文件未部署') : '全部已部署');
   const dep = d.deploy || {};
   const extNote = ext ? ' · 另有外来 ' + ext : '';
   const mets = document.createElement('div');
@@ -1812,9 +1886,9 @@ async function loadPatch() {
       '<span>部署文件 · ' + stateTxt + extNote + '</span></div>' +
       '<div class="pmetric"><b style="font-size:13px">' +
         '<span class="pill ' + (miss ? 'pill-miss' : 'pill-cur') + '">缺失 ' + miss + '</span> ' +
-        '<span class="pill ' + (stale ? 'pill-stale' : 'pill-cur') + '">旧版 ' + stale + '</span> ' +
+        '<span class="pill ' + (stale ? 'pill-miss' : 'pill-cur') + '">未部署 ' + stale + '</span> ' +
         '<span class="pill ' + (ext ? 'pill-ext' : 'pill-cur') + '">外来 ' + ext + '</span> ' +
-        '<span class="pill pill-cur">本版 ' + cur + '</span></b>' +
+        '<span class="pill pill-cur">已部署 ' + cur + '</span></b>' +
       '<span>' + esc(dep.text || '部署状态：' + (d.state || '—')) + '</span></div>' +
       '<div class="pmetric"><b>' + pct + '%</b><span>关键段命中率</span></div>';
   }
@@ -1857,7 +1931,7 @@ async function loadPatch() {
     const tb = tbl.querySelector('tbody');
     rows.forEach((r, i) => {
       const idx = PATCH_FLAT.length - rows.length + i;
-      const pill = PILL[r.state] || PILL.stale;
+      const pill = PILL[r.state] || PILL.missing;
       const fn = (r.path || '').split(/[\\/]/).filter(Boolean).pop() || r.path;
       const dir = (r.path || '').slice(0, Math.max(0, (r.path || '').length - fn.length));
       const tr = document.createElement('tr');

@@ -192,8 +192,8 @@ DOC_INJECT = _load_doc_inject()
 
 
 def doc_on(path):
-    """这份文件是否参与注入。缺省参与；关掉的写在 状态/_doc_inject.json。"""
-    return True if DOC_INJECT is None else DOC_INJECT.enabled(path)
+    """这份文件是否参与 DSH 注入。缺省参与；关掉的写在 状态/_doc_inject_dsh.json。"""
+    return True if DOC_INJECT is None else DOC_INJECT.enabled(path, "dsh")
 
 
 # 各席位自己的托管源：这些也算「注入开关管着的文档」，关掉即退出托管。
@@ -2194,7 +2194,7 @@ class DshTarget:
             if lv == "current":
                 return "loose", "已注入人格+政策"
             if lv == "other":
-                return "other", "宽松态（人格哈希来自上一版）"
+                return "other", "未部署（内容与本版不一致 —— 加 --force 重新部署）"
             if kind == "persona_dynamic":
                 return "manual", "身份由 !!js 动态指定，脚本不碰（要改请手动）"
             if kind == "persona_clean":
@@ -2310,11 +2310,11 @@ class DshTarget:
         if not got:
             return "other", "标记块在，但没有版本哈希（可能是手改过）"
         if want and got != want:
-            return "other", "人格来自上一版（--force 可更新）"
+            return "other", "未部署（内容与本版不一致 —— 加 --force 重新部署）"
         if n >= self.AGENTS_MAX_BYTES:
             return "other", ("正文 %d 字节，已到 %d 预算上限 —— 模型看到的是截断版"
                              % (n, self.AGENTS_MAX_BYTES))
-        return "current", ("标记块 %d 字节，本版" % n)
+        return "current", ("标记块 %d 字节，已部署" % n)
 
     def deploy_agents(self, persona, want, mode="apply"):
         """把人格写进 <DSH_HOME>/AGENTS.md 的标记块（幂等）。
@@ -2519,7 +2519,7 @@ class DshTarget:
                     if lv == "current":
                         pass                       # 已经是最新，静默跳过
                     elif lv == "other":
-                        log("已是宽松版（人格来自别处），默认不重写；要统一成本脚本版本加 --force | %s"
+                        log("内容与本版不一致（未部署），默认不重写；加 --force 重新部署 | %s"
                             % rel_display(fp, b), "dg", "dsh")
                     continue
                 if mode == "dry-run":
@@ -3192,10 +3192,10 @@ class CodexTarget:
             if not inst_exists or os.path.getsize(target_p) == 0:
                 rows.append(("stale", target_p, "配置指过去了，但指令文件不存在或为空"))
             elif lv == "current":
-                rows.append(("loose", inst_p, "指令文件 %s（本脚本版本）" % _human_size(os.path.getsize(inst_p))))
+                rows.append(("loose", inst_p, "已部署 · 指令文件 %s" % _human_size(os.path.getsize(inst_p))))
                 rows.append(("loose", cfg_p, "顶层 model_instructions_file -> %s（新会话加载）" % target))
             else:
-                rows.append(("other", inst_p, "已部署，但是旧版简版指令（加 --force 可升级到统一人格）"))
+                rows.append(("other", inst_p, "未部署（内容与本版不一致 —— 加 --force 重新部署）"))
                 rows.append(("loose", cfg_p, "model_instructions_file -> %s" % target))
         elif target:
             rows.append(("strict", cfg_p, "model_instructions_file = %s（不是本工具的）" % target))
@@ -3218,9 +3218,9 @@ class CodexTarget:
             rows.append(("info", ag_p, "AGENTS.md 不存在（apply 会新建）"))
         elif ag_lv == "current":
             rows.append(("loose", ag_p,
-                         "AGENTS.md 标记块·本版（%s）" % _human_size(os.path.getsize(ag_p))))
+                         "已部署 · AGENTS.md 标记块（%s）" % _human_size(os.path.getsize(ag_p))))
         elif ag_lv == "other":
-            rows.append(("stale", ag_p, "AGENTS.md 标记块在但哈希旧（apply 自动升级）"))
+            rows.append(("stale", ag_p, "未部署（标记块内容与本版不一致 —— apply 重新部署）"))
         elif os.path.isfile(ag_p):
             rows.append(("info", ag_p, "AGENTS.md 无本工具标记块（apply 会合并，不动用户内容）"))
         if st:
@@ -3315,7 +3315,7 @@ class CodexTarget:
             return {"skip": 1}
         if lv == "other" and not getattr(args, "force", False):
             if not config_changed and not ag_changed:
-                log("已破甲（人格来自别的版本），默认不重写；要统一成本脚本版本加 --force。", "dg", "codex")
+                log("内容与本版不一致（未部署），默认不重写；加 --force 重新部署。", "dg", "codex")
                 self.sync_agents_snapshot(ag_block, dry=is_dry)
                 route_skills_apply("codex", home, "codex", dry=is_dry)
                 return {"skip": 1}
@@ -3331,13 +3331,13 @@ class CodexTarget:
         log("  第二注入位：%s（AGENTS.md 标记块 %s）"
             % (ag_p, {"": "无",
                       "current": "·本版",
-                      "other": "·哈希旧"}.get(self.agents_state(old_ag or "", want), "无")),
+                      "other": "·未部署"}.get(self.agents_state(old_ag or "", want), "无")),
             "dg", "codex")
         if is_dry:
             log("[预演] 需要改动：%s" % ("是" if changed else "否，已是最新"), "y", "codex")
             if ag_changed:
                 ag_act = ("新建标记块" if old_ag is None else
-                          ("升级标记块（哈希旧）"
+                          ("重新部署标记块（内容与本版不一致）"
                            if self.agents_state(old_ag, want) == "other" else
                            "合并标记块进现有文件"))
                 if leg_changed:
@@ -3815,9 +3815,9 @@ class ZcodeTarget:
         if not txt:
             rows.append(("none", ag_p, "未部署（AGENTS.md 不存在或为空）"))
         elif lv == "current":
-            rows.append(("loose", ag_p, "全局指令文件 %s（本脚本版本·去越狱腔）" % _human_size(os.path.getsize(ag_p))))
+            rows.append(("loose", ag_p, "已部署 · 全局指令文件 %s" % _human_size(os.path.getsize(ag_p))))
         else:
-            rows.append(("other", ag_p, "已存在但不是本版（旧越狱腔版本需 --force 升级）"))
+            rows.append(("other", ag_p, "未部署（内容与本版不一致，需 --force 重新部署）"))
         st = self.load_state(home)
         if st:
             rows.append(("info", st_p, "上次 %s @ %s" % (st.get("last_action", "?"),
@@ -3895,7 +3895,7 @@ class ZcodeTarget:
             self.sync_snapshot(instr, dry=getattr(args, "dry_run", False))
             return _with_cjs({"skip": 1})
         if lv == "other" and not getattr(args, "force", False):
-            log("AGENTS.md 已存在且不是本版（多半是旧越狱腔版本）；加 --force 升级。", "dg", "zcode")
+            log("AGENTS.md 已存在但与本版不一致；加 --force 重新部署。", "dg", "zcode")
             return _with_cjs({"skip": 1})
 
         changed = old.strip() != instr.strip()
@@ -4361,14 +4361,14 @@ class HomeMdTarget:
             rows.append(("none", md_p, "未部署（%s 不存在或为空）" % self.md_name))
         elif lv == "current":
             if found is False:
-                rows.append(("warn", md_p, "%s（标记块·本版，但未检测到 %s 可执行文件 —— 没人会读它）"
+                rows.append(("warn", md_p, "%s（已部署，但未检测到 %s 可执行文件 —— 没人会读它）"
                              % (_human_size(os.path.getsize(md_p)), self.label)))
             else:
-                rows.append(("loose", md_p, "%s（标记块·本版）" % _human_size(os.path.getsize(md_p))))
+                rows.append(("loose", md_p, "已部署 · %s" % _human_size(os.path.getsize(md_p))))
         elif lv == "stale":
-            rows.append(("stale", md_p, "标记块在但哈希旧（apply 自动升级，无需 --force）"))
+            rows.append(("stale", md_p, "未部署（标记块内容与本版不一致 —— apply 重新部署）"))
         else:
-            rows.append(("info", md_p, "用户自有文件，未含本版标记块（apply 会合并而非覆盖）"))
+            rows.append(("info", md_p, "用户自有文件，未含本工具标记块（apply 会合并而非覆盖）"))
         if found is True:
             rows.append(("info", where, "客户端可执行文件（会读取上面那个文件）"))
         elif found is False:
@@ -4948,7 +4948,7 @@ def cc_bin_apply(seat="claude"):
         total = sum(len(o) for o in hits.values())
         if total == 0:
             already += 1
-            log("[cc] 内置提示词已是本版（无原串残留）：%s" % p, "dg", seat)
+            log("[cc] 内置提示词已部署（无原串残留）：%s" % p, "dg", seat)
             # 保留上一次记下的备份路径 —— 否则"已是本版"这一轮会把备份记录抹掉，
             # cc_bin_restore 就再也找不到可还原的原件了。
             rec = {"path": p, "replacements": 0, "already": True}
@@ -6178,9 +6178,15 @@ class WorkBuddyTarget:
             "g" if install else "red", "wb")
         log("数据目录 : %s%s" % (data_dir, "" if os.path.isdir(data_dir) else "  (不存在)"), "", "wb")
         user, _src = load_user_persona(getattr(args, "persona", "") or "")
-        # 状态判定必须与 apply 同基准（席位哈希）：apply 写的是 seat_persona 的 want，
-        # 这里若用 build_policy 的通用哈希，会把已部署判成"旧人格"（2026-10-12 踩到）。
-        _pol, want = build_policy(user), seat_want("workbuddy", user)
+        # 模板政策块现在写的是**短块**（content/seats/workbuddy_custom.md），
+        # 不再塞整份人格 —— 所以判定基准是这份短块的哈希，不是席位人格哈希。
+        # 旧口径（loose_state + 席位 want）会把刚部署完的模板全判成"旧版"。
+        short_src = os.path.join(SEAT_DIR, "workbuddy_custom.md")
+        short = (read_text_safe(short_src) or "").strip("\r\n")
+        want_mark = ""
+        if short:
+            want_mark = "<!-- pojia-wb-policy h=%s -->" % sha1_short(
+                short + "|workbuddy-custom")
 
         targets = self.find_targets(data_dir, install)
         pol_n = loose_n = other_n = 0
@@ -6189,15 +6195,14 @@ class WorkBuddyTarget:
             if "<content_policy>" not in txt or not self.is_prompt_tpl(txt):
                 continue
             pol_n += 1
-            lv = loose_state(txt, want)
-            if lv == "current":
+            if want_mark and want_mark in txt:
                 loose_n += 1
-            elif lv == "other":
+            else:
                 other_n += 1
                 if getattr(args, "diagnose", False):
-                    log("  [other ] %s  （宽松态，人格哈希来自上一版）"
+                    log("  [other ] %s  （政策块内容与本版不一致）"
                         % rel_display(t, install, data_dir), "dg", "wb")
-        log("模板靶点 : 含政策块 %d 个，本版本宽松 %d 个，旧人格宽松 %d 个" % (pol_n, loose_n, other_n),
+        log("模板靶点 : 含政策块 %d 个，已部署 %d 个，未部署 %d 个" % (pol_n, loose_n, other_n),
             "g" if pol_n and (loose_n + other_n) == pol_n else "y", "wb")
 
         for p in self.js_files(install):
@@ -6226,7 +6231,16 @@ class WorkBuddyTarget:
 
         big = [p for p in self.identity_files(data_dir) if os.path.basename(p) in ID_BIG_FILES]
         if big:
-            cur = sum(1 for p in big if identity_state(read_text_safe(p) or "", want) == "current")
+            def _id_ok(p):
+                src = os.path.join(SEAT_DIR, {
+                    "SOUL.md": "workbuddy_soul.md",
+                    "IDENTITY.md": "workbuddy_identity.md"}.get(os.path.basename(p), ""))
+                body = (read_text_safe(src) or "").strip("\r\n") if os.path.isfile(src) else ""
+                if not body:
+                    return True
+                h = sha1_short(body + "|" + os.path.basename(p))
+                return "<!-- pojia-wb-policy h=%s -->" % h in (read_text_safe(p) or "")
+            cur = sum(1 for p in big if _id_ok(p))
             resid = self.identity_residue(data_dir)
             log("身份层   : SOUL/IDENTITY 已注入 %d/%d，USER/MEMORY 冲突行残留 %d" % (cur, len(big), resid),
                 "g" if (cur == len(big) and resid == 0) else "y", "wb")
@@ -6316,7 +6330,7 @@ class WorkBuddyTarget:
                     stats["skip"] += 1
                     continue
                 if lv == "other" and not getattr(args, "force", False) and clauses == 0:
-                    # 已是宽松版，只是人格哈希来自上一版 —— 默认不白写这两个大文件
+                    # 内容与本版不一致 —— 默认不白写这两个大文件
                     stats["skip"] += 1
                     stats["other"] = stats.get("other", 0) + 1
                     continue
@@ -6428,7 +6442,7 @@ class WorkBuddyTarget:
                 "g" if bad == 0 else "red", "wb")
 
         if stats.get("other"):
-            log("其中 %d 个已是宽松版、但人格哈希来自上一版 -> 默认跳过不重写"
+            log("其中 %d 个内容与本版不一致 -> 默认跳过不重写"
                 "（要统一成本脚本的人格，加 --force）" % stats["other"], "dg", "wb")
         log("小结 | 修复 %d / 跳过 %d / 错误 %d / 闸门 %d" %
             (stats["fixed"], stats["skip"], stats["err"], stats["gate"]), "", "wb")
@@ -6530,7 +6544,7 @@ class WorkBuddyTarget:
         for b in bigs:
             lines.append("| `%s` | %s | %s |" % (b["rel"], b["size"] if b["exists"] else "不存在",
                                                  ("`%s`" % b["sha256"][:16]) if b["exists"] else "-"))
-        lines += ["", "宽松模板：本版本 %d 个 / 旧人格 %d 个 / 合计 %d" % (loose, other, len(recs)), ""]
+        lines += ["", "模板：已部署 %d 个 / 未部署 %d 个 / 合计 %d" % (loose, other, len(recs)), ""]
         write_text(os.path.join(out, "当前提示词快照.md"), "\r\n".join(lines))
         log("快照已生成：%s" % out, "g", "wb")
         return out
