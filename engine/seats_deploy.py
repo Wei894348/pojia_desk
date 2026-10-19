@@ -423,11 +423,11 @@ def enable_all(seat):
     save_state(seat, st)
     try:
         di = _doc_inject()
-        table = di._table()
+        table = di._table(seat)
         for k in list(table):
             if k.startswith("content/routes/leaves/"):
                 table.pop(k, None)
-        di.set_table(table)
+        di.set_table(table, seat)
     except Exception:
         pass
 
@@ -487,7 +487,7 @@ def skill_on(seat, sid):
     mod = _routes()
     leaf = os.path.join(mod.LEAVES_DIR, sid + ".md")
     if os.path.isfile(leaf):
-        return _doc_inject().enabled(leaf)
+        return _doc_inject().enabled(leaf, seat)
     return state(seat).get("seat:skill/%s" % sid) is not False
 
 
@@ -866,10 +866,10 @@ def restore(seat):
     save_state(seat, st)
     try:
         di = _doc_inject()
-        table = di._table()
+        table = di._table(seat)
         for s in mod.leaf_ids():
             table["content/routes/leaves/%s.md" % s] = False
-        di.set_table(table)
+        di.set_table(table, seat)
     except Exception:
         pass
     return {"ok": True, "action": "restore", "seat": seat, "home": home,

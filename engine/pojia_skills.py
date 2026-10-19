@@ -118,7 +118,7 @@ def plan(seat: str, home: str = "") -> list:
         return []
     out = []
     for name, text in R.all_skills():
-        if not _leaf_on(name):
+        if not _leaf_on(name, seat):
             continue
         out.append((os.path.join(root, name, "SKILL.md"), with_mark(text)))
     return out
@@ -145,13 +145,13 @@ def _load_doc_inject():
     return mod
 
 
-def _leaf_on(name):
-    """叶子 / 类目的注入开关（状态/_doc_inject.json，键 = content/routes/leaves/<id>.md）。"""
+def _leaf_on(name, seat=""):
+    """叶子 / 类目的注入开关（状态/_doc_inject_<seat>.json，键 = content/routes/leaves/<id>.md）。"""
     p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                      "content", "routes", "leaves", name + ".md")
     if not os.path.isfile(p):
         return True                      # 父类目没有同名叶子文件：不受开关约束
-    return _load_doc_inject().enabled(p)
+    return _load_doc_inject().enabled(p, seat)
 
 
 def install(seat: str, write_fn, home: str = "", make_dirs: bool = True,
@@ -165,7 +165,7 @@ def install(seat: str, write_fn, home: str = "", make_dirs: bool = True,
     root = skill_root(seat, home)
     want = {os.path.normcase(p) for p, _t in items}
     # 只有"叶子 + 叶子被关"的组合才允许撤；父类目与未登记目录永远留着。
-    off_ids = {n for n in R.leaf_ids() if not _leaf_on(n)}
+    off_ids = {n for n in R.leaf_ids() if not _leaf_on(n, seat)}
     written, skipped, removed = [], [], []
     for path, text in items:
         old = ""

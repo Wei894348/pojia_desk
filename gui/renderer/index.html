@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:;">
-<title>破甲工作台</title>
+<title>Muse</title>
+<link rel="icon" href="../../assets/logo-64.png">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,8 +14,8 @@
   <!-- ── 左侧导航 ── -->
   <aside class="sidebar">
     <div class="side-logo">
-      <span class="logo-glyph">破</span>
-      <span class="logo-word gtitle">破甲工作台<i>POJIA WORKBENCH</i></span>
+      <img class="logo-img" src="../../assets/logo.png" alt="Muse">
+      <span class="logo-word gtitle">Muse<i>WORKBENCH</i></span>
     </div>
     <nav class="snavs">
       <button class="snav on" data-view="deploy"><span class="sglyph">◆</span>部署目标</button>
@@ -127,6 +128,10 @@
               <button class="btn" id="btnPmRefresh" title="重新扫描磁盘">
                 <svg class="bi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
                 重新扫描
+              </button>
+              <button class="btn" id="btnPmImport" title="从本机导入 .md 指令到当前 Agent">
+                <svg class="bi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>
+                导入指令
               </button>
               <button class="btn primary" id="btnPmNew" title="新建一条自定义指令">
                 <svg class="bi-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
@@ -288,7 +293,7 @@
           </div>
         </header>
         <div class="aboutbox">
-          <div class="about-big gtitle">破甲工作台 <span class="mono" id="aboutVer">v6.8</span></div>
+          <div class="about-big"><img class="about-logo" src="../../assets/logo.png" alt="Muse">Muse <span class="mono" id="aboutVer">v6.8</span></div>
           <div class="about-sub">七个席位 · 一个入口 · 部署 / 验证 / 恢复全程可逆 · 纯 Python 标准库</div>
           <div class="about-actions">
             <button class="btn primary" id="btnAboutUp">检查更新</button>
@@ -427,7 +432,7 @@
       <button class="minibtn" id="btnPatchReload" title="重新检测">刷新</button>
       <button class="wbtn close" id="btnPatchClose" title="关闭">✕</button>
     </div>
-    <div class="modalhint">每个席位都改了哪些文件、各是什么角色、当前是本版还是旧版 —— 一张表看完。点行直接编辑。</div>
+    <div class="modalhint">每个席位都改了哪些文件、各是什么角色、当前是已部署还是未部署 —— 一张表看完。点行直接编辑。</div>
     <div class="modalbody" id="patchBody"></div>
   </div>
 </div>
