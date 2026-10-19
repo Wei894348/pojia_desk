@@ -1,0 +1,27 @@
+{
+  "name": "@pojia/dsh-shield",
+  "version": "1.0.0",
+  "description": "Muse破甲 每轮重锁钩子 —— 把 AGENTS.md 里的人格约定在每个模型步骤前重新注入一次，解决长会话里提示词被稀释、滑出上下文的问题。协议段 order=-200 常驻置顶，pre-step 每轮补一条 TOOL LOCK。",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": {
+      "default": "./index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "protocol.md",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

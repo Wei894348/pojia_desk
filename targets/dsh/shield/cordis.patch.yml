@@ -1,0 +1,5 @@
+# Muse破甲 插件清单。
+# 这个文件由部署流程复制到 ~/.dsh/plugins/dsh-shield/cordis.patch.yml，
+# 并在 profile 的 cordis.patch.yml 里以 insert 方式挂载。
+- id: pojia-shield
+  name: "./index.js"

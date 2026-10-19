@@ -539,6 +539,17 @@ def _dsh_agents(t):
     return st, p, note, n
 
 
+def _dsh_shield_state(t):
+    """每轮重锁插件状态：返回 (state, 说明)。"""
+    fn = getattr(t, "shield_state", None)
+    if not fn:
+        return "absent", "不支持"
+    try:
+        return fn()
+    except Exception as e:
+        return "broken", "检测出错：%s" % e
+
+
 def _dsh_skill_state(t):
     """路由 skills（~/.dsh/skills）投放状态：返回 (state, 我们投了几份)。"""
     m = mod()
@@ -576,6 +587,10 @@ def _dsh_rows(t, astate, anote, apath, abytes, sstate, sn):
                  "path": os.path.join(t.dsh_home(), "skills"),
                  "note": "路由 skills · %s" % (
                      "已投放 %d 份" % sn if sstate == "current" else "未投放")})
+    shstate, shnote = _dsh_shield_state(t)
+    rows.append({"level": _LEVEL.get(shstate, "dim"),
+                 "path": os.path.join(t.dsh_home(), "plugins", "dsh-shield"),
+                 "note": "每轮重锁 · %s" % shnote})
     rows.append({"level": "dim", "path": "(生效方式)",
                  "note": "agent-instructions 在新会话首轮读取 AGENTS.md；"
                          "已开着的会话不会重读"})
