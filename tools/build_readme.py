@@ -52,7 +52,7 @@ def read_version() -> str:
 
 # ── 内置矢量图（代码原生，二进制资产不进库） ──────────────────────────────────
 
-HERO_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 260" width="1200" height="260" role="img" aria-label="破甲工作台 · 多目标人格注入控制台">
+HERO_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 260" width="1200" height="260" role="img" aria-label="Muse · 多目标人格注入控制台">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#0d1117"/><stop offset="1" stop-color="#161d26"/>
@@ -65,7 +65,7 @@ HERO_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 260" wid
   <g opacity=".18" stroke="#4d9fff" stroke-width="1">
     <path d="M0 60H1200M0 120H1200M0 180H1200M200 0V260M600 0V260M1000 0V260"/>
   </g>
-  <text x="64" y="112" fill="#e6edf3" font-family="Microsoft YaHei,Segoe UI,sans-serif" font-size="52" font-weight="700">破甲工作台</text>
+  <text x="64" y="112" fill="#e6edf3" font-family="Microsoft YaHei,Segoe UI,sans-serif" font-size="52" font-weight="700">Muse</text>
   <text x="64" y="156" fill="#8b949e" font-family="Microsoft YaHei,Segoe UI,sans-serif" font-size="20">pojia_desk · 多目标人格注入：部署 / 验证 / 恢复</text>
   <rect x="64" y="182" width="196" height="4" rx="2" fill="url(#ac)"/>
   <g font-family="Consolas,monospace" font-size="15" fill="#58a6ff">
@@ -74,7 +74,7 @@ HERO_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 260" wid
 </svg>
 """
 
-ARCH_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 420" width="1200" height="420" role="img" aria-label="破甲工作台架构：入口 → 引擎 → 落点">
+ARCH_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 420" width="1200" height="420" role="img" aria-label="Muse 架构：入口 → 引擎 → 落点">
   <defs>
     <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
       <path d="M0 0L10 5L0 10z" fill="#4d9fff"/>
@@ -142,10 +142,13 @@ def content_address(src_name: str) -> str:
 
 def body(version: str) -> str:
     tpl = """<div align="center">
-  <h1>破甲工作台 · pojia_desk</h1>
+  <img src="docs/assets/muse-logo.png" width="120" alt="Muse logo">
+  <h1>Muse · pojia_desk</h1>
   <p><strong>七个席位 · 一个入口 · 部署 / 验证 / 恢复全程可逆</strong></p>
   <p><sub>v${VERSION} · 纯 Python 标准库</sub></p>
 </div>
+
+<p align="center"><img src="docs/assets/muse-cover.png" width="820" alt="Muse 封面"></p>
 
 <h2 id="功能">功能</h2>
 <ul>
@@ -167,7 +170,7 @@ npm start</code></pre>
 
 <h2 id="使用">使用</h2>
 <pre><code>一键破甲.bat              # 双击：终端菜单（部署 / 状态 / 还原）
-破甲工作台.bat            # 双击：图形工作台
+破甲工作台.bat            # 双击：图形工作台（Muse）
 console.bat all status    # 命令行：全目标状态（只读）
 console.bat all apply     # 全目标部署
 console.bat all revert    # 全目标还原
@@ -177,7 +180,7 @@ console.bat tx            # 部署历史 / 回退</code></pre>
 <p>部署只对**新会话**生效；运行中的旧会话不会重新读取配置。还原走备份，文件回到写入之前。</p>
 
 <hr />
-<p align="center"><strong>破甲工作台</strong> · 纯标准库 · 全程可逆</p>
+<p align="center"><strong>Muse</strong> · 纯标准库 · 全程可逆</p>
 """
     return tpl.replace("${VERSION}", version)
 
@@ -232,8 +235,8 @@ def preview_page(html_body: str, version: str, absolute: bool) -> str:
     b = html_body.replace('src="docs/', src).replace('href="docs/', href)
     return """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>破甲工作台 · 仓库主页排版预览</title><style>%s</style></head><body>
-<header class="appbar"><div class="repo-name">pojia_desk / <strong>破甲工作台</strong></div>
+<title>Muse · 仓库主页排版预览</title><style>%s</style></head><body>
+<header class="appbar"><div class="repo-name">pojia_desk / <strong>Muse</strong></div>
 <span class="preview-label">仓库主页排版预览 · 非 GitHub 在线页面</span></header>
 <nav class="repo-tabs"><span class="selected">代码与说明</span><span>问题讨论</span><span>变更记录</span><span>项目文档</span></nav>
 <div class="container">
@@ -241,10 +244,10 @@ def preview_page(html_body: str, version: str, absolute: bool) -> str:
 <a href="%s">%s</a></div>
 <div class="repo-grid"><article class="readme"><div class="readme-tab">README.md · 项目主页</div>
 <div class="markdown-body">%s</div></article>
-<aside class="about"><h3>关于破甲工作台</h3>
+<aside class="about"><h3>关于 Muse</h3>
 <p>一个入口，统一管理多目标人格注入的部署、验证与恢复。</p>
 <span class="tag">v%s</span><span class="tag">Python 标准库</span><span class="tag">七席位</span>
-<hr><h3>当前版本</h3><p>%s<br>命令 <code>console.bat</code> / 图形 <code>破甲工作台.bat</code></p>
+<hr><h3>当前版本</h3><p>%s<br>命令 <code>console.bat</code> / 图形 <code>破甲工作台.bat</code>（Muse）</p>
 <a href="#上手使用">上手使用 ↓</a><a href="#支持的目标">支持的目标 ↓</a><a href="#目录结构">目录结构 ↓</a><a href="#自检与测试">自检与测试 ↓</a>
 <hr><p>README 与本页由 <code>tools/build_readme.py</code> 同一份正文生成。</p></aside>
 </div></div></body></html>""" % (PREVIEW_CSS, action_href, action_text, b, version, version)

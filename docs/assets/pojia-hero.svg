@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 260" width="1200" height="260" role="img" aria-label="破甲工作台 · 多目标人格注入控制台">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 260" width="1200" height="260" role="img" aria-label="Muse · 多目标人格注入控制台">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#0d1117"/><stop offset="1" stop-color="#161d26"/>
@@ -11,7 +11,7 @@
   <g opacity=".18" stroke="#4d9fff" stroke-width="1">
     <path d="M0 60H1200M0 120H1200M0 180H1200M200 0V260M600 0V260M1000 0V260"/>
   </g>
-  <text x="64" y="112" fill="#e6edf3" font-family="Microsoft YaHei,Segoe UI,sans-serif" font-size="52" font-weight="700">破甲工作台</text>
+  <text x="64" y="112" fill="#e6edf3" font-family="Microsoft YaHei,Segoe UI,sans-serif" font-size="52" font-weight="700">Muse</text>
   <text x="64" y="156" fill="#8b949e" font-family="Microsoft YaHei,Segoe UI,sans-serif" font-size="20">pojia_desk · 多目标人格注入：部署 / 验证 / 恢复</text>
   <rect x="64" y="182" width="196" height="4" rx="2" fill="url(#ac)"/>
   <g font-family="Consolas,monospace" font-size="15" fill="#58a6ff">
