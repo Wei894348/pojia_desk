@@ -632,7 +632,7 @@ async function boot() {
   overlay(true, '正在初始化……');
   try {
     const info = await api.boot();
-    $('tbVersion').textContent = 'v' + ((info.meta && info.meta.version) || '?');
+    $('aboutVer').textContent = 'v' + ((info.meta && info.meta.version) || '?');
     $('aboutVer').textContent = 'v' + ((info.meta && info.meta.version) || '?');
     // 启动后静默查一次：版本号旁边标出新版本，不需要等人点开才知道
     checkUpdate(false).catch(() => {});
@@ -775,44 +775,12 @@ async function doTest() {
   }
 }
 
-// ────────────────────────── 归一预览 ──────────────────────────
+// ────────────────────────── 归一预览（界面已移除）──────────────────────────
 
 async function doRoute() {
-  const s = $('routeInput').value.trim();
-  const out = $('routeOut');
-  out.innerHTML = '';
-  if (!s) return;
-  const d = await api.route(s);
-  if (d.error) {
-    const c = document.createElement('span');
-    c.className = 'chip';
-    c.style.borderColor = 'var(--mg)';
-    c.textContent = d.error;
-    out.appendChild(c);
-    return;
-  }
-  if (d.washed && d.washed.length) {
-    const c = document.createElement('span');
-    c.className = 'chip';
-    c.textContent = '洗口：' + d.washed.join('、');
-    out.appendChild(c);
-  }
-  if (d.miss) {
-    const c = document.createElement('span');
-    c.className = 'chip';
-    c.style.borderColor = 'var(--yl)';
-    c.textContent = '未命中归一表 —— 建议补一行这种写法';
-    out.appendChild(c);
-    return;
-  }
-  d.hits.forEach((h, i) => {
-    const c = document.createElement('span');
-    c.className = 'chip';
-    c.textContent = '「' + h.frag + '」 → ' + h.term + ' → 【' + h.cat + '】';
-    out.appendChild(c);
-  });
+  // 侧栏底部的「归一预览」入口已删除；函数保留给将来的命令面板复用。
+  return null;
 }
-
 // ────────────────────────── 技能管理视图 ──────────────────────────
 
 function esc(s) {
@@ -2270,10 +2238,17 @@ function mdToHtml(md) {
 function paintUpdate(d) {
   const meta = $('upMeta'), hint = $('upHint'), body = $('upBody'), foot = $('upFoot');
   if (!d || !d.ok) {
+    const detail = (d && d.error) ? String(d.error) : '';
+    const limited = /限流|403|429|rate limit/i.test(detail);
     meta.textContent = '—';
-    hint.textContent = '检查失败（网络不通或 GitHub 限流），稍后再试。';
-    body.innerHTML = '<div class="pempty">拿不到版本信息。' +
-      '<br><a href="#" class="uplink" data-url="' + (d && d.releasesUrl ? d.releasesUrl : 'https://github.com/Wei894348/pojia_desk/releases') + '">去 GitHub 查看全部历史版本 →</a></div>';
+    hint.textContent = limited
+      ? 'GitHub 匿名接口限流了（每小时 60 次），过一会儿再试。'
+      : '检查失败：' + (detail || '网络不通');
+    body.innerHTML = '<div class="pempty">' + (limited
+      ? 'GitHub 对未登录请求有频率限制，等一小时或稍后重试。<br>'
+      : '拿不到版本信息。<br>') +
+      '<a href="#" class="uplink" data-url="' + ((d && (d.releasesUrl || d.url)) || 'https://github.com/Wei894348/pojia_desk/releases') + '">直接在浏览器打开 GitHub 历史版本 →</a></div>';
+    if (detail) body.innerHTML += '<div class="pempty" style="font-size:11px;opacity:.65;word-break:break-all">' + esc(detail) + '</div>';
     foot.innerHTML = '<button class="btn ghost" id="btnUpReleases">历史版本</button>';
     bindUpFoot(d);
     return;
@@ -2353,7 +2328,7 @@ async function checkUpdate(manual) {
   catch (e) { UP_CACHE = { ok: false, error: String(e.message || e) }; }
   paintUpdate(UP_CACHE);
   // 版本号上的小红点：有新版本时提示，否则不打扰
-  const v = $('tbVersion');
+  const v = $('aboutVer');
   if (v) {
     v.classList.toggle('has-new', !!(UP_CACHE && UP_CACHE.ok && UP_CACHE.hasUpdate));
     v.title = (UP_CACHE && UP_CACHE.ok)
@@ -2412,10 +2387,8 @@ function bind() {
   const logPanel = $('logPanel');
   const toggleLog = () => {
     logPanel.classList.toggle('hidden');
-    $('btnLogRestore').style.display = logPanel.classList.contains('hidden') ? '' : 'none';
   };
   $('btnCollapse').addEventListener('click', toggleLog);
-  $('btnLogRestore').addEventListener('click', toggleLog);
 
   // 手柄拖拽：上拖加高、下拖减高（min 60 / max 视口-卡片区最低 160）
   const grip = $('logGrip');
@@ -2449,8 +2422,8 @@ function bind() {
   });
 
   // 归一
-  $('btnRoute').addEventListener('click', doRoute);
-  $('routeInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') doRoute(); });
+  const aboutVer = $('aboutVer');
+  if (aboutVer) aboutVer.addEventListener('click', openUpdate);
 
   // 技能管理视图
   ORDER.forEach((k) => {
@@ -2500,7 +2473,8 @@ function bind() {
   $('patchModal').addEventListener('click', (e) => { if (e.target.id === 'patchModal') closePatch(); });
 
   // 版本 / 更新
-  $('tbVersion').addEventListener('click', openUpdate);
+  const aboutVerBtn = $('aboutVer');
+  if (aboutVerBtn) aboutVerBtn.addEventListener('click', openUpdate);
   $('btnUpClose').addEventListener('click', closeUpdate);
   $('btnUpReload').addEventListener('click', () => checkUpdate(true));
   $('upModal').addEventListener('click', (e) => { if (e.target.id === 'upModal') closeUpdate(); });

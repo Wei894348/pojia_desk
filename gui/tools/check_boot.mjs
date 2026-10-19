@@ -172,14 +172,14 @@ const setOpts = (p, q) => { X.state.opts.prompt = p; X.state.opts.skills = q; };
 // ── 1. 启动路径 ──────────────────────────────────────────
 console.log('【1】bind() + boot() 真跑');
 // 先把标题写脏 —— 否则 index.html 里的初值恰好也是当前版本，就验不出"到底有没有被 meta 覆盖"
-$('tbVersion').textContent = 'v0.0-占位';
+$('aboutVer').textContent = 'v0.0-占位';
 $('setPy').textContent = 'python —';
 $('setRoot').textContent = '—';
 let bootErr = null;
 await (async () => { try { X.loadOpts(); X.bind(); await X.boot(); } catch (e) { bootErr = e; } })();
 check('bind() + boot() 不抛异常', !bootErr, bootErr && (bootErr.message + '\n' + bootErr.stack));
 check('版本号被 meta 覆盖（页面里那个只是占位）',
-  $('tbVersion').textContent === 'v' + SRC_VERSION, $('tbVersion').textContent);
+  $('aboutVer').textContent === 'v' + SRC_VERSION, $('aboutVer').textContent);
 check('副标题已从侧栏移除（不再显示「N 目标统一控制台」）',
   !document.getElementById('tbSub'), 'tbSub 仍存在');
 check('设置页回显解释器与项目根',
@@ -330,13 +330,11 @@ resetRefresh(0);
 // ── 5. 其它按钮的绑定都在 ─────────────────────────────────
 console.log('【5】工具条按钮都绑上了 click');
 ['btnDeploy', 'btnDry', 'btnDiff', 'btnTest', 'btnRevert', 'btnRefresh', 'btnTx', 'btnConsole',
- 'btnSetPy', 'btnRoute', 'btnCollapse', 'btnLogFile', 'btnTxClose', 'btnTxPurge', 'btnDiffClose']
+ 'btnSetPy', 'btnCollapse', 'btnLogFile', 'btnTxClose', 'btnTxPurge', 'btnDiffClose']
   .forEach((id) => {
     check(id + ' 有 click 监听', $_(id));
   });
 function $_(id) { const e = $(id); return !!e && e._ls.some((x) => x.t === 'click'); }
-// 键盘快捷键
-check('routeInput 绑了 Enter', $('routeInput')._ls.some((x) => x.t === 'keydown'));
 
 console.log('\n' + (fail ? '✗ ' + fail + ' 项不过' : '✓ 全过') + '（' + pass + ' 项）');
 process.exit(fail ? 1 : 0);

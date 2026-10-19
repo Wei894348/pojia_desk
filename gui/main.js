@@ -2131,28 +2131,64 @@ ipcMain.handle('pojia:openConsole', async () => {
 // 渲染层点版本号 → 这里去 api.github.com 拉 releases 列表（含历史版本）→
 // 逐条比对本地 VERSION，标记当前版本与是否有更新。
 //
-// 不用 Electron 的 fetch：Chromium 网络栈会读系统代理（本机是 Clash 的
-// 127.0.0.1:7897），代理挂掉/半死时 fetch 直接失败，而系统 curl 走同一代理却正常。
-// 用 curl.exe 起子进程，失败再退回 node 的 https 直连，两条路都不依赖渲染会话。
+// 网络策略：走用户本机的网络设置。
+//   1. 环境变量 HTTPS_PROXY / HTTP_PROXY 优先；
+//   2. 否则读 Windows「Internet 设置」里的系统代理（Clash 等设置的 127.0.0.1:7897）；
+//   3. 有代理就只用代理，绝不直连 —— 直连在国内经常超时，还会绕过用户的规则。
+// Electron 自带的 fetch 不用：它走 Chromium 会话，系统代理一旦异常就永久失败。
 const REPO_SLUG = 'Wei894348/pojia_desk';
 const REPO_URL = 'https://github.com/' + REPO_SLUG;
 const RELEASES_URL = REPO_URL + '/releases';
 
-function ghJsonByCurl(url) {
+function systemProxy() {
+  const env = process.env.HTTPS_PROXY || process.env.https_proxy ||
+              process.env.HTTP_PROXY || process.env.http_proxy;
+  if (env) return String(env).trim();
+  try {
+    const key = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings';
+    const en = spawnSync('reg', ['query', key, '/v', 'ProxyEnable'],
+      { encoding: 'utf8', windowsHide: true });
+    if (!/0x1\s*$/m.test((en.stdout || '').trim())) return '';
+    const srv = spawnSync('reg', ['query', key, '/v', 'ProxyServer'],
+      { encoding: 'utf8', windowsHide: true });
+    const m = /ProxyServer\s+REG_SZ\s+(.+)/.exec(srv.stdout || '');
+    if (!m) return '';
+    let v = m[1].trim();
+    // 形如 "http=127.0.0.1:7897;https=127.0.0.1:7897" 时取 https
+    if (v.includes('=')) {
+      const parts = v.split(';');
+      const pick = parts.find((p) => p.trim().toLowerCase().startsWith('https=')) || parts[0];
+      v = pick.split('=')[1] || '';
+    }
+    v = v.trim();
+    if (!v) return '';
+    return /^[a-z]+:\/\//i.test(v) ? v : 'http://' + v;
+  } catch (_) { return ''; }
+}
+
+function ghJsonByCurl(url, proxy) {
   return new Promise((resolve, reject) => {
-    const child = spawn('curl.exe', [
-      '-sS', '-L', '--max-time', '20',
+    const args = ['-sS', '-L', '--max-time', '20',
       '-H', 'User-Agent: pojia-workbench',
-      '-H', 'Accept: application/vnd.github+json',
-      url,
-    ], { windowsHide: true, env: cleanEnv() });
+      '-H', 'Accept: application/vnd.github+json'];
+    if (proxy) args.push('--proxy', proxy);
+    args.push(url);
+    const child = spawn('curl.exe', args, { windowsHide: true, env: cleanEnv() });
     let out = '', err = '';
     child.stdout.on('data', (d) => { out += d.toString('utf8'); });
     child.stderr.on('data', (d) => { err += d.toString('utf8'); });
     child.on('error', reject);
     child.on('close', (code) => {
       if (code !== 0) return reject(new Error(err || ('curl exit ' + code)));
-      try { resolve(JSON.parse(out)); } catch (e) { reject(e); }
+      if (/^\s*(403|429)/.test(out) || out.includes('"message"')) {
+        // GitHub 匿名接口 60 次/小时；超限时返回的是 JSON 错误体
+        let msg = out.slice(0, 160);
+        try { msg = JSON.parse(out).message || msg; } catch (_) {}
+        return reject(new Error('GitHub 限流：' + msg));
+      }
+      try { resolve(JSON.parse(out)); } catch (e) {
+        reject(new Error('返回不是 JSON：' + out.slice(0, 120)));
+      }
     });
   });
 }
@@ -2179,20 +2215,38 @@ function ghJsonByHttps(url) {
 
 ipcMain.handle('pojia:checkUpdate', async () => {
   const local = (fs.readFileSync(path.join(ROOT, 'VERSION'), 'utf8').trim()) || '';
+  const CACHE = path.join(ROOT, '状态', '_update_cache.json');
   const out = {
     ok: false, local, latest: '', url: REPO_URL, releasesUrl: RELEASES_URL,
-    body: '', published: '', releases: [], source: '',
+    body: '', published: '', releases: [], source: '', proxy: '', cached: false,
   };
   const api = 'https://api.github.com/repos/' + REPO_SLUG + '/releases?per_page=30';
+  const proxy = systemProxy();
+  out.proxy = proxy;
   let arr = null, errs = [];
-  for (const [name, fn] of [['curl', ghJsonByCurl], ['https', ghJsonByHttps]]) {
+  // 有代理：只走代理，不直连。没代理：curl 直连，再退 node https。
+  const routes = proxy
+    ? [['curl+proxy', () => ghJsonByCurl(api, proxy)]]
+    : [['curl', () => ghJsonByCurl(api, '')], ['https', () => ghJsonByHttps(api)]];
+  for (const [name, fn] of routes) {
     try {
-      const j = await fn(api);
+      const j = await fn();
       if (Array.isArray(j)) { arr = j; out.source = name; break; }
       errs.push(name + ': 返回不是数组');
     } catch (e) { errs.push(name + ': ' + String(e.message || e)); }
   }
-  if (!arr) { out.error = errs.join(' | '); return out; }
+  if (!arr) {
+    // 拉不到时退回上一次成功的缓存 —— 限流期间至少还能看到历史版本
+    try {
+      const c = JSON.parse(fs.readFileSync(CACHE, 'utf8'));
+      if (Array.isArray(c.releases) && c.releases.length) {
+        Object.assign(out, c, { ok: true, cached: true, local,
+          note: '本次未能访问 GitHub，显示的是 ' + (c.savedAt || '上次') + ' 的缓存' });
+      }
+    } catch (_) {}
+    if (!out.ok) out.error = errs.join(' | ');
+    return out;
+  }
   out.releases = arr.map((r) => ({
       tag: String(r.tag_name || '').replace(/^v/i, '').trim(),
       name: r.name || '',
@@ -2209,6 +2263,15 @@ ipcMain.handle('pojia:checkUpdate', async () => {
   out.published = latest.published;
   out.ok = true;
   out.hasUpdate = !!latest.tag && latest.tag !== local;
+  // 存一份，限流/断网时还能展示历史版本
+  try {
+    fs.mkdirSync(path.dirname(CACHE), { recursive: true });
+    fs.writeFileSync(CACHE, JSON.stringify({
+      releases: out.releases, latest: out.latest, url: out.url,
+      body: out.body, published: out.published, releasesUrl: out.releasesUrl,
+      savedAt: new Date().toISOString().slice(0, 19).replace('T', ' '),
+    }), 'utf8');
+  } catch (_) {}
   return out;
 });
 

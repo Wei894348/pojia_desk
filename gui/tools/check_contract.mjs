@@ -111,7 +111,7 @@ console.log('【6】页脚版本号与主脚本一致');
 const srcVer = (() => {
   try { return read(path.join(GUI, '..', 'VERSION')).trim(); } catch (_) { return ''; }
 })();
-const htmlVer = (/id="tbVersion"[^>]*>v([^<]+)</.exec(htmlSrc) || [])[1];
+const htmlVer = (/id="aboutVer"[^>]*>v([^<]+)</.exec(htmlSrc) || [])[1];
 check('VERSION 文件读到了', !!srcVer, String(srcVer));
 check('index.html 的占位版本 = VERSION（' + srcVer + '）', htmlVer === srcVer,
   'html=' + htmlVer);

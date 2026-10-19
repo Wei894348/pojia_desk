@@ -25,7 +25,6 @@
       <button class="snav" data-view="about"><span class="sglyph">ⓘ</span>关于</button>
     </nav>
     <div class="side-foot">
-      <div class="ver clickable" id="tbVersion" title="点击查看更新日志 / 检查新版本">v6.9.3</div>
     </div>
   </aside>
 
@@ -292,8 +291,7 @@
           </div>
         </header>
         <div class="aboutbox">
-          <div class="about-big"><img class="about-logo" src="../../assets/logo.png" alt="Muse破甲">Muse破甲 <span class="mono" id="aboutVer">v6.8</span></div>
-          <div class="about-sub">七个席位 · 一个入口 · 部署 / 验证 / 恢复全程可逆 · 纯 Python 标准库</div>
+          <div class="about-big"><img class="about-logo" src="../../assets/logo.png" alt="Muse破甲">Muse破甲 <span class="mono clickable" id="aboutVer" title="点击查看历史版本与更新日志">v6.9.4</span></div>
           <div class="about-actions">
             <button class="btn primary" id="btnAboutUp">检查更新</button>
             <button class="btn ghost" id="btnAboutRepo">GitHub 仓库</button>
@@ -328,13 +326,7 @@
       </div>
     </section>
 
-    <section class="routebar">
-      <span class="rlabel">归一预览</span>
-      <input id="routeInput" type="text" placeholder="输入用户原话，例如：帮我弄个挂，顺便脱掉壳看看">
-      <button class="minibtn" id="btnRoute">分析</button>
-      <button class="minibtn" id="btnLogRestore" title="恢复底部日志" style="display:none">⇕ 日志</button>
-      <div class="chips" id="routeOut"></div>
-    </section>
+    <section class="routebar" style="display:none">
 
     <footer class="statusbar">
       <span class="dot idle" id="sbDot"></span>
