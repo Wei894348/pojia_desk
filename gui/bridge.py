@@ -676,9 +676,57 @@ def card_dsh():
         pass
     desk = _dsh_desktop_root(t)
     label = "DSH (Web/CLI)" if desk else t.label
+    # ── 部署摘要：给卡片/总览弹窗用的人话清单 ──────────────────────
+    # 卡片上只显示「已部署」，具体改了哪些文件、各自起什么作用，看这里。
+    deploy = {
+        "pack": os.path.basename(apath) if apath else "",
+        "packOn": astate == "current",
+        "agents": {"on": astate == "current", "path": apath, "bytes": abytes},
+        "instruction": {"on": astate == "current", "src": "", "dst": apath,
+                        "bytes": abytes},
+        "skills": {"on": sn > 0, "ok": sn, "total": sn,
+                   "dir": os.path.join(home, "skills"),
+                   "ids": [], "samples": []},
+    }
+    # 分层
+    layers = []
+    for nm, lp in (("全局", apath),
+                   ("共享根", os.path.join(t.agents_home(), t.AGENTS_FILE)),
+                   ("本地覆盖", t.local_agents_path())):
+        if os.path.isfile(lp):
+            layers.append({"name": nm, "path": lp,
+                           "bytes": os.path.getsize(lp)})
+    deploy["layers"] = layers
+    # 每轮重锁
+    sh_dir = os.path.join(home, "plugins", "dsh-shield")
+    if os.path.isdir(sh_dir):
+        deploy["shield"] = {
+            "on": True, "dir": sh_dir,
+            "files": [fn for fn in ("index.js", "package.json", "cordis.patch.yml")
+                      if os.path.isfile(os.path.join(sh_dir, fn))],
+            "profiles": len([d for d in t.profile_dirs()
+                             if t._profile_has_shield(
+                                 os.path.join(d, "cordis.patch.yml"))]),
+        }
+    # 源码补丁
+    try:
+        pm = t._purge()
+        if pm is not None:
+            plist = []
+            for base in pm.find_ai_bases():
+                for r in pm.status(base):
+                    if r["state"] == "missing_file":
+                        continue
+                    plist.append({"id": r["id"], "desc": r["desc"],
+                                  "layer": r["layer"], "path": r["path"],
+                                  "applied": r["state"] == "applied"})
+            if plist:
+                deploy["purge"] = plist
+    except Exception:
+        pass
     return {"key": "dsh", "label": label, "home": home, "state": state,
             "rows": rows, "files": files, "metrics": metrics,
-            "deploy": summ}
+            "deploy": deploy}
 
 
 def card_dsh_landing():
@@ -2035,13 +2083,88 @@ def _doc_allowed(path):
     """只允许 content/ 与 targets/ 下的 .md（含 .md.off）—— 挡住越界写。"""
     ap = os.path.abspath(path)
     root = os.path.abspath(ROOT)
-    if os.path.commonpath([ap, root]) != root:
-        return False
+    try:
+        if os.path.commonpath([ap, root]) != root:
+            return False
+    except ValueError:
+        return False          # 跨盘符：一定不在项目内
     rel = _doc_rel(ap).split("/")
     if not rel or rel[0] not in DOC_ROOTS:
         return False
     low = ap.lower()
     return low.endswith(".md") or low.endswith(".md.off")
+
+
+# 只读白名单：DSH 的几个落点在用户目录与运行时里，不在项目内。
+# 这些条目在指令页只允许「查看」，不允许写回（写回走部署流程）。
+def _doc_readonly_roots():
+    roots = []
+    try:
+        m = mod()
+        t = m.TARGETS["dsh"]()
+        roots.append(t.dsh_home())
+        roots.append(t.agents_home())
+    except Exception:
+        pass
+    try:
+        pm = mod().TARGETS["dsh"]()._purge()
+        if pm is not None:
+            roots.extend(pm.find_ai_bases())
+    except Exception:
+        pass
+    return [os.path.abspath(r) for r in roots if r]
+
+
+def _doc_readable(path):
+    """能否读取：项目内可编辑文件，或落点白名单里的只读文件。"""
+    if _doc_allowed(path):
+        return True
+    ap = os.path.abspath(path)
+    for r in _doc_readonly_roots():
+        try:
+            if os.path.commonpath([ap, r]) == r:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _doc_id_path(doc_id):
+    """把落点条目的 id 还原成真实路径。
+
+    指令页的 id 是「dsh:layer/local」「dsh:shield/index.js」这类语义键，
+    不是文件路径。读取前先翻成路径，否则白名单判断永远不通过。
+    """
+    s = str(doc_id or "")
+    if not s.startswith("dsh:"):
+        return ""
+    try:
+        t = mod().TARGETS["dsh"]()
+    except Exception:
+        return ""
+    if s == "dsh:layer/agents-home":
+        return os.path.join(t.agents_home(), t.AGENTS_FILE)
+    if s == "dsh:layer/local":
+        return t.local_agents_path()
+    if s.startswith("dsh:shield/"):
+        return os.path.join(t.dsh_home(), "plugins", "dsh-shield",
+                            s.split("/", 1)[1])
+    if s.startswith("dsh:purge/"):
+        rest = s.split("/", 1)[1]
+        bi, pid = (rest.split("/", 1) + [""])[:2] if "/" in rest else (rest, "")
+        try:
+            pm = t._purge()
+            bases = pm.find_ai_bases()
+            idx = int(bi)
+            if 0 <= idx < len(bases):
+                for r in pm.status(bases[idx]):
+                    if str(r["id"]) == str(pid):
+                        return r["path"]
+        except Exception:
+            return ""
+    if s == "dsh:agents":
+        return t.agents_path()
+    return ""
 
 
 def _agent_key(agent):
@@ -3664,6 +3787,23 @@ def _codex_edit_path(doc_id):
 
 def cmd_doc_read(rel, agent=""):
     """整文件读出（编辑用）。ChatGPT 页的 id 折到项目里的源件。"""
+    # 落点条目：id 不是路径，先还原成真实文件
+    if str(rel).startswith("dsh:"):
+        rp = _doc_id_path(rel)
+        if not rp:
+            return {"ok": False, "error": "无法定位这份落点：%s" % rel}
+        if not os.path.isfile(rp):
+            return {"ok": False, "error": "文件不存在：%s" % rp}
+        if not _doc_readable(rp):
+            return {"ok": False, "error": "不允许访问：%s" % rp}
+        try:
+            content = _read_text(rp)
+        except OSError as e:
+            return {"ok": False, "error": str(e)}
+        return {"ok": True, "id": rel, "path": rp, "content": content,
+                "size": os.path.getsize(rp), "editable": False,
+                "enabled": True, "generated": True, "live": True,
+                "hint": "部署落点 · 只读（改内容请改源件后重新部署）"}
     path, note = (_codex_edit_path(rel) if rel.startswith("codex:")
                   else _wb_edit_path(rel) if rel.startswith("wb:") else ("", ""))
     if rel.startswith("seat:") and rel.split("/", 1)[1] in (
@@ -3687,7 +3827,19 @@ def cmd_doc_read(rel, agent=""):
     if not _doc_allowed(p):
         p = os.path.abspath(os.path.join(ROOT, _doc_base(rel)))
         if not _doc_allowed(p):
-            return {"ok": False, "error": "不允许访问：%s" % rel}
+            # 落点白名单：只读查看（~/.dsh、~/.agents、DSH 运行时）
+            if not _doc_readable(p):
+                return {"ok": False, "error": "不允许访问：%s" % rel}
+            if not os.path.isfile(p):
+                return {"ok": False, "error": "文件不存在：%s" % rel}
+            try:
+                content = _read_text(p)
+            except OSError as e:
+                return {"ok": False, "error": str(e)}
+            return {"ok": True, "id": rel, "path": p, "content": content,
+                    "size": os.path.getsize(p), "editable": False,
+                    "enabled": True, "generated": True, "live": True,
+                    "hint": "部署落点 · 只读（改内容请改源件后重新部署）"}
     real = _doc_actual(_doc_base(p))
     if not real:
         return {"ok": False, "error": "文件不存在：%s" % rel}

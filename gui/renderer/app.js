@@ -907,6 +907,21 @@ function pickAgent(id) {
 function paintPmCats() {
   const box = $('pmCats');
   box.innerHTML = '';
+  // 首个按钮固定为「全部」：按类别分组展示，避免所有条目堆成一整块
+  const total = (PM_CATS || []).reduce((n, c) => n + (c.count || 0), 0);
+  const allEl = document.createElement('button');
+  allEl.type = 'button';
+  allEl.className = 'pmcat' + (!PM_CAT || PM_CAT === 'all' ? ' on' : '');
+  allEl.dataset.cat = 'all';
+  const allNm = document.createElement('span');
+  allNm.textContent = '全部';
+  const allCt = document.createElement('small');
+  allCt.textContent = String(total);
+  allEl.appendChild(allNm);
+  allEl.appendChild(allCt);
+  allEl.addEventListener('click', () => { PM_CAT = 'all'; paintPmCats(); paintPmGrid(); });
+  box.appendChild(allEl);
+
   PM_CATS.forEach((cat) => {
     const el = document.createElement('button');
     el.type = 'button';
@@ -950,13 +965,16 @@ if (typeof window !== 'undefined') {
 function paintPmGrid() {
   const box = $('pmGrid');
   box.innerHTML = '';
-  const list = PM_DOCS.filter((it) => it.cat === PM_CAT);
+  // 默认「全部」时按类别分组显示，不再把所有条目堆成一整块
+  const all = PM_CAT === 'all' || !PM_CAT;
+  const list = all ? PM_DOCS.slice()
+                   : PM_DOCS.filter((it) => it.cat === PM_CAT);
   const offN = list.filter((x) => !x.enabled).length;
   const bar = document.createElement('div');
   bar.className = 'pmbulk';
   const barTxt = document.createElement('span');
-  barTxt.textContent = (pmCatName(PM_CAT) || '当前分类') + ' · ' + list.length + ' 份'
-    + (offN ? ' · 已停用 ' + offN : '');
+  barTxt.textContent = (all ? '全部' : (pmCatName(PM_CAT) || '当前分类')) + ' · '
+    + list.length + ' 份' + (offN ? ' · 已停用 ' + offN : '');
   const onBtn = document.createElement('button');
   onBtn.className = 'minibtn';
   onBtn.textContent = '本类启用';
@@ -995,7 +1013,35 @@ function paintPmGrid() {
     box.appendChild(e);
     return;
   }
-  list.forEach((it) => box.appendChild(buildDocRow(it)));
+  if (!all) {
+    list.forEach((it) => box.appendChild(buildDocRow(it)));
+    return;
+  }
+  // 「全部」视图：按分类分组，每组带标题与计数
+  const order = (PM_CATS || []).map((c) => c.id);
+  const groups = new Map();
+  list.forEach((it) => {
+    if (!groups.has(it.cat)) groups.set(it.cat, []);
+    groups.get(it.cat).push(it);
+  });
+  const keys = [...groups.keys()].sort((a, b) => {
+    const ia = order.indexOf(a), ib = order.indexOf(b);
+    return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib);
+  });
+  keys.forEach((cat) => {
+    const items = groups.get(cat);
+    const h = document.createElement('div');
+    h.className = 'pmgroup-head';
+    const hn = document.createElement('span');
+    hn.className = 'pmgroup-name';
+    hn.textContent = pmCatName(cat);
+    const hc = document.createElement('small');
+    hc.textContent = String(items.length);
+    h.appendChild(hn);
+    h.appendChild(hc);
+    box.appendChild(h);
+    items.forEach((it) => box.appendChild(buildDocRow(it)));
+  });
 }
 
 // 一张卡 = 一份文档，
@@ -1609,7 +1655,7 @@ async function refreshDocs() {
     ? '全部文档已关闭：部署等于回官方原版（拨右全部启用）'
     : '总开关：拨左停用全部可停用的文档，拨右全部启用（' + on + ' 启用 / ' + off + ' 停用）';
   $('pmDot').classList.toggle('on', on > 0);
-  if (!PM_CATS.some((c) => c.id === PM_CAT)) PM_CAT = PM_CATS.length ? PM_CATS[0].id : '';
+  if (!PM_CATS.some((c) => c.id === PM_CAT)) PM_CAT = 'all';
   paintPmCats();
   paintPmGrid();
 }
@@ -1864,6 +1910,40 @@ async function loadPatch() {
   bar.className = 'pbar';
   bar.innerHTML = '<i style="width:' + pct + '%"></i>';
   body.appendChild(bar);
+
+  // DSH：分层 / 每轮重锁 / 源码补丁 三块明细
+  if (dep.layers || dep.shield || dep.purge) {
+    const short = (p) => (p || '').split(/[\\/]/).filter(Boolean).pop() || '—';
+    const kb = (n) => (n ? (n / 1024).toFixed(n > 10240 ? 0 : 1) + ' KB' : '—');
+    const line = (title, path, note) =>
+      '<div class="pmetric"><b style="font-size:13px">' + esc(title) +
+      ' <span class="mono">' + esc(short(path)) + '</span></b>' +
+      '<span>' + esc(note) + '</span>' +
+      '<span class="mono" style="font-size:11px;opacity:.6;word-break:break-all">' +
+      esc(path) + '</span></div>';
+
+    let html = '';
+    (dep.layers || []).forEach((L) => {
+      html += line('分层 · ' + L.name, L.path, kb(L.bytes) + ' · DSH 按宽→窄拼装');
+    });
+    if (dep.shield) {
+      html += line('每轮重锁', dep.shield.dir,
+        dep.shield.files.join('、') + ' · 已挂载 ' + dep.shield.profiles + ' 个 profile');
+    }
+    if (dep.purge && dep.purge.length) {
+      const okN = dep.purge.filter((x) => x.applied).length;
+      html += '<div class="pmetric p-ok"><b>' + okN + ' / ' + dep.purge.length +
+        '</b><span>源码补丁 · 已清除</span></div>';
+      dep.purge.forEach((x) => {
+        html += '<div class="pmetric p-note"><b style="font-size:12px">#' + x.id + ' ' +
+          esc(x.desc) + '</b><span>' + esc(x.layer) + ' · ' +
+          (x.applied ? '已清除' : '待清除') + '</span>' +
+          '<span class="mono" style="font-size:11px;opacity:.6;word-break:break-all">' +
+          esc(x.path) + '</span></div>';
+      });
+    }
+    if (html) mets.insertAdjacentHTML('beforeend', html);
+  }
 
   const GROUP_NOTE = {
     inject: '注入到客户端读取的指令 / 角色文件',
