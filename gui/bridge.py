@@ -645,6 +645,35 @@ def card_dsh():
     files = [{"path": apath, "exists": os.path.isfile(apath), "size": abytes,
               "role": "提示词", "hit": [] if astate == "current" else [],
               "miss": [] if astate == "current" else ["未就位"]}]
+    # 分层指令：共享 agent 根 / 本地覆盖
+    for name, lp in (("分层·共享根", os.path.join(t.agents_home(), t.AGENTS_FILE)),
+                     ("分层·本地覆盖", t.local_agents_path())):
+        if os.path.isfile(lp):
+            files.append({"path": lp, "exists": True, "size": os.path.getsize(lp),
+                          "role": name, "hit": ["已就位"], "miss": []})
+    # 每轮重锁插件
+    sh_dir = os.path.join(home, "plugins", "dsh-shield")
+    if os.path.isdir(sh_dir):
+        files.append({"path": sh_dir, "exists": True, "size": None, "isdir": True,
+                      "role": "每轮重锁", "hit": ["已安装"], "miss": []})
+    # 源码补丁：逐个列出实际改过的运行时文件
+    try:
+        pm = t._purge()
+        if pm is not None:
+            for base in pm.find_ai_bases():
+                for r in pm.status(base):
+                    if r["state"] == "missing_file" or not os.path.isfile(r["path"]):
+                        continue
+                    ok = r["state"] == "applied"
+                    files.append({
+                        "path": r["path"], "exists": True,
+                        "size": os.path.getsize(r["path"]),
+                        "role": "源码补丁 #%d %s" % (r["id"], r["desc"]),
+                        "hit": ["已清除"] if ok else [],
+                        "miss": [] if ok else ["待清除"],
+                    })
+    except Exception:
+        pass
     desk = _dsh_desktop_root(t)
     label = "DSH (Web/CLI)" if desk else t.label
     return {"key": "dsh", "label": label, "home": home, "state": state,
@@ -2335,6 +2364,9 @@ def _doc_scan_seat(agent, label):
 _DSH_CATS = [
     ("instruction", "指令文件"),
     ("memory", "AGENTS.md"),
+    ("layers", "分层指令"),
+    ("shield", "每轮重锁"),
+    ("purge", "源码补丁"),
     ("skill", "SKILL.md"),
 ]
 
@@ -2425,7 +2457,85 @@ def _doc_scan_dsh(label):
         "memo": notes.get("dsh:agents", ""),
     })
 
-    # 3) SKILL.md
+    # 3) 分层指令：共享根 / 本地覆盖（全局那层已在上面）
+    try:
+        lay = [
+            ("dsh:layer/agents-home", os.path.join(t.agents_home(), t.AGENTS_FILE),
+             "共享 agent 根"),
+            ("dsh:layer/local", t.local_agents_path(), "本地覆盖"),
+        ]
+        for lid, lp, lname in lay:
+            if not os.path.isfile(lp):
+                continue
+            try:
+                with open(lp, encoding="utf-8", errors="replace") as f:
+                    has = t.AGENTS_MARK_BEGIN in f.read()
+            except OSError:
+                has = False
+            out.append({
+                "id": lid, "path": lp, "name": os.path.basename(lp), "cat": "layers",
+                "title": lname, "category": "分层指令",
+                "size": os.path.getsize(lp), "exists": True,
+                "enabled": has, "managed": True, "live": True,
+                "note": "DSH 按宽→窄拼装，某层超预算只丢那一层",
+                "labels": [_label("分层指令", "info"),
+                           _label(lname, "muted"),
+                           _label("已就位" if has else "未就位",
+                                  "ok" if has else "muted")],
+                "memo": notes.get(lid, ""),
+            })
+    except Exception:
+        pass
+
+    # 4) 每轮重锁插件
+    try:
+        sh_home = os.path.join(home, "plugins", "dsh-shield")
+        if os.path.isdir(sh_home):
+            for fn in ("index.js", "package.json", "cordis.patch.yml"):
+                sp = os.path.join(sh_home, fn)
+                if not os.path.isfile(sp):
+                    continue
+                out.append({
+                    "id": "dsh:shield/%s" % fn, "path": sp, "name": fn, "cat": "shield",
+                    "title": "dsh-shield", "category": "每轮重锁",
+                    "size": os.path.getsize(sp), "exists": True,
+                    "enabled": True, "managed": True, "live": True,
+                    "note": "pre-step 每轮补 TOOL LOCK",
+                    "labels": [_label("每轮重锁", "info"),
+                               _label("已安装", "ok")],
+                    "memo": notes.get("dsh:shield/%s" % fn, ""),
+                })
+    except Exception:
+        pass
+
+    # 5) 源码补丁：逐个运行时列出实际改过的文件
+    try:
+        pm = t._purge()
+        if pm is not None:
+            for bi, base in enumerate(pm.find_ai_bases()):
+                for r in pm.status(base):
+                    if r["state"] == "missing_file":
+                        continue
+                    applied = r["state"] == "applied"
+                    out.append({
+                        "id": "dsh:purge/%d/%d" % (bi, r["id"]),
+                        "path": r["path"], "name": os.path.basename(r["path"]),
+                        "cat": "purge", "category": "源码补丁",
+                        "title": "#%d %s" % (r["id"], r["desc"]),
+                        "size": os.path.getsize(r["path"]) if os.path.isfile(r["path"]) else 0,
+                        "exists": os.path.isfile(r["path"]),
+                        "enabled": applied, "managed": True, "live": True,
+                        "note": "运行时 %d · %s" % (bi + 1, r["layer"]),
+                        "labels": [_label("源码补丁", "info"),
+                                   _label(r["layer"], "muted"),
+                                   _label("已清除" if applied else "待清除",
+                                          "ok" if applied else "muted")],
+                        "memo": notes.get("dsh:purge/%d/%d" % (bi, r["id"]), ""),
+                    })
+    except Exception:
+        pass
+
+    # 6) SKILL.md
     try:
         routes = _routes_mod()
     except Exception:

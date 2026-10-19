@@ -2,7 +2,7 @@
   <img src="docs/assets/muse-logo.png" width="120" alt="Muse logo">
   <h1>Muse · pojia_desk</h1>
   <p><strong>七个席位 · 一个入口 · 部署 / 验证 / 恢复全程可逆</strong></p>
-  <p><sub>v6.12.0 · 纯 Python 标准库</sub></p>
+  <p><sub>v6.12.1 · 纯 Python 标准库</sub></p>
 </div>
 
 <p align="center"><img src="docs/assets/muse-cover.png" width="820" alt="Muse 封面"></p>
