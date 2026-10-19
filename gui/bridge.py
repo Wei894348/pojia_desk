@@ -2590,8 +2590,35 @@ def _doc_scan_dsh(label):
                   if n.lower().endswith(".md")]
     if not cands and os.path.isfile(seed):
         cands = [seed]
-    active_name = os.path.basename((st.get("pack") or "").strip()) if st.get("pack") else \
-        os.path.basename(seed)
+    active_name = (st.get("pack") or "").strip() if st.get("pack") else ""
+    if st.get("pack_on") is False:
+        active_name = ""
+    # 状态表里没记 pack（命令行部署、或旧版本留下的）时，按 AGENTS.md 的实际内容反推：
+    # 标记块正文与哪个候选一致，哪个就是当前生效的指令源。
+    if not active_name and astate == "current":
+        try:
+            _body = ""
+            with open(apath, encoding="utf-8", errors="replace") as f:
+                _txt = f.read()
+            _i = _txt.find(t.AGENTS_MARK_BEGIN)
+            _j = _txt.find(t.AGENTS_MARK_END)
+            if _i >= 0 and _j > _i:
+                _body = _txt[_i + len(t.AGENTS_MARK_BEGIN):_j]
+            _norm = lambda s: re.sub(r"<!--[^>]*-->", "", s).strip()
+            _bn = _norm(_body)
+            for p in cands:
+                try:
+                    with open(p, encoding="utf-8", errors="replace") as f2:
+                        _cn = _norm(f2.read())
+                except OSError:
+                    continue
+                if _cn and (_cn in _bn or _bn in _cn):
+                    active_name = os.path.basename(p)
+                    break
+        except OSError:
+            pass
+    if not active_name:
+        active_name = os.path.basename(seed)
     for p in cands:
         fn = os.path.basename(p)
         is_active = (st.get("pack_on") is not False) and (fn == active_name)
