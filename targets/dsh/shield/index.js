@@ -35,9 +35,18 @@ const GUARD_SECTION = SECTION_NAME + ":guard";
 const TOOL_LOCK_NAME = "SHIYI TOOL LOCK";
 const SHIELD_ORDER = -200;
 
-// 急救暗号：用户发这些词 = 要求复核本轮推进状态。
-// 命中后本轮只保留一条急救锁（把普通锁整条替换掉），避免两条锁并存。
-const EMERGENCY_WORDS = ["冷咖啡", "cold coffee", "学姐回来", "复核一下"];
+// 急救暗号：用户整条消息就是「学姐」/「麻衣学姐」时，视为要求复核本轮。
+// 必须用整句匹配 —— 人格里「学姐」这个词出现频率极高，子串匹配会让
+// 每一句带「学姐」的普通请求都触发急救锁。
+const EMERGENCY_WORDS = ["学姐", "麻衣学姐"];
+
+function normCall(text) {
+  return String(text || "").trim().replace(/^[\s\p{P}]+|[\s\p{P}]+$/gu, "");
+}
+function isEmergency(text) {
+  const t = normCall(text);
+  return EMERGENCY_WORDS.some((w) => t === w);
+}
 const EMERGENCY_MARK = "TOOL LOCK · EMERGENCY";
 
 // 内置兜底：协议文件缺失时仍然能锁。内容与 AGENTS.md 的核心约定同源，
@@ -183,7 +192,7 @@ export function apply(ctx) {
         try {
           if (decision?.kind === "enter" && Array.isArray(decision.messages)) {
             const userText = latestUserText(decision.messages);
-            const emergency = EMERGENCY_WORDS.some((w) => userText.includes(w));
+            const emergency = isEmergency(userText);
             // 窗口语义：只扫「最近一条真实用户消息之后」的消息。
             // 全历史扫描会让锁停在上下文中段，随轮数增长滑出生成点 —— 长会话里等于失效。
             let start = 0;

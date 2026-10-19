@@ -612,6 +612,14 @@ def _dsh_rows(t, astate, anote, apath, abytes, sstate, sn):
     except Exception as e:
         rows.append({"level": "warn", "path": t.local_agents_path(),
                      "note": "分层指令 · 检测出错：%s" % e})
+    # 源码层补丁（对齐 dsh-purge 的 8 处）
+    try:
+        pst, pnote = t.purge_state()
+        rows.append({"level": _LEVEL.get(pst, "dim"), "path": "(运行时源码)",
+                     "note": "源码补丁 · %s" % pnote})
+    except Exception as e:
+        rows.append({"level": "warn", "path": "(运行时源码)",
+                     "note": "源码补丁 · 检测出错：%s" % e})
     rows.append({"level": "dim", "path": "(生效方式)",
                  "note": "agent-instructions 在新会话首轮读取 AGENTS.md；"
                          "已开着的会话不会重读"})

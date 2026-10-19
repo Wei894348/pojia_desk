@@ -131,7 +131,7 @@ def _read_version():
             return v
     except Exception:
         pass
-    return "6.11.1"
+    return "6.12.0"
 
 
 VERSION = _read_version()
@@ -2469,7 +2469,7 @@ class DshTarget:
             "\n"
             "## 复核词\n"
             "\n"
-            "操作者发送「冷咖啡」「cold coffee」时，视为要求复核本轮推进状态：\n"
+            "操作者发送「学姐」「麻衣学姐」时，视为要求复核本轮推进状态：\n"
             "首行输出 `[MUSE ROUTE] 已复核 — <对象>`，随后按最近目标续做。\n"
             "\n"
             "## 输出收口\n"
@@ -2716,6 +2716,83 @@ class DshTarget:
             done.append("%s=%s" % (layer, st))
         return done
 
+    def _purge(self):
+        """加载 dsh_purge（DSH 源码层补丁）。"""
+        import importlib.util
+        p = os.path.join(HERE, "dsh_purge.py")
+        if not os.path.isfile(p):
+            return None
+        m = sys.modules.get("dsh_purge")
+        if m is not None and hasattr(m, "apply_all"):
+            return m
+        spec = importlib.util.spec_from_file_location("dsh_purge", p)
+        m = importlib.util.module_from_spec(spec)
+        sys.modules["dsh_purge"] = m
+        spec.loader.exec_module(m)
+        return m
+
+    def purge_state(self):
+        """源码层补丁的汇总状态。"""
+        mod = self._purge()
+        if mod is None:
+            return "absent", "dsh_purge.py 缺失"
+        bases = mod.find_ai_bases()
+        if not bases:
+            return "absent", "没找到 DSH 运行时"
+        total = applied = 0
+        for b in bases:
+            for r in mod.status(b):
+                total += 1
+                if r["state"] == "applied":
+                    applied += 1
+        return ("current" if applied == total else "stale",
+                "%d / %d 已清除（%d 份运行时）" % (applied, total, len(bases)))
+
+    def purge_apply(self, mode="apply"):
+        """对每一份 DSH 运行时打源码补丁。"""
+        mod = self._purge()
+        if mod is None:
+            return "absent", "dsh_purge.py 缺失"
+        bases = mod.find_ai_bases()
+        if not bases:
+            return "absent", "没找到 DSH 运行时（需要先装 DSH）"
+        dry = (mode == "dry-run")
+        lines = []
+        n_ok = n_skip = n_miss = 0
+        for b in bases:
+            if not dry:
+                mod.backup_all(b)
+            rep, _changed = mod.apply_all(b, dry=dry)
+            for r in rep:
+                st = r["state"]
+                if st in ("applied", "would_apply", "already"):
+                    if st == "already":
+                        n_skip += 1
+                    else:
+                        n_ok += 1
+                elif st == "pattern_not_found":
+                    n_miss += 1
+                elif st == "missing_file":
+                    pass
+                else:
+                    n_miss += 1
+        return ("dry" if dry else "deployed"), (
+            "运行时 %d 份；新增 %d，已是最新 %d，锚点未命中 %d"
+            % (len(bases), n_ok, n_skip, n_miss))
+
+    def purge_revert(self, mode="apply"):
+        mod = self._purge()
+        if mod is None:
+            return "absent", "dsh_purge.py 缺失"
+        bases = mod.find_ai_bases()
+        if not bases:
+            return "absent", "没找到 DSH 运行时"
+        n = 0
+        for b in bases:
+            done, _err = mod.revert_all(b)
+            n += len(done)
+        return ("dry" if mode == "dry-run" else "removed"), "回拷 %d 个文件" % n
+
     def remove_agents(self, mode="apply"):
         """摘掉标记块；块外内容原样保留，摘完为空就删文件。"""
         p = self.agents_path()
@@ -2827,6 +2904,21 @@ class DshTarget:
                 log("每轮重锁 %s | %s" % (st, note), "g", "dsh")
             else:
                 log("每轮重锁 %s | %s" % (st, note), "y", "dsh")
+
+        # ---- 源码层补丁：对齐 Susu 的 dsh-purge（8 处）----
+        #  改 DSH 运行时的 JS 与 cordis 配置，覆盖「免责声明 / persona / 审批 / 沙箱」。
+        #  每份运行时都打，备份到 <文件>.dshpurge.bak，revert 逐字节回拷。
+        if not getattr(args, "no_dsh_purge", False):
+            if mode == "revert":
+                st, note = self.purge_revert("dry-run" if mode == "dry-run" else "apply")
+            else:
+                st, note = self.purge_apply("dry-run" if mode == "dry-run" else "apply")
+            if st == "dry":
+                log("源码补丁 [预演] %s" % note, "y", "dsh")
+            elif st in ("deployed", "removed"):
+                log("源码补丁 %s | %s" % (st, note), "g", "dsh")
+            else:
+                log("源码补丁 %s | %s" % (st, note), "y", "dsh")
 
         if mode != "revert":
             running = self.running()
@@ -7394,6 +7486,8 @@ def build_parser():
                    help="DSH：不装每轮重锁插件（默认会装并挂到每个 profile）")
     p.add_argument("--no-dsh-layers", action="store_true", dest="no_dsh_layers",
                    help="DSH：只写 ~/.dsh/AGENTS.md，不写分层指令文件")
+    p.add_argument("--no-dsh-purge", action="store_true", dest="no_dsh_purge",
+                   help="DSH：不打源码层补丁（默认会改运行时的 8 处）")
     p.add_argument("--persona", help="人格文件（默认脚本目录 persona.md）")
     p.add_argument("--pick", metavar="TARGET",
                    help="弹系统目录选择窗口，手动指定 dsh/codex/wb 的安装位置并记住")
