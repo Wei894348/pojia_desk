@@ -1856,9 +1856,14 @@ async function loadPatch() {
       html += '<div class="pmetric ' + (okN === pl.length ? 'p-ok' : 'p-warn') + '"><b>' +
         okN + ' / ' + pl.length + '</b><span>源码补丁 · 运行时文件</span></div>';
       pl.forEach((x) => {
+        // 8 条补丁常常都叫 lib/index.js，只有带包名才分得清是哪个包。
+        // 从路径里找 dsh-* 包名，再拼上它后面的相对路径。
+        const parts = String(x.path || '').replace(/\\/g, '/').split('/').filter(Boolean);
+        const pi = parts.findIndex((s) => /^dsh-/.test(s));
+        const short2 = pi >= 0 ? parts.slice(pi).join('/') : parts.slice(-3).join('/');
         html += '<div class="pmetric p-note"><b style="font-size:12px">#' + x.id + ' ' +
           esc(x.desc) + '</b><span>' + esc(x.layer) + ' · ' +
-          (x.applied ? '已清除' : '待清除') + ' · ' + esc(short(x.path)) + '</span>' +
+          (x.applied ? '已清除' : '待清除') + ' · ' + esc(short2) + '</span>' +
           '<span class="mono" style="font-size:11px;opacity:.6;word-break:break-all">' +
           esc(x.path) + '</span></div>';
       });
