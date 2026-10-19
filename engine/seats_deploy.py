@@ -318,42 +318,49 @@ def lib_dir(seat):
 def lib_files(seat):
     """本席位可换源的指令文件清单（裸文件名）。
 
-    席位源（content/seats/<seat>.md）永远在第一位：它既是默认正文，
-    也是换源的「原件」；targets/<seat>/instructions/ 里另放的文件排在后面。
+    席位源（content/seats/<seat>.md）是「原件」，只在 targets/<seat>/instructions/
+    还没有任何指令文件时作为兜底候选 —— 否则指令页会同时列出
+    「学姐.md」和「claude.md」两份同样的正文，看起来像重复。
     """
     spec = SEATS[seat]
     seed_name = os.path.basename(spec["seed"])
     out = []
-    if os.path.isfile(spec["seed"]):
-        out.append(seed_name)
     lib = spec["lib"]
     if os.path.isdir(lib):
         for n in sorted(os.listdir(lib)):
-            if n.lower().endswith(".md") and not n.startswith("custom_") and n not in out:
+            if n.lower().endswith(".md") and not n.startswith("custom_"):
                 out.append(n)
+    if not out and os.path.isfile(spec["seed"]):
+        out.append(seed_name)
     return out
 
 
 def pack_name(seat):
+    """当前指令源。状态表里记的那份优先；否则取指令库第一份。
+
+    不再默认回落到 content/seats/<seat>.md 原件 —— 那会在指令页多出一份
+    与入库指令文件内容相同的候选，看起来就是两条重复。
+    """
     st = state(seat)
     name = st.get("pack") or st.get("last_pack") or ""
     spec = SEATS[seat]
     cands = lib_files(seat)
-    seed_name = os.path.basename(spec["seed"])
     if name and name in cands:
         return name
-    if seed_name in cands:
-        return seed_name
-    return cands[0] if cands else ""
+    return cands[0] if cands else os.path.basename(spec["seed"])
 
 
 def pack_text(seat, name=""):
+    """读取指令源正文。
+
+    指令库里的文件优先；只有库里没有这份时才回落到席位原件
+    content/seats/<seat>.md（改这份原件，所有引用它的席位一起变）。
+    """
     spec = SEATS[seat]
     name = name or pack_name(seat)
-    if name == os.path.basename(spec["seed"]):
+    p = os.path.join(spec["lib"], name) if name else ""
+    if (not p or not os.path.isfile(p)) and name == os.path.basename(spec["seed"]):
         p = spec["seed"]
-    else:
-        p = os.path.join(spec["lib"], name) if name else ""
     if not p or not os.path.isfile(p):
         p = spec["seed"]
     t = _read(p)

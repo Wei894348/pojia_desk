@@ -2394,6 +2394,7 @@ def _doc_scan_seat(agent, label):
     # 1) 指令源候选（拨右 = 用它部署）
     for fn in sd.lib_files(agent):
         p = (spec["seed"] if fn == os.path.basename(spec["seed"])
+             and not os.path.isfile(os.path.join(spec["lib"], fn))
              else os.path.join(spec["lib"], fn))
         if not p or not os.path.isfile(p):
             continue
