@@ -802,13 +802,17 @@ def restore(seat):
         if w["kind"] == "skill":
             # 技能只删不拷：目录里的 .bak 是历史残留，与本次还原无关
             continue
-        bak = _bak_path(home, p)
-        if os.path.isfile(bak) and not _ours(seat, bak):
-            _write_bytes(p, bak)
-            restored.append(p)
-            continue
         if w["kind"] == "marked":
-            cleaned, had = wipe_marked(seat, _read(p))
+            # 标记块类（CLAUDE.md / SOUL.md）：**优先剥块**，保留用户部署后的改动。
+            # 只有文件损坏（空 / 标记块不见了）才回拷部署前的备份。
+            text = _read(p)
+            cleaned, had = wipe_marked(seat, text)
+            bak = _bak_path(home, p)
+            broken = not text.strip() or (not had and (MARK_BEGIN % seat) not in text)
+            if bak and os.path.isfile(bak) and not _ours(seat, bak) and broken:
+                _write_bytes(p, bak)
+                restored.append(p)
+                continue
             if had:
                 if cleaned.strip():
                     _write(p, cleaned)
@@ -819,7 +823,13 @@ def restore(seat):
                         removed.append(p)
                     except OSError:
                         pass
-        elif w["kind"] == "file":
+            continue
+        bak = _bak_path(home, p)
+        if os.path.isfile(bak) and not _ours(seat, bak):
+            _write_bytes(p, bak)
+            restored.append(p)
+            continue
+        if w["kind"] == "file":
             if _ours(seat, p):
                 try:
                     os.remove(p)
