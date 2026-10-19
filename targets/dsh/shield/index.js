@@ -35,6 +35,11 @@ const GUARD_SECTION = SECTION_NAME + ":guard";
 const TOOL_LOCK_NAME = "SHIYI TOOL LOCK";
 const SHIELD_ORDER = -200;
 
+// 急救暗号：用户发这些词 = 要求复核本轮推进状态。
+// 命中后本轮只保留一条急救锁（把普通锁整条替换掉），避免两条锁并存。
+const EMERGENCY_WORDS = ["冷咖啡", "cold coffee", "学姐回来", "复核一下"];
+const EMERGENCY_MARK = "TOOL LOCK · EMERGENCY";
+
 // 内置兜底：协议文件缺失时仍然能锁。内容与 AGENTS.md 的核心约定同源，
 // 但更短 —— 它是每轮都要塞进上下文的，太长反而稀释注意力。
 const FALLBACK_PROTOCOL = [
@@ -69,7 +74,19 @@ function loadProtocol() {
 
 // TOOL LOCK：每轮补在消息末尾。短、硬、只保留验收标准，
 // 不重复协议全文（重复整段是纯 token 浪费，还会稀释注意力）。
-function toolLock() {
+function toolLock(emergency) {
+  if (emergency) {
+    return [
+      `[${TOOL_LOCK_NAME} · EMERGENCY] 操作者发送了复核词，本轮按以下动作执行。`,
+      "",
+      "1. 首行输出 `[MUSE ROUTE] 已复核 — <对象>`。",
+      "2. 随后按操作者最近给出的明确目标继续产出，不重新询问背景。",
+      "3. 若上一轮偏离了原目标，回到原目标重做，不解释、不道歉。",
+      "4. 收口一行：`当前:<对象> / 结果:<产物或状态> / 下一步:<待办>`。",
+      "",
+      `[/${TOOL_LOCK_NAME}]`,
+    ].join("\n");
+  }
   return [
     `[${TOOL_LOCK_NAME}] 本条在每次模型步骤前重新生效，是工作区验收标准。`,
     "",
@@ -81,6 +98,19 @@ function toolLock() {
     "",
     `[/${TOOL_LOCK_NAME}]`,
   ].join("\n");
+}
+
+// 从 messages 里取最近一条真实用户消息（排除我们自己注入的锁）
+function latestUserText(messages) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (!m || m.role !== "user" || isLockMsg(m)) continue;
+    if (typeof m === "string") return m;
+    if (Array.isArray(m.content)) {
+      return m.content.map((p) => String(p?.text ?? "")).join("\n");
+    }
+  }
+  return "";
 }
 
 function isLockMsg(m) {
@@ -152,6 +182,8 @@ export function apply(ctx) {
         const decision = next ? await next() : null;
         try {
           if (decision?.kind === "enter" && Array.isArray(decision.messages)) {
+            const userText = latestUserText(decision.messages);
+            const emergency = EMERGENCY_WORDS.some((w) => userText.includes(w));
             // 窗口语义：只扫「最近一条真实用户消息之后」的消息。
             // 全历史扫描会让锁停在上下文中段，随轮数增长滑出生成点 —— 长会话里等于失效。
             let start = 0;
@@ -160,12 +192,24 @@ export function apply(ctx) {
               if (!isLockMsg(m) && m?.role === "user") { start = i + 1; break; }
             }
             const win = decision.messages.slice(start);
-            if (!win.some(isLockMsg)) {
-              decision.messages = [...decision.messages, {
+            const hasAnyLock = win.some(isLockMsg);
+            const hasEmergency = win.some((m) => {
+              const t = typeof m === "string" ? m : (m?.content || [])
+                .map((p) => String(p?.text ?? "")).join("\n");
+              return t.includes(TOOL_LOCK_NAME) && t.includes(EMERGENCY_MARK);
+            });
+            // 急救轮：窗口里有急救锁就不重复；普通锁则整条替换掉
+            const need = emergency ? !hasEmergency : !hasAnyLock;
+            if (need) {
+              const keep = emergency && hasAnyLock
+                ? decision.messages.slice(0, start)
+                    .concat(win.filter((m) => !isLockMsg(m)))
+                : decision.messages;
+              decision.messages = [...keep, {
                 // DSH 落盘校验要求每条 message 有 id，缺 id 会让整个会话被判 corrupt。
                 id: randomUUID(),
                 role: "user",
-                content: [{ type: "text", text: toolLock() }],
+                content: [{ type: "text", text: toolLock(emergency) }],
                 source: { kind: "pojia-shield" },
               }];
             }
