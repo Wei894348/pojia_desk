@@ -1294,6 +1294,120 @@ function createWindow() {
     });
   }
 
+  // DSH 提示词落点实机点测：POJIA_DSHTEST=1
+  // 点指令页的 DSH 页（指令文件 / AGENTS.md / SKILL.md 三类）、卡片下拉、部署/还原。
+  if (process.env.POJIA_DSHTEST) {
+    mainWin.webContents.once('did-finish-load', async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const js = (s) => mainWin.webContents.executeJavaScript(s);
+      const save = async (name) => {
+        await mainWin.webContents.capturePage();
+        await sleep(160);
+        const img = await mainWin.webContents.capturePage();
+        fs.writeFileSync(path.join(ROOT, '状态', name), img.toPNG());
+      };
+      const R = { steps: [], shots: [] };
+      const ok = (name, cond, extra) => {
+        R.steps.push({ name, ok: !!cond, extra: cond ? '' : (extra === undefined ? '' : extra) });
+      };
+      const HOME = path.join(process.env.USERPROFILE || process.env.HOME, '.dsh');
+      const rd = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch (_) { return ''; } };
+      const ui = () => js(`JSON.stringify((() => {
+        const rows = [...document.querySelectorAll('#pmGrid .pmrow')];
+        return {
+          cats: [...document.querySelectorAll('#pmCats .pmcat')].map(b => [b.dataset.cat, b.textContent.trim()]),
+          rows: rows.map(r => ({ id: r.dataset.id, on: !r.classList.contains('off-doc') })),
+          agent: (document.getElementById('pmAgentName') || {}).textContent || '',
+          log: (document.getElementById('logBody') || {}).textContent || '',
+        };
+      })())`);
+      const gotoDsh = async () => {
+        await js("document.querySelector('.snav[data-view=prompts]').click()");
+        await sleep(2400);
+        await js("document.querySelector('#pmAgents .pmagent[data-agent=dsh]').click()");
+        const t0 = Date.now();
+        while (Date.now() - t0 < 40000) {
+          const st = JSON.parse(await js(`JSON.stringify({
+            name: (document.getElementById('pmAgentName') || {}).textContent || '',
+            rows: document.querySelectorAll('#pmGrid .pmrow').length })`));
+          if (/DSH/.test(st.name) && st.rows > 0) { await sleep(800); return; }
+          await sleep(600);
+        }
+      };
+      const pickCat = async (cat) => {
+        await js(`(() => { const b = document.querySelector('#pmCats .pmcat[data-cat="${cat}"]');
+                   if (b) b.click(); })()`);
+        await sleep(700);
+      };
+
+      try {
+        await sleep(9000);
+        await gotoDsh();
+        let s = JSON.parse(await ui());
+        ok('进入 DSH 指令页', /DSH/.test(s.agent), s.agent);
+        ok('三个分类都在',
+          ['instruction', 'memory', 'skill'].every((c) => s.cats.some(([id]) => id === c)),
+          s.cats);
+        for (const [cat, shot] of [
+          ['instruction', '_dt_dsh_1_instruction.png'],
+          ['memory', '_dt_dsh_2_agents.png'],
+          ['skill', '_dt_dsh_3_skill.png'],
+        ]) {
+          await pickCat(cat);
+          s = JSON.parse(await ui());
+          ok('分类 ' + cat + ' 有内容', s.rows.length > 0, s.rows.length);
+          await save(shot);
+          R.shots.push(shot);
+        }
+
+        // 卡片：两张 DSH 卡都在，都带下拉，状态行报的是盘面
+        const cards = JSON.parse(await js(`JSON.stringify(
+          [...document.querySelectorAll('#cards > *')].map(c => ({
+            key: c.dataset.key,
+            state: c.className,
+            sel: c.querySelectorAll('select.skselect').length,
+            opts: [...c.querySelectorAll('select.skselect option')].map(o => o.value),
+          })))`));
+        const dsh = cards.filter((c) => c.key === 'dsh' || c.key === 'dsh-desktop');
+        ok('两张 DSH 卡都在', dsh.length === 2, cards.map((c) => c.key));
+        ok('两张都带动作下拉', dsh.every((c) => c.sel === 1), dsh.map((c) => c.sel));
+        ok('四个选项齐全',
+          dsh.every((c) => c.opts.join(',') === 'both,prompt,skills,none'),
+          dsh.map((c) => c.opts.join(',')));
+
+        // 点「验证」：只读，核对落点
+        await js("document.getElementById('btnTest').click()");
+        await sleep(6000);
+        s = JSON.parse(await ui());
+        ok('验证日志里出现 DSH 提示词', /DSH|提示词/.test(s.log.slice(-4000)), s.log.slice(-300));
+
+        // 落盘核对：AGENTS.md 标记块 + skills
+        const ag = rd(path.join(HOME, 'AGENTS.md'));
+        ok('AGENTS.md 有标记块', ag.includes('pojia:dsh begin'), ag.slice(0, 80));
+        ok('AGENTS.md 未超预算', Buffer.byteLength(ag, 'utf8') <= 65536,
+          Buffer.byteLength(ag, 'utf8'));
+        let skills = 0;
+        try {
+          for (const d of fs.readdirSync(path.join(HOME, 'skills'))) {
+            const p = path.join(HOME, 'skills', d, 'SKILL.md');
+            if (rd(p).includes('pojia-route-skill')) skills++;
+          }
+        } catch (_) { /* 没装 */ }
+        ok('路由 skills 已投放', skills >= 80, skills);
+      } catch (e) {
+        R.error = String(e && e.stack || e).slice(0, 900);
+      }
+      R.summary = {
+        total: R.steps.length,
+        pass: R.steps.filter((x) => x.ok).length,
+        fail: R.steps.filter((x) => !x.ok).length,
+      };
+      fs.writeFileSync(path.join(ROOT, '状态', '_gui_dsh.json'),
+        JSON.stringify(R, null, 1), 'utf8');
+      app.quit();
+    });
+  }
+
   // WorkBuddy 全功能实机点测：POJIA_WBTEST=1
   // 真实点击：卡片滑块 / 指令页分类与开关 / 验证 / 总览；每步核对页面与磁盘。
   if (process.env.POJIA_WBTEST || process.env.POJIA_SEATTEST) {

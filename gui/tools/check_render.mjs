@@ -180,51 +180,51 @@ check('滑块态文案映射齐四档',
   }));
 check('碎卡带 err 类（品红）', buildCard(CARD('wb', { state: 'broken' })).className.includes('err'));
 
-console.log('【3】DSH 卡的四档破甲模式下拉（两张 DSH 卡共享）');
+console.log('【3】DSH 卡的「本次动作」下拉（两张 DSH 卡共享）');
 const dshCard = buildCard(CARD('dsh', { state: 'current' }));
 const sel = dshCard.querySelector('select.skselect');
 check('DSH 卡带四档下拉', !!sel, dshCard.className);
 check('四个选项 = 四种组合',
-  !!sel && sel.children.map((o) => o.value).join(',') === 'both,prompt,preset,none',
+  !!sel && sel.children.map((o) => o.value).join(',') === 'both,prompt,skills,none',
   sel && sel.children.map((o) => o.value).join(','));
 check('桌面版卡也有下拉',
   !!buildCard(CARD('dsh-desktop', { state: 'current' })).querySelector('select.skselect'));
 check('别的目标卡没有下拉',
   !buildCard(CARD('wb')).querySelector('select.skselect'));
 check('optMode 四档映射',
-  optMode({ prompt: true, preset: true }) === 'both'
-  && optMode({ prompt: true, preset: false }) === 'prompt'
-  && optMode({ prompt: false, preset: true }) === 'preset'
-  && optMode({ prompt: false, preset: false }) === 'none');
+  optMode({ prompt: true, skills: true }) === 'both'
+  && optMode({ prompt: true, skills: false }) === 'prompt'
+  && optMode({ prompt: false, skills: true }) === 'skills'
+  && optMode({ prompt: false, skills: false }) === 'none');
 
 console.log('【4】组合 → 命令行开关');
-state.opts.prompt = true; state.opts.preset = true;
+state.opts.prompt = true; state.opts.skills = true;
 check('both → 不带开关', flagsForOpts().join(',') === '');
-state.opts.prompt = true; state.opts.preset = false;
-check('只注入提示词 → no-preset', flagsForOpts().join(',') === 'no-preset');
-state.opts.prompt = false; state.opts.preset = true;
-check('只加破甲模式 → preset-only', flagsForOpts().join(',') === 'preset-only');
-state.opts.prompt = false; state.opts.preset = false;
+state.opts.prompt = true; state.opts.skills = false;
+check('只写提示词 → no-skills', flagsForOpts().join(',') === 'no-skills');
+state.opts.prompt = false; state.opts.skills = true;
+check('只投放 skills → no-agents', flagsForOpts().join(',') === 'no-agents');
+state.opts.prompt = false; state.opts.skills = false;
 check('都不做 → 不带开关（doRun 把 dsh 剔出目标）', flagsForOpts().join(',') === '');
-state.opts.prompt = true; state.opts.preset = true;
+state.opts.prompt = true; state.opts.skills = true;
 
 console.log('【5】还原确认文案按档位变');
 const askBoth = revertAsk(['dsh']);
-state.opts.prompt = false; state.opts.preset = true;
-const askPreset = revertAsk(['dsh']);
-state.opts.prompt = true; state.opts.preset = false;
+state.opts.prompt = false; state.opts.skills = true;
+const askSkills = revertAsk(['dsh']);
+state.opts.prompt = true; state.opts.skills = false;
 const askPrompt = revertAsk(['dsh']);
 const askOther = revertAsk(['wb']);
-check('both → 说明 preset 目录会一并删掉',
-  askBoth.includes('破甲模式目录也会一并删掉'), askBoth.split('\n').pop());
-check('只动破甲模式 → 说明本体不动',
-  askPreset.includes('本体的提示词补丁保持不动'), askPreset.split('\n').pop());
-check('只动提示词 → 说明 preset 留着',
-  askPrompt.includes('破甲模式目录留着'), askPrompt.split('\n').pop());
+check('both → 说明 AGENTS.md 与 skills 都会撤',
+  askBoth.includes('AGENTS.md 标记块会摘掉'), askBoth.split('\n').pop());
+check('只投放 skills → 说明 AGENTS.md 不动',
+  askSkills.includes('AGENTS.md 保持不动'), askSkills.split('\n').pop());
+check('只写提示词 → 说明 skills 留着',
+  askPrompt.includes('skills 留着'), askPrompt.split('\n').pop());
 check('还原走快照不是二进制基线（文案写死）',
   askOther.includes('事务快照') && askOther.includes('备份还原'));
-check('目标里没有 dsh → 不提破甲模式', !askOther.includes('破甲模式'));
-state.opts.prompt = true; state.opts.preset = true;
+check('目标里没有 dsh → 不提 AGENTS.md', !askOther.includes('AGENTS.md'));
+state.opts.prompt = true; state.opts.skills = true;
 
 console.log('【6】刷新时复用节点（不整卡重建）');
 renderSkeleton(ORDER);

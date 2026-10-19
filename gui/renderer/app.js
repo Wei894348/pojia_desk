@@ -35,21 +35,25 @@ const seatOf = (k) => REAL_SEAT[k] || k;
 const OPT_KEY = 'pojia.opts';
 const VIEW_TITLES = { deploy: '部署目标', skills: '技能管理', prompts: '指令提示词', settings: '设置', about: '关于' };
 
-// DSH 破甲模式四档：两项各管一头（提示词补丁 / 用户级 preset）
+// DSH 只有一条提示词通道（~/.dsh/AGENTS.md）。这个下拉决定「这次动哪些」：
+//   both    = 写 AGENTS.md + 投放 skills（默认）
+//   prompt  = 只写 AGENTS.md
+//   skills  = 只投放 skills
+//   none    = 这次跳过 DSH
 function optMode(o) {
-  if (o.prompt && o.preset) return 'both';
+  if (o.prompt && o.skills) return 'both';
   if (o.prompt) return 'prompt';
-  if (o.preset) return 'preset';
+  if (o.skills) return 'skills';
   return 'none';
 }
 const MODE_TEXT = {
-  both: '提示词 + 破甲模式', prompt: '只注入提示词',
-  preset: '只加破甲模式', none: '都不做',
+  both: '提示词 + skills', prompt: '只写提示词',
+  skills: '只投放 skills', none: '都不做',
 };
 function flagsForOpts() {
-  const { prompt, preset } = state.opts;
-  if (prompt && !preset) return ['no-preset'];
-  if (!prompt && preset) return ['preset-only'];
+  const { prompt, skills } = state.opts;
+  if (prompt && !skills) return ['no-skills'];
+  if (!prompt && skills) return ['no-agents'];
   return [];
 }
 
@@ -60,7 +64,7 @@ const state = {
   selected: new Set(ORDER),
   busy: false,
   logCount: 0,
-  opts: { prompt: true, preset: true },
+  opts: { prompt: true, skills: true },
   _lastRefreshAt: 0,
   _refreshTimer: 0,
   _queuedKeys: null,
@@ -79,7 +83,7 @@ function cacheCard(c) { state._cardCache.set(c.key, { card: c, at: Date.now() })
 function loadOpts() {
   try {
     const d = JSON.parse(localStorage.getItem(OPT_KEY) || '{}');
-    if (typeof d.preset === 'boolean') state.opts.preset = d.preset;
+    if (typeof d.skills === 'boolean') state.opts.skills = d.skills;
     if (typeof d.prompt === 'boolean') state.opts.prompt = d.prompt;
   } catch (_) { /* 没存过就用默认 */ }
 }
@@ -422,13 +426,13 @@ function buildCardBody(c) {
   });
   if (nDet) box.appendChild(detail);
 
-  // DSH 破甲模式四档下拉（两张 DSH 卡共享 state.opts）
+  // DSH 动作下拉（两张 DSH 卡共享 state.opts）
   if (c.key === 'dsh' || c.key === 'dsh-desktop') {
     const optrow = document.createElement('div');
     optrow.className = 'sliderwrap';
     const lbl = document.createElement('span');
     lbl.className = 'sliderlbl';
-    lbl.textContent = '破甲模式';
+    lbl.textContent = '本次动作';
     const sel = document.createElement('select');
     sel.className = 'skselect';
     Object.entries(MODE_TEXT).forEach(([v, t]) => {
@@ -440,9 +444,9 @@ function buildCardBody(c) {
     });
     sel.addEventListener('change', () => {
       state.opts.prompt = sel.value === 'both' || sel.value === 'prompt';
-      state.opts.preset = sel.value === 'both' || sel.value === 'preset';
+      state.opts.skills = sel.value === 'both' || sel.value === 'skills';
       saveOpts();
-      logLine('dim', 'sys', 'DSH 破甲 → ' + MODE_TEXT[sel.value]);
+      logLine('dim', 'sys', 'DSH 本次动作 → ' + MODE_TEXT[sel.value]);
     });
     optrow.appendChild(lbl);
     optrow.appendChild(sel);
@@ -669,10 +673,10 @@ async function doRun(action, forcedTargets, silent) {
   let tg = forcedTargets || targets();
   if (!tg.length) { toast('先在卡片上勾选目标', 'warn'); return; }
 
-  const dshOff = !state.opts.prompt && !state.opts.preset;
+  const dshOff = !state.opts.prompt && !state.opts.skills;
   if (dshOff && hasDsh(tg) && !forcedTargets) {
     tg = tg.filter((k) => k !== 'dsh' && k !== 'dsh-desktop');
-    logLine('dim', 'sys', 'DSH 破甲模式是「都不做」—— 本次跳过 DSH');
+    logLine('dim', 'sys', 'DSH 选了「都不做」—— 本次跳过 DSH');
   }
   if (!tg.length) {
     toast('没有可执行的目标', 'warn');
@@ -695,8 +699,8 @@ async function doRun(action, forcedTargets, silent) {
   const names = { apply: '部署', revert: '还原', dry: '预演' };
   const flags = flagsForOpts();
   const hint = (hasDsh(tg) && flags.length)
-    ? (flags[0] === 'no-preset' ? '（DSH 只动本体，破甲模式留着）'
-                                : '（DSH 只动破甲模式，本体不碰）')
+    ? (flags[0] === 'no-skills' ? '（DSH 只写提示词，skills 不动）'
+                                : '（DSH 只投放 skills，AGENTS.md 不碰）')
     : '';
   setBusy(true, names[action] + '中……');
   logHead('▶ ' + names[action] + ' → ' + tg.join(' / ') + hint);
@@ -719,9 +723,9 @@ function revertAsk(tg) {
         + '每个目标优先用最近一次部署的事务快照逐文件还原；没有快照时退回备份还原。';
   if (!hasDsh(tg)) return s;
   const mode = optMode(state.opts);
-  if (mode === 'both') s += '\n\nDSH：本体提示词会还原，破甲模式目录也会一并删掉。';
-  else if (mode === 'prompt') s += '\n\nDSH 只还原本体，破甲模式目录留着。';
-  else if (mode === 'preset') s += '\n\nDSH 只移除破甲模式目录，本体的提示词补丁保持不动。';
+  if (mode === 'both') s += '\n\nDSH：AGENTS.md 标记块会摘掉，投放的 skills 也会一并撤下。';
+  else if (mode === 'prompt') s += '\n\nDSH 只摘 AGENTS.md 标记块，skills 留着。';
+  else if (mode === 'skills') s += '\n\nDSH 只撤投放的 skills，AGENTS.md 保持不动。';
   return s;
 }
 
@@ -1825,7 +1829,6 @@ async function loadPatch() {
     patch:  '官方安装包里被打过补丁的文件',
     output: '输出风格通道（output styles）',
     skill:  '投放进技能目录的路由技能',
-    preset: '用户级 agent preset（模式下拉）',
     other:  '其它落盘文件',
     rows:   '体检与检测的逐项注记（含未知 / 异常标记）',
   };

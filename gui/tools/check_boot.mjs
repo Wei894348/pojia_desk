@@ -167,7 +167,7 @@ const check = (name, cond, extra) => {
 };
 const $ = (id) => doc.getElementById(id);
 const lastRun = () => calls.run[calls.run.length - 1];
-const setOpts = (p, q) => { X.state.opts.prompt = p; X.state.opts.preset = q; };
+const setOpts = (p, q) => { X.state.opts.prompt = p; X.state.opts.skills = q; };
 
 // ── 1. 启动路径 ──────────────────────────────────────────
 console.log('【1】bind() + boot() 真跑');
@@ -212,15 +212,15 @@ check('前端把 dsh-desktop 原样发给桥（折叠在桥侧做）',
 calls.run.length = 0;
 setOpts(true, false);
 await deploy.fire('click'); await new Promise((r) => setImmediate(r));
-check('只勾「注入提示词」→ flags=no-preset，dsh 仍在目标里',
-  lastRun().flags.join(',') === 'no-preset' && lastRun().targets.includes('dsh'),
+check('只勾「写提示词」→ flags=no-skills，dsh 仍在目标里',
+  lastRun().flags.join(',') === 'no-skills' && lastRun().targets.includes('dsh'),
   JSON.stringify(lastRun()));
 
 calls.run.length = 0;
 setOpts(false, true);
 await deploy.fire('click'); await new Promise((r) => setImmediate(r));
-check('只勾「增加破甲模式」→ flags=preset-only，所有卡片都还在',
-  lastRun().flags.join(',') === 'preset-only'
+check('只勾「投放 skills」→ flags=no-agents，所有卡片都还在',
+  lastRun().flags.join(',') === 'no-agents'
     && lastRun().targets.length === X.ORDER.length,
   JSON.stringify(lastRun()));
 
@@ -243,7 +243,7 @@ check('都不勾 → revert 的 targets 里没有 dsh',
 setOpts(true, true);
 calls.run.length = 0;
 await $('btnRevert').fire('click'); await new Promise((r) => setImmediate(r));
-check('都勾 → revert 带上 dsh（连带删 preset 目录）',
+check('都勾 → revert 带上 dsh（AGENTS.md 与 skills 一起撤）',
   lastRun().targets.includes('dsh') && lastRun().flags.length === 0, JSON.stringify(lastRun()));
 
 // ── 4. 一个目标都不勾：必须拦住，不能打桥 ───────────────────

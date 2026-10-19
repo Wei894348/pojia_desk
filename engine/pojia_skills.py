@@ -285,7 +285,7 @@ def uninstall(seat: str, remove_fn, home: str = "") -> dict:
 def summarize(seat: str, home: str = "") -> str:
     st = status(seat, home)
     if not st["supported"]:
-        return "  [%s] 无 skills 通道（preset 驱动）" % seat
+        return "  [%s] 该目标没有 skills 通道" % seat
     if not os.path.isdir(st["root"]):
         return "  [%s] 目录不存在，跳过：%s" % (seat, st["root"])
     return ("  [%s] %s —— 最新 %d / 待更新 %d / 缺失 %d / 用户自有 %d"

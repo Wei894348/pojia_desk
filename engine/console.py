@@ -150,7 +150,7 @@ def build_args(target, extra=None):
         nofileguard=True, ask_mode=False, web_filter=True,
         guard=None, snapshot=False, compare=False,
         purge_spill=False, keep_cache=False,
-        no_dsh_preset=False,
+        no_dsh_agents=False,
         pick="", clear=False,
     )
 
@@ -239,35 +239,48 @@ def test_codex():
 
 
 def test_dsh():
+    """DSH 验证：提示词落点（~/.dsh/AGENTS.md）+ skills 投放。
+
+    旧实现只翻 npx 缓存、按"含人格标记的文件"计数 —— 那条通道已经不再是
+    主落点（现在写 ~/.dsh/AGENTS.md），而且本机根本没有 npx 缓存。
+    """
     ok = True
-    npx_root = os.path.expandvars(r"%LOCALAPPDATA%\npm-cache\_npx")
-    roots = glob.glob(os.path.join(npx_root, "*", "node_modules", "@deepseek-ai"))
-    if not roots:
-        print("  [DSH] npx 缓存中未发现 @deepseek-ai 安装（未打也未装）")
-        return True
-    total = hit = 0
-    for root in roots:
-        print("  [DSH] %s" % root)
-        for dirpath, _dirs, files in os.walk(root):
-            for fn in files:
-                if not fn.endswith((".js", ".json", ".yml", ".yaml", ".md", ".ts")):
-                    continue
-                p = os.path.join(dirpath, fn)
-                try:
-                    with open(p, encoding="utf-8", errors="replace") as f:
-                        t = f.read()
-                except Exception:
-                    continue
-                if "麻衣" in t or "沉浸优先" in t or "unlock-v6" in t or "cfg-v7" in t:
-                    total += 1
-                    if all(k in t for k in PERSONA_KEYS) or "unlock-v6" in t or "cfg-v7" in t:
-                        hit += 1
-    print("    含人格标记文件: %d / %d" % (hit, total))
-    if total and hit < total:
-        print("    [WARN] 有文件未带当前人格标记 —— 可能是旧版残留，建议 apply --force")
+    t = m.TARGETS["dsh"]()
+    user, _src = m.load_user_persona("")
+    _pol, want = m.seat_persona("dsh", user)
+    ap = t.agents_path()
+    st, note = t.agents_state(want)
+    print("  [DSH] %s" % ap)
+    if st == "current":
+        print("    [OK  ] 提示词标记块：%s" % note)
+    elif st == "absent":
+        print("    [FAIL] 没有提示词标记块：%s" % note)
         ok = False
-    elif total:
-        print("    [OK  ] 全部命中")
+    else:
+        print("    [WARN] %s" % note)
+        ok = False
+    # 预算：超过 65536 会被 agent-instructions 截断，模型看到的是半截人格
+    if os.path.isfile(ap):
+        n = len(m.read_text_safe(ap).encode("utf-8"))
+        fits = n <= m.DshTarget.AGENTS_MAX_BYTES
+        print("    [%s] 文件 %d 字节（预算 %d）"
+              % ("OK  " if fits else "FAIL", n, m.DshTarget.AGENTS_MAX_BYTES))
+        ok = ok and fits
+    # skills 落点：只数我们投的（带归属标记），用户自建的不算
+    sh = os.path.join(t.dsh_home(), "skills")
+    if os.path.isdir(sh):
+        ours = 0
+        for d in os.listdir(sh):
+            p = os.path.join(sh, d, "SKILL.md")
+            try:
+                with open(p, encoding="utf-8", errors="replace") as f:
+                    if m.SKILLS and m.SKILLS.MARK in f.read():
+                        ours += 1
+            except OSError:
+                continue
+        print("    [%s] 路由 skills：%d 份" % ("OK  " if ours else "WARN", ours))
+    else:
+        print("    [WARN] %s 不存在（skills 未投放）" % sh)
     return ok
 
 
@@ -905,8 +918,8 @@ EXTRA_FLAGS = {"--full": "full", "--nofileguard": "nofileguard",
                "--ask-mode": "ask_mode", "--web-filter": "web_filter",
                "--restart-wb": "restart_wb", "--kill-dsh": "kill_dsh",
                "--keep-cache": "keep_cache",
-               # 关掉 DSH 破甲模式（用户级 preset）的连带部署/移除
-               "--no-dsh-preset": "no_dsh_preset"}
+               # 关掉 DSH 提示词注入（~/.dsh/AGENTS.md 标记块）的连带部署/移除
+               "--no-dsh-agents": "no_dsh_agents"}
 
 
 def dispatch(target, action, extra=None):

@@ -12,14 +12,13 @@ Electron 主进程只跟这个脚本对话，不直接碰 破甲一键通.py。
     python gui/bridge.py test   [codex,dsh,wb,zcode]
     python gui/bridge.py route  "帮我弄个挂"
     python gui/bridge.py run    apply|revert|dry [codex,dsh,wb,zcode] [开关]
-    python gui/bridge.py run    preset-deploy|preset-remove|preset-status
+    python gui/bridge.py run    agents-deploy|agents-remove|agents-status
 
-DSH 的破甲模式**没有独立卡片**了 —— 它是 DSH 卡片的体检项与明细，由卡片里那个
-下拉控制。run 的第四个参数是逗号分隔的开关名，两个开关互斥：
-`no-preset`   = 只注入提示词，不连带动破甲模式目录
-`preset-only` = 只动破甲模式（deploy/remove/status），DSH 本体一个字节都不碰
+DSH 的提示词落在 `~/.dsh/AGENTS.md` 的标记块里；run 的第四个参数是逗号分隔的
+开关名，目前只有一个：
+`no-agents`   = 只投放 skills，不动 AGENTS.md
 
-targets 里的 `pojia` 是命令行专用的伪目标 —— 只用来 `status pojia` 看快照，
+targets 里的 `pojia` 是命令行专用的伪目标 —— 只用来 `status pojia` 看提示词落点，
 不会被透传给 console.py（那样会变成"未知目标"），也不进 `all`。
 """
 import base64
@@ -46,14 +45,12 @@ CONSOLE = os.path.join(ENGINE, "console.py")
 # 桌面版（dsh-desktop）—— 后者执行时折回 dsh（见 CARD_ONLY），
 # 所以命令行侧仍然是八个目标。
 ORDER = ("codex", "dsh", "dsh-desktop", "wb", "zcode", "claude", "hermes")
-# 破甲模式（用户级 agent preset）**不再是一张独立卡片** —— 它是 DSH 这个目标
-# 自己的一个可选动作，状态并进 card_dsh 的体检项与明细，由 DSH 卡片里的下拉控制。
-# PSEUDO 只是"命令行仍可显式寻址"的别名：`status pojia` 看它的状态快照。
+# PSEUDO 只是"命令行仍可显式寻址"的别名：`status pojia` 看 DSH 提示词落点的快照。
 # 它**绝不进 ORDER** —— 否则 `all` 会把它透传给 console.py 变成"未知目标"。
 PSEUDO = ("pojia",)
 # 只在界面上单独成卡的 key → 落到命令行时折给谁。
-# DSH 桌面版和 npm 版共用同一套 apply / preset 流程（preset 一次就写 web + desktop
-# 两份 profile），所以它不是一个独立的命令行目标，只是界面上的一张卡。
+# DSH 桌面版和 npm 版共用同一套落点（同一个 ~/.dsh），所以它不是一个独立的
+# 命令行目标，只是界面上的一张卡。
 CARD_ONLY = {"dsh-desktop": "dsh"}
 
 
@@ -466,288 +463,158 @@ def card_zcode():
             "rows": rows, "files": files, "metrics": metrics}
 
 
-# 「当前到底部署了什么，还是什么都没部署」—— 提示词（DSH 本体补丁）与
-# 破甲模式（用户级 agent preset）是两件可以各自独立存在的东西，卡片上用一句话说清，
-# 不用点开明细去数。两个 half 面值看着舒服点，所以分开写而不是拼字符串。
-_PROMPT_FACE = {"current": "本版", "stale": "旧版", "warn": "部分命中",
-                "foreign": "外部配置", "orphan": "CLI 未检测到"}
-_PRESET_FACE = {"current": "本版", "other": "旧版", "stale": "异常"}
+# 「当前到底部署了什么，还是什么都没部署」—— DSH 两个落点：
+# ① 提示词（~/.dsh/AGENTS.md 标记块）② 路由 skills（~/.dsh/skills）。
+# 两者各自独立，卡片上合成一句话，不用点开明细去数。
+_FACE = {"current": "本版", "other": "旧版", "absent": "", "broken": "异常"}
 _DEPLOY_LEVEL = {"on": "ok", "half": "warn", "idle": "dim"}
 
 
-def _deploy_summary(state, pst):
+def _deploy_summary(astate, sstate):
     """合成 DSH「当前部署了什么」的一句话。
 
-    提示词那半看 card 的 state（current / stale / none / broken …），
-    破甲模式那半看 preset 的 state（current / other / stale / absent / broken）。
+    astate 看 AGENTS.md 标记块（current / other / absent / broken），
+    sstate 看 skills 投放（current / absent / broken）。
     返回 chip（短标签）、text（卡片上那行）、level（on / half / idle）、any、both。
     """
-    if state == "broken":
-        return {"any": False, "both": False, "prompt": "", "preset": "",
-                "chip": "未探测到安装", "level": "idle",
-                "text": "当前：探测不到 @deepseek-ai 安装 —— 谈不上部署"}
-    pf = _PROMPT_FACE.get(state, "")
-    sf = _PRESET_FACE.get(pst, "")
-    if pf and sf:
-        d = {"chip": "提示词 + 破甲模式", "level": "on",
-             "text": "当前：已部署 提示词（%s）+ 破甲模式（%s）" % (pf, sf)}
-    elif pf:
+    af = _FACE.get(astate, "")
+    sf = "已投放" if sstate == "current" else ""
+    if af and sf:
+        d = {"chip": "提示词 + skills", "level": "on",
+             "text": "当前：已部署 提示词（%s）+ 路由 skills（%s）" % (af, sf)}
+    elif af:
         d = {"chip": "只部署了提示词", "level": "half",
-             "text": "当前：只部署了提示词（%s）· 破甲模式尚未部署" % pf}
+             "text": "当前：只部署了提示词（%s）· 路由 skills 还没投放" % af}
     elif sf:
-        d = {"chip": "只部署了破甲模式", "level": "half",
-             "text": "当前：只部署了破甲模式（%s）· DSH 本体的提示词没动" % sf}
+        d = {"chip": "只投放了 skills", "level": "half",
+             "text": "当前：只投放了路由 skills · 提示词还没写入"}
     else:
         d = {"chip": "什么都没部署", "level": "idle",
-             "text": "当前：什么都没部署 —— 提示词与破甲模式都没写入"}
-    d.update({"any": bool(pf or sf), "both": bool(pf and sf), "prompt": pf, "preset": sf})
+             "text": "当前：什么都没部署 —— 提示词与 skills 都没写入"}
+    d.update({"any": bool(af or sf), "both": bool(af and sf),
+              "prompt": af, "skills": sf})
     return d
 
 
-def _desktop_card_state(prompt_state, pst):
-    """桌面版卡的徽章状态 + 卡片那行说明 —— 两半（注入提示词 / 破甲模式）合起来判。
+def _desktop_card_state(prompt_state, skill_state):
+    """桌面版卡的徽章状态 + 卡片那行说明。
 
-    只按 pst 一刀切的写法（`"current" if pst == "current" else "stale"`）会把
-    absent（profile 里根本没这条声明）也说成 stale，于是徽章写着「已部署 · 旧版」、
-    正文却写「什么都没部署」—— 自相矛盾，还原后正好撞上。
+    两半都本版 = current；只有一半 = warn；都没有 = none；异常 = broken。
     返回 (state, deploy_summary)。
     """
-    dsum = _deploy_summary(prompt_state, pst)
-    if "broken" in (pst, prompt_state):
+    dsum = _deploy_summary(prompt_state, skill_state)
+    if "broken" in (prompt_state, skill_state):
         return "broken", dsum
     if not dsum["any"]:
         return "none", dsum
-    if dsum["both"] and pst == "current" and prompt_state == "current":
+    if dsum["both"] and prompt_state == "current" and skill_state == "current":
         return "current", dsum
-    return ("stale", dsum) if dsum["both"] else ("warn", dsum)
+    return "warn", dsum
 
 
-def _dsh_scan(bases):
-    """扫一遍基点目录，数出"带人格标记的文件"与其中完整命中的数量。
-
-    两张 DSH 卡都要这份结果 —— 桌面版和 npm 版**共用同一份包树**
-    （`~/.dsh/profiles/node_modules/@deepseek-ai/*` 是指向 npx 缓存的 junction），
-    本体状态本来就是同一个。全量 walk 要几秒，而状态卡是并行起两张的，不缓存就白扫两遍。
-    """
-    def _do():
-        files, total, hit = [], 0, 0
-        # 剪枝 + 字节预筛：全量 walk 要 3.5 秒，实际只需要"含人格标记"的那几个文件
-        skip_dirs = {".git", "node_modules", "test", "tests", "__tests__", "docs",
-                     "coverage", ".cache", "examples", "types", "esm", "cjs", "fixtures"}
-        exts = (".js", ".mjs", ".cjs", ".json", ".yml", ".yaml")
-        b_marks = ("麻衣".encode("utf-8"), "沉浸优先".encode("utf-8"),
-                   b"unlock-v6", b"cfg-v7")
-        for base in bases or []:
-            for dirpath, dirs, fs in os.walk(base):
-                dirs[:] = [d for d in dirs if d not in skip_dirs]
-                for fn in fs:
-                    if not fn.endswith(exts):
-                        continue
-                    p = os.path.join(dirpath, fn)
-                    try:
-                        with open(p, "rb") as f:
-                            data = f.read(4 * 1024 * 1024)
-                    except Exception:
-                        continue
-                    if not any(mark in data for mark in b_marks):
-                        continue
-                    txt = data.decode("utf-8", "replace")
-                    total += 1
-                    full = (all(k in txt for k in ("沉浸优先", "表演规则", "学姐的创作室"))
-                            or "unlock-v6" in txt or "cfg-v7" in txt)
-                    if full:
-                        hit += 1
-                    files.append({"path": p, "exists": True, "size": len(data),
-                                  "sha": sha_of(p), "role": "补丁后文件",
-                                  "hit": [k for k in ("沉浸优先", "表演规则", "任务路由") if k in txt],
-                                  "miss": [] if full else ["完整人格段"]})
-        return {"files": files, "total": total, "hit": hit}
-    return cached("dsh_scan", 300, _do)
-
-
-# 本体那半的状态 → 明细行的配色
-_PROMPT_LEVEL = {"broken": "err", "none": "dim", "stale": "warn", "current": "ok"}
-
-
-def _prompt_state(bases_all, bases, total, hit):
-    """本体（注入提示词）那半的状态：返回 (state, 展示路径, 说明)。
-
-    两张 DSH 卡共用 —— 它们打的是同一份包树，这一半的状态本来就是同一个。
-    """
-    if not bases_all:
-        return "broken", "(npx 缓存)", "未发现 @deepseek-ai 安装"
-    if not bases:
-        return "none", "(无 Web/CLI 安装)", "只装了桌面版 —— 它的状态在「DSH 桌面版」那张卡上"
-    if total == 0:
-        return "none", bases[0], "未发现带人格标记的文件 —— 未部署"
-    if hit < total:
-        return "stale", bases[0], ("含人格标记文件 %d / %d —— 有旧版残留，建议重新部署"
-                                   % (hit, total))
-    return "current", bases[0], "含人格标记文件 %d / %d 全部命中" % (hit, total)
-
-
-def card_dsh():
-    m = mod()
-    t = m.TARGETS["dsh"]()
-    try:
-        bases_all = cached("dsh_bases", 300, lambda: t.find_bases(""))
-    except Exception:
-        bases_all = []
-    # 桌面版单独立卡（card_dsh_desktop）：它没有可打补丁的本体（包全在 app.asar 里），
-    # 混进这张卡的统计会让「安装基点 2 处 / 人格文件 8/8」既误导又对不上号。
-    desk_root = _dsh_desktop_root(t)
-    bases = _web_bases(bases_all, desk_root)
-    scan = _dsh_scan(bases)
-    files, total, hit = scan["files"], scan["total"], scan["hit"]
-    state, p_path, p_note = _prompt_state(bases_all, bases, total, hit)
-    rows = [{"level": _PROMPT_LEVEL.get(state, "dim"), "path": p_path, "note": p_note}]
-    for p in files[:6]:
-        rows.append({"level": "dim", "path": p["path"], "note": "补丁后 %d B" % p["size"]})
-
-    pst, pnote = _preset_probe(t, bases_all)
-    p_label = {"current": "本版", "other": "旧版", "absent": "未建",
-               "stale": "异常", "broken": "无源"}[pst]
-    # 卡片上那行「当前：已部署 … / 什么都没部署」——实际盘面状态，
-    # 跟卡内两个勾选框无关（勾选说的是"这次要做什么"）。
-    summ = _deploy_summary(state, pst)
-    metrics = [{"name": "安装基点", "value": "%d 处" % len(bases), "ok": bool(bases)},
-               {"name": "人格文件", "value": "%d / %d" % (hit, total), "ok": total > 0 and hit == total},
-               # 破甲模式是 DSH 自己的一个可选项，状态就显示在这张卡里 ——
-               # 它不再是独立卡片，所以这个 chip 不需要任何条件渲染。
-               {"name": "破甲模式", "value": p_label, "ok": pst == "current"}]
-    rows.extend(_preset_rows(t, pst, pnote, _preset_want(), bases_all))
-    home = bases[0] if bases else ""
-    # 装了桌面版时，这张卡要跟旁边那张区分开 —— 光叫 "DeepSeek Harness" 分不清谁是谁
-    label = "DSH (Web/CLI)" if desk_root else t.label
-    return {"key": "dsh", "label": label, "home": home, "state": state,
-            "rows": rows, "files": files[:10], "metrics": metrics,
-            "deploy": summ}
-
-
-def _preset_want():
-    """破甲模式状态判定用的人格哈希（与主脚本同一份 policy）；取不到就 None。"""
+def _dsh_want():
+    """提示词状态判定用的人格哈希（与主脚本同一套 seat_want）；取不到就空。"""
     try:
         m = mod()
         user, _src = m.load_user_persona("")
         return m.seat_want("dsh", user)
     except Exception:
-        return None
+        return ""
 
 
-def _preset_rows(t, st, note, want=None, bases=None):
-    """破甲模式（profile patch 里的 preset 声明）的明细行 —— 并进 DSH 卡片。
-
-    0.1.7 起 DSH 换了 preset 机制：声明落在
-    `<DSH_HOME>/profiles/<profile>/cordis.patch.yml` 的标记块里；旧的用户级
-    `.agent-presets/<id>/` 目录已经没有代码会读了。
-
-    DSH Desktop 与 Web/CLI 各读各的 profile（desktop / web），所以这里**逐个列**。
-    只显示 web 那份的话，桌面版没打上时卡片看着照样是「已部署」，等于把问题藏了。
-    """
-    levels = {"current": "ok", "other": "warn", "stale": "warn",
-              "absent": "dim", "broken": "err"}
-    lv = levels.get(st, "dim")
+def _dsh_agents(t):
+    """提示词落点 ~/.dsh/AGENTS.md 的 (state, 路径, 说明, 字节数)。"""
+    p = t.agents_path()
     try:
-        targets = t.preset_profiles()
-    except Exception:
-        targets = []
-    if not targets:
-        targets = [(t.PRESET_PROFILE, t.profile_patch_file())]
+        st, note = t.agents_state(_dsh_want())
+    except Exception as e:
+        return "broken", p, "检测出错：%s" % e, 0
+    n = len(t._read_agents().encode("utf-8"))
+    return st, p, note, n
 
-    # 能拿到 want 就逐 profile 单独判 —— 这样卡片上直接看得出是哪个形态没打上，
-    # 而不是两行挂同一句聚合文案。
-    pbase = None
-    if want is not None:
-        try:
-            pbase = t.pkg_bases(bases or [])
-        except Exception:
-            pbase = None
 
-    rows = []
-    for name, pf in targets:
-        l1, text = lv, "破甲模式(%s) · %s" % (name, note)
-        if pbase is not None:
+def _dsh_skill_state(t):
+    """路由 skills（~/.dsh/skills）投放状态：返回 (state, 我们投了几份)。"""
+    m = mod()
+    root = os.path.join(t.dsh_home(), "skills")
+    if not os.path.isdir(root):
+        return "absent", 0
+    mark = m.SKILLS.MARK if getattr(m, "SKILLS", None) else "<!-- pojia-route-skill -->"
+    ours = 0
+    try:
+        for d in os.listdir(root):
+            p = os.path.join(root, d, "SKILL.md")
             try:
-                s1, why1 = t._preset_state_one(pf, want, pbase)
-                l1 = levels.get(s1, "dim")
-                text = "破甲模式(%s) · %s" % (name, why1 or "已部署，人格与本脚本同版")
-            except Exception:
-                pass
-        rows.append({"level": l1, "path": pf, "note": text})
-        if not os.path.isfile(pf):
-            continue
-        txt = ""
-        try:
-            with open(pf, encoding="utf-8", errors="replace") as f:
-                txt = f.read()
-        except Exception:
-            pass
-        cur = t.preset_extract(txt)
-        if cur:
-            # 声明里若还留着宿主级行，切到破甲模式时会抛
-            # "Host Cordis inspect provider ... is already registered"
-            live = []
-            try:
-                live = t.preset_live_rows(cur)
-            except Exception:
-                pass
-            rows.append({"level": "warn" if live else "dim", "path": pf,
-                         "note": "声明 %d 字节 · %s%s"
-                                 % (len(cur.encode("utf-8")), sha_of(pf),
-                                    ("  仍带互斥行 %s（与创造模式抢进程级注册）"
-                                     % "/".join(live)) if live else "")})
-        else:
-            rows.append({"level": "warn", "path": pf,
-                         "note": "patch 里没有破甲模式声明（模式下拉里看不到）"})
-    rows.append({"level": "dim", "path": "(DSH 模式选择器)",
-                 "note": "新会话里排在「创造模式」之后（order=%d）" % t.PRESET_ORDER})
+                with open(p, encoding="utf-8", errors="replace") as f:
+                    if mark in f.read():
+                        ours += 1
+            except OSError:
+                continue
+    except OSError:
+        return "broken", 0
+    return ("current" if ours else "absent"), ours
+
+
+_LEVEL = {"current": "ok", "other": "warn", "absent": "dim", "broken": "err"}
+
+
+def _dsh_rows(t, astate, anote, apath, abytes, sstate, sn):
+    rows = [{"level": _LEVEL.get(astate, "dim"), "path": apath,
+             "note": "提示词（AGENTS.md 标记块）· %s" % anote}]
+    if abytes:
+        budget = getattr(t, "AGENTS_MAX_BYTES", 65536)
+        rows.append({"level": "warn" if abytes > budget else "dim", "path": apath,
+                     "note": "文件 %d 字节（预算 %d%s）"
+                             % (abytes, budget, "，超出会被截断" if abytes > budget else "")})
+    rows.append({"level": _LEVEL.get(sstate, "dim"),
+                 "path": os.path.join(t.dsh_home(), "skills"),
+                 "note": "路由 skills · %s" % (
+                     "已投放 %d 份" % sn if sstate == "current" else "未投放")})
+    rows.append({"level": "dim", "path": "(生效方式)",
+                 "note": "agent-instructions 在新会话首轮读取 AGENTS.md；"
+                         "已开着的会话不会重读"})
     return rows
 
 
-def _preset_probe(t, bases=None):
-    """读破甲模式（profile patch 里的 preset 声明）当前状态，不动盘。
-
-    返回 (state, note)，state ∈ current / other / absent / stale / broken。
-    bases 走 dsh_bases 那份缓存 —— find_bases 要探运行中的进程，单次 3.4 秒，
-    同一轮里已经算过的别再算一遍。
-    """
-    m = mod()
-    try:
-        _user, _src = m.load_user_persona("")
-        want = m.seat_want("dsh", _user)
-        if bases is None:
-            bases = cached("dsh_bases", 300, lambda: t.find_bases(""))
-        if not t.preset_source_file(bases):
-            return "broken", ("没找到 shipped 创造模式 preset"
-                              "（<install>/dsh-web-app/presets/cordis.patch.yml）")
-        return t.preset_state(want, bases)
-    except Exception as e:
-        return "broken", "检测出错：%s" % e
-
-
-def card_preset():
-    """破甲模式的**状态快照**（不再是一张卡片，只在命令行通道用）。
-
-    它没有独立卡片了 —— 状态并进 `card_dsh` 的体检项与明细。
-    想单独看它：`python gui/bridge.py run preset-status dsh`。
-    """
+def card_dsh():
     m = mod()
     t = m.TARGETS["dsh"]()
-    try:
-        profs = t.preset_profiles()
-    except Exception:
-        profs = []
-    pdir = profs[0][1] if profs else t.profile_patch_file()
-    st, note = _preset_probe(t)
-    bstate = {"current": "current", "other": "stale", "stale": "warn",
-              "absent": "none", "broken": "broken"}.get(st, "none")
-    try:
-        bases = cached("dsh_bases", 300, lambda: t.find_bases(""))
-    except Exception:
-        bases = []
-    return {"key": "pojia", "label": "DSH · 破甲模式", "home": pdir, "state": bstate,
-            "rows": _preset_rows(t, st, note, _preset_want(), bases),
-            "files": [], "metrics": [], "preset": True}
+    astate, apath, anote, abytes = _dsh_agents(t)
+    sstate, sn = _dsh_skill_state(t)
+    summ = _deploy_summary(astate, sstate)
+    state = ("broken" if "broken" in (astate, sstate)
+             else ("current" if summ["both"] and astate == "current"
+                   else ("none" if not summ["any"] else "warn")))
+    rows = _dsh_rows(t, astate, anote, apath, abytes, sstate, sn)
+    home = t.dsh_home()
+    metrics = [{"name": "提示词", "value": "已写入" if astate == "current" else
+                                   ("旧版" if astate == "other" else "未写入"),
+                "ok": astate == "current"},
+               {"name": "路由 skills", "value": "%d 份" % sn, "ok": sn > 0},
+               {"name": "预算", "value": "%d / %d" % (abytes, t.AGENTS_MAX_BYTES),
+                "ok": 0 < abytes <= t.AGENTS_MAX_BYTES}]
+    files = [{"path": apath, "exists": os.path.isfile(apath), "size": abytes,
+              "role": "提示词", "hit": [] if astate == "current" else [],
+              "miss": [] if astate == "current" else ["未就位"]}]
+    desk = _dsh_desktop_root(t)
+    label = "DSH (Web/CLI)" if desk else t.label
+    return {"key": "dsh", "label": label, "home": home, "state": state,
+            "rows": rows, "files": files, "metrics": metrics,
+            "deploy": summ}
+
+
+def card_dsh_landing():
+    """DSH 两个落点的**状态快照**（命令行伪目标 `pojia` 仍可用）。"""
+    m = mod()
+    t = m.TARGETS["dsh"]()
+    astate, apath, anote, abytes = _dsh_agents(t)
+    sstate, sn = _dsh_skill_state(t)
+    bstate = {"current": "current", "other": "stale", "absent": "none",
+              "broken": "broken"}.get(astate, "none")
+    return {"key": "pojia", "label": "DSH · 提示词落点", "home": t.dsh_home(),
+            "state": bstate,
+            "rows": _dsh_rows(t, astate, anote, apath, abytes, sstate, sn),
+            "files": [], "metrics": []}
 
 
 def _dsh_desktop_root(t):
@@ -774,34 +641,15 @@ def _dsh_desktop_root(t):
     return ""
 
 
-def _web_bases(bases, desk_root):
-    """挑出**非桌面版**的安装基点（npx 缓存 / npm 全局 / 便携版）。
-
-    桌面版的基点都落在它的安装根下面，按前缀排除 —— 那些留给 card_dsh_desktop。
-    """
-    if not desk_root:
-        return list(bases)
-    rl = desk_root.lower().replace("/", "\\")
-    return [b for b in bases if not b.lower().replace("/", "\\").startswith(rl)]
-
-
 def card_dsh_desktop():
     """DSH 桌面版（DeepSeek Harness Desktop）—— 独立一张卡。
 
-    和 npm 版共用 `~/.dsh`（skills / 会话 / 人格都是同一份），但**读另一个 profile**：
-    `dsh` 包里 `rejectElectronProfile()` 原话 —— profile "desktop" is managed
-    exclusively by the Electron application。所以破甲模式要 web + desktop 两份都写，
-    这张卡盯的就是桌面版那一份。
-
-    桌面版的完整包树打在 `resources\\app.asar` 里（打包、不可写）——它**没有可打补丁的本体**，
-    "本体那半"恒为不适用，能力全走 profile 级的 preset。所以这张卡不带「破甲模式」下拉：
-    那个开关在 DSH 卡片上，一次同时写两份 profile。
+    桌面版和 npm 版**共用** `~/.dsh`（AGENTS.md / skills / 会话都是同一份），
+    所以提示词落点的状态也完全一致；这张卡只多显示安装根与主程序。
     """
     m = mod()
     t = m.TARGETS["dsh"]()
     root = _dsh_desktop_root(t)
-    levels = {"current": "ok", "other": "warn", "stale": "warn",
-              "absent": "dim", "broken": "err"}
 
     if not root:
         return {"key": "dsh-desktop", "label": "DSH 桌面版", "home": "(未检测到)",
@@ -813,72 +661,21 @@ def card_dsh_desktop():
 
     exe = os.path.join(root, "DeepSeek Harness.exe")
     has_exe = os.path.isfile(exe)
-
-    want = _preset_want()
-    pbase = None
-    try:
-        pbase = t.pkg_bases(cached("dsh_bases", 300, lambda: t.find_bases("")))
-    except Exception:
-        pbase = None
-
-    pf = t.profile_patch_file("desktop")
-    if os.path.isfile(pf) and pbase is not None:
-        try:
-            pst, why = t._preset_state_one(pf, want, pbase)
-        except Exception as e:
-            pst, why = "broken", str(e)
-    elif not os.path.isfile(pf):
-        pst, why = "absent", "profile patch 不存在（桌面版还没建过 profile）"
-    else:
-        pst, why = "absent", "拿不到包基准，无法判定"
+    astate, apath, anote, abytes = _dsh_agents(t)
+    sstate, sn = _dsh_skill_state(t)
 
     rows = [{"level": "ok" if has_exe else "warn", "path": root,
-             "note": "官方桌面版" + (" · DeepSeek Harness.exe" if has_exe else " · 主程序未找到")},
-            {"level": levels.get(pst, "dim"), "path": pf,
-             "note": "破甲模式(desktop) · " + (why or "已部署，人格与本脚本同版")}]
-
-    if os.path.isfile(pf):
-        try:
-            with open(pf, encoding="utf-8", errors="replace") as f:
-                cur = t.preset_extract(f.read())
-            if cur:
-                live = t.preset_live_rows(cur)
-                rows.append({"level": "warn" if live else "dim", "path": pf,
-                             "note": "声明 %d 字节 · %s%s"
-                                     % (len(cur.encode("utf-8")), sha_of(pf),
-                                        ("  仍带互斥行 %s" % "/".join(live)) if live else "")})
-        except Exception:
-            pass
-
-    # 本体那半：桌面版跑起来加载的是 profiles/node_modules 里的包树，而它是指向
-    # npm 缓存包树的 **junction** —— 所以「注入提示词」和 Web/CLI 版是同一个操作，
-    # 状态也共用（走 _dsh_scan 的缓存，不重复 walk）。
-    try:
-        bases_all = cached("dsh_bases", 300, lambda: t.find_bases(""))
-    except Exception:
-        bases_all = []
-    web_bases = _web_bases(bases_all, root)
-    scan = _dsh_scan(web_bases)
-    prompt_state, _ppath, prompt_note = _prompt_state(
-        bases_all, web_bases, scan["total"], scan["hit"])
-    rows.append({"level": _PROMPT_LEVEL.get(prompt_state, "dim"), "path": "(注入提示词)",
-                 "note": "打的是 profiles\\node_modules 那份包树（junction 指向 npm 缓存）"
-                         "—— " + prompt_note})
-    rows.append({"level": "dim", "path": "(DSH 模式选择器)",
-                 "note": "「增加破甲模式」两份都写：web 与 desktop 各一份 profile patch"})
+             "note": "官方桌面版" + (" · DeepSeek Harness.exe" if has_exe else " · 主程序未找到")}]
+    rows += _dsh_rows(t, astate, anote, apath, abytes, sstate, sn)
 
     metrics = [{"name": "客户端",
                 "value": "DeepSeek Harness.exe" if has_exe else "未检测到", "ok": has_exe},
-               {"name": "profile", "value": "desktop", "ok": True},
-               {"name": "破甲模式",
-                "value": {"current": "本版", "other": "旧版", "absent": "未建",
-                          "stale": "异常", "broken": "无源"}.get(pst, pst),
-                "ok": pst == "current"}]
-    state, dsum = _desktop_card_state(prompt_state, pst)
+               {"name": "提示词", "value": "已写入" if astate == "current" else "未写入",
+                "ok": astate == "current"},
+               {"name": "路由 skills", "value": "%d 份" % sn, "ok": sn > 0}]
+    state, dsum = _desktop_card_state(astate, sstate)
     return {"key": "dsh-desktop", "label": "DSH 桌面版", "home": root,
-            "state": state,
-            "rows": rows, "files": [], "metrics": metrics,
-            # 下拉用：提示词那半取共用包树的状态，破甲模式那半取 desktop profile
+            "state": state, "rows": rows, "files": [], "metrics": metrics,
             "deploy": dsum}
 
 
@@ -1356,7 +1153,7 @@ def card_seat_md(key):
 
 CARD_FN = {"codex": card_codex, "dsh": card_dsh, "dsh-desktop": card_dsh_desktop,
            "wb": card_wb, "zcode": lambda: card_seat_deploy("zcode"),
-           "pojia": card_preset,
+           "pojia": card_dsh_landing,
            "claude": lambda: card_seat_deploy("claude"),
            "hermes": lambda: card_seat_deploy("hermes")}
 
@@ -1407,11 +1204,10 @@ def _augment_deploy_files(card):
 # files[] 里的 role → 补丁表分组。没有列进的 role 归「其它」。
 _PATCH_GROUPS = [
     ("inject", "注入内容", ("指令文件", "第二注入位", "角色档", "第二注入位 · 标记块",
-                            "AGENTS.md", "CLAUDE.md", "SOUL.md")),
+                            "AGENTS.md", "CLAUDE.md", "SOUL.md", "提示词")),
     ("patch", "补丁后文件", ("补丁后文件", "闸门脚本", "补丁层", "标记块")),
     ("output", "输出通道", ("output-styles/pojia.md",)),
     ("skill", "技能投放", ("技能目录（路由三拍 + mature-fiction）", "技能目录")),
-    ("preset", "破甲模式", ("破甲模式",)),
 ]
 
 # 状态判定：与部署面的 want 对齐 = 本版；有标记/存在 = 已装；否则未装。
@@ -1498,7 +1294,7 @@ def cmd_patches(target):
     except Exception as e:
         return {"ok": False, "error": "%s 检测出错：%s" % (target, e)}
     groups = []
-    seen = {"inject": [], "patch": [], "output": [], "skill": [], "preset": [], "other": []}
+    seen = {"inject": [], "patch": [], "output": [], "skill": [], "other": []}
 
     # codex 有结构化摘要（card["deploy"]）：按四路直接出「部署了什么」，
     # 比按角色猜分组准 —— 每条都写清楚源件 → 落点、或投放数量。
@@ -1867,6 +1663,24 @@ def cmd_instr_toggle(seat, name, on):
 
     ChatGPT / WorkBuddy / Claude / Hermes / ZCode 各用各的引擎，正文互不共享。
     """
+    if seat == "dsh":
+        # DSH 只有一个指令源：拨右 = 写入 AGENTS.md 标记块，拨左 = 摘掉标记块
+        st = _dsh_state()
+        if not on:
+            st["pack_on"] = False
+            _dsh_save(st)
+            rc = _pump([sys.executable, SRC, "--dsh-agents", "remove", "--yes"],
+                       "dsh", "移除 DSH 提示词")
+            return {"ok": rc == 0, "note": "已撤下 AGENTS.md 标记块",
+                    "state": _dsh_state(), "home": mod().TARGETS["dsh"]().dsh_home()}
+        if not name or name != os.path.basename(name) or not name.lower().endswith(".md"):
+            return {"ok": False, "error": "指令源文件名无效：%s" % name}
+        st.update({"pack": name, "pack_on": True, "agents": True})
+        _dsh_save(st)
+        rc = _pump([sys.executable, SRC, "--dsh-agents", "deploy", "--yes"],
+                   "dsh", "部署 DSH 提示词")
+        return {"ok": rc == 0, "note": "已部署 %s（写入 ~/.dsh/AGENTS.md）" % name,
+                "home": mod().TARGETS["dsh"]().dsh_home()}
     is_seat = seat in ("claude", "hermes", "zcode")
     is_wb = seat in ("wb", "workbuddy")
     ad = _seat_deploy() if is_seat else (_wb_deploy() if is_wb else _codex_deploy())
@@ -2489,6 +2303,139 @@ def _doc_scan_seat(agent, label):
                        cats=list(_SEAT_CATS.get(agent, [])))
 
 
+_DSH_CATS = [
+    ("instruction", "指令文件"),
+    ("memory", "AGENTS.md"),
+    ("skill", "SKILL.md"),
+]
+
+# DSH 页的开关（存 状态/_dsh_agents.json，与主脚本 DshTarget 共读）
+DSH_STATE_FILE = os.path.join(ROOT, "状态", "_dsh_agents.json")
+
+
+def _dsh_state():
+    try:
+        with open(DSH_STATE_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _dsh_save(st):
+    os.makedirs(os.path.dirname(DSH_STATE_FILE), exist_ok=True)
+    tmp = DSH_STATE_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(st, f, ensure_ascii=False, indent=1, sort_keys=True)
+    os.replace(tmp, DSH_STATE_FILE)
+
+
+def _dsh_skill_on(sid):
+    """单个路由 skill 的开关：叶子统一开关表优先，没登记就看 DSH 自己的表。"""
+    leaf = os.path.join(ROOT, "content", "routes", "leaves", sid + ".md")
+    if os.path.isfile(leaf):
+        return _doc_enabled(leaf)
+    return _dsh_state().get("dsh:skill/%s" % sid) is not False
+
+
+def _doc_scan_dsh(label):
+    """DSH 页 = 部署会写的三类落点（与 ChatGPT 同构，正文各自独立）。
+
+    提醒词落在 <DSH_HOME>/AGENTS.md 的标记块里；skills 落在 <DSH_HOME>/skills/。
+    桌面版与 Web/CLI 共用同一个 ~/.dsh，所以这一页不分形态。
+    """
+    m = mod()
+    t = m.TARGETS["dsh"]()
+    home = t.dsh_home()
+    notes = _doc_notes()
+    st = _dsh_state()
+    astate, apath, anote, abytes = _dsh_agents(t)
+    sstate, sn = _dsh_skill_state(t)
+    out = []
+
+    # 1) 指令源：content/seats/ 与 targets/dsh/ 里的正文候选
+    lib = os.path.join(ROOT, "targets", "dsh", "instructions")
+    seed = os.path.join(CONTENT, "seats", "dsh.md")
+    cands = []
+    if os.path.isdir(lib):
+        cands += [os.path.join(lib, n) for n in sorted(os.listdir(lib))
+                  if n.lower().endswith(".md")]
+    if not cands and os.path.isfile(seed):
+        cands = [seed]
+    active_name = os.path.basename((st.get("pack") or "").strip()) if st.get("pack") else \
+        os.path.basename(seed)
+    for p in cands:
+        fn = os.path.basename(p)
+        is_active = st.get("pack_on") is not False
+        out.append({
+            "id": _doc_rel(p), "path": p, "name": fn, "cat": "instruction",
+            "size": os.path.getsize(p), "exists": True,
+            "enabled": is_active, "active": is_active, "deployable": True,
+            "note": ("注入中 · 写入 ~/.dsh/AGENTS.md") if is_active
+                    else "拨右把它部署为 DSH 的提示词",
+            "labels": [_label("指令源", "info"),
+                       _label("注入中" if is_active else "未部署",
+                              "ok" if is_active else "muted")],
+            "memo": notes.get(_doc_rel(p), ""),
+        })
+        active_name = fn if is_active else active_name
+
+    # 2) AGENTS.md 标记块（落点）
+    out.append({
+        "id": "dsh:agents", "path": apath, "name": t.AGENTS_FILE, "cat": "memory",
+        "title": "AGENTS.md（标记块）",
+        "size": abytes, "exists": os.path.isfile(apath),
+        "enabled": st.get("agents") is not False, "managed": True, "live": True,
+        "note": ("标记块合并，你自己的内容保留 · " + anote),
+        "labels": [_label("AGENTS.md", "info"),
+                   _label("已启用" if st.get("agents") is not False else "已关闭",
+                          "ok" if st.get("agents") is not False else "muted"),
+                   _label("已就位" if astate == "current" else "待部署",
+                          "ok" if astate == "current" else "muted")],
+        "memo": notes.get("dsh:agents", ""),
+    })
+
+    # 3) SKILL.md
+    try:
+        routes = _routes_mod()
+    except Exception:
+        routes = None
+    side = m.SKILLS
+    items = []
+    if side is not None:
+        try:
+            items = side.plan("dsh", home)
+        except Exception:
+            items = []
+    if items:
+        for p, text in items:
+            sid = os.path.basename(os.path.dirname(p))
+            leaf_p = os.path.join(ROOT, "content", "routes", "leaves", sid + ".md")
+            meta = routes.leaf_meta(sid) if (routes and os.path.isfile(leaf_p)) else None
+            parent_key = next((k for k, vv in (routes.CATEGORIES if routes else {}).items()
+                               if vv[3] == sid), "")
+            if meta:
+                cn, cat_cn, kind = meta["name"], meta["category_name"], "小类"
+            elif parent_key:
+                _s, pname, _kw, _slug = routes.CATEGORIES[parent_key]
+                cn, cat_cn, kind = pname, "类目", "父类目"
+            else:
+                cn, cat_cn, kind = sid, "SKILL.md", "技能"
+            exists = os.path.isfile(p)
+            on = _dsh_skill_on(sid)
+            out.append({
+                "id": "dsh:skill/%s" % sid, "path": p, "name": sid, "cat": "skill",
+                "title": cn, "category": cat_cn,
+                "size": len(text.encode("utf-8")), "exists": exists,
+                "enabled": on, "managed": True, "skill": True, "note": "",
+                "labels": [_label(cat_cn, "info"), _label(kind, "muted"),
+                           _label("已投放" if (exists and on) else "未投放",
+                                  "ok" if (exists and on) else "muted")],
+                "memo": notes.get("dsh:skill/%s" % sid, ""),
+            })
+    return _doc_finish(out, "dsh", label, home, cats=list(_DSH_CATS))
+
+
 def _doc_scan(agent):
     """扫出某个 Agent 名下的文档。
 
@@ -2499,6 +2446,8 @@ def _doc_scan(agent):
         return _doc_scan_codex(label)
     if agent == "workbuddy":
         return _doc_scan_wb(label)
+    if agent == "dsh":
+        return _doc_scan_dsh(label)
     if agent in _SEAT_DEPLOY_KEYS:
         return _doc_scan_seat(agent, label)
     out = []
@@ -2805,7 +2754,14 @@ def _doc_scan_wb(label):
 
 
 def _doc_finish(out, agent, label, home, cats=None):
-    """收尾：排序 / 备注 / 分类统计。cats 给了就按该席位自己的分类顺序出 tab。"""
+    """收尾：排序 / 备注 / 分类统计。cats 给了就按该席位自己的分类顺序出 tab。
+
+    `cats` 必须是 [(id, 显示名), ...]。席位页传进来的是 `_SEAT_CATS[seat]`
+    / `_DSH_CATS` 这种二元组；如果误传成 {"id": "名"} 这种 dict，
+    下面 `for cid, n in cats` 会把键拆成单字符、tab 名全变成 "i"/"m"/"s"。
+    """
+    if isinstance(cats, dict):
+        cats = list(cats.items())
     if cats:
         order = {cid: i for i, (cid, _n) in enumerate(cats)}
         names = dict(cats)
@@ -3165,12 +3121,41 @@ def _codex_skill_on(sid):
     return _doc_enabled(os.path.join(ROOT, key))
 
 
+def _dsh_toggle(doc_id):
+    """DSH 页的开关：AGENTS.md 标记块 / 单个路由 skill。只写状态表，不动源件。"""
+    st = _dsh_state()
+    if doc_id == "dsh:agents":
+        want = st.get("agents") is False
+        st["agents"] = bool(want)
+        _dsh_save(st)
+        return {"ok": True, "id": doc_id, "enabled": bool(want),
+                "note": "已%s · 下次部署时%s写 AGENTS.md 标记块"
+                        % ("启用" if want else "停用", "" if want else "不")}
+    if doc_id.startswith("dsh:skill/"):
+        sid = doc_id[len("dsh:skill/"):]
+        leaf = os.path.join(ROOT, "content", "routes", "leaves", sid + ".md")
+        if os.path.isfile(leaf):
+            want = not _doc_enabled(leaf)
+            ok = _doc_set_enabled(_doc_rel(leaf), want)
+        else:
+            want = st.get(doc_id) is False
+            st[doc_id] = bool(want)
+            _dsh_save(st)
+            ok = True
+        return {"ok": ok, "id": doc_id, "enabled": bool(want),
+                "note": ("已启用 · 下次部署会重新投放" if want
+                         else "已停用 · 下次部署会撤下这一份 skill")}
+    return {"ok": False, "error": "未知开关：%s" % doc_id}
+
+
 def cmd_doc_toggle(rel):
     """每个文档的注入开关：写状态表，不动盘上的源件。
 
     关闭只是把这份文档从"合成清单"里摘掉，源文件一个字节不改 ——
     生成脚本、引擎按路径找源件的地方都不会对不上。改完实时生效于下一次部署。
     """
+    if rel.startswith("dsh:"):
+        return _dsh_toggle(rel)
     if rel.startswith("seat:"):
         # seat:<席位>/primary|memory|settings|skill/<id>
         body = rel[len("seat:"):]
@@ -4067,19 +4052,19 @@ def _codex_deploy_lines(lines, tag="codex"):
     return out
 
 
-# 破甲模式：独立动作，不走 per-target 循环 —— 它不是 破甲一键通 的 target，
-# 而是 DSH 的一个附加产物（用户级 agent preset）。命令等价于
-# `python 破甲一键通.py --dsh-preset deploy|remove|status --yes`。
-PRESET_ACTION = {"preset-deploy": "deploy", "preset-remove": "remove",
-                 "preset-status": "status"}
-PRESET_LABEL = {"deploy": "部署破甲模式", "remove": "移除破甲模式", "status": "查看破甲模式"}
+# DSH 提示词注入：独立动作，不走 per-target 循环。命令等价于
+# `python 破甲一键通.py --dsh-agents deploy|remove|status --yes`。
+AGENTS_ACTION = {"agents-deploy": "deploy", "agents-remove": "remove",
+                 "agents-status": "status"}
+AGENTS_LABEL = {"deploy": "部署 DSH 提示词", "remove": "移除 DSH 提示词",
+                "status": "查看 DSH 提示词"}
 
 
-def _run_preset(sub):
-    label = PRESET_LABEL.get(sub, sub)
+def _run_agents(sub):
+    label = AGENTS_LABEL.get(sub, sub)
     emit({"type": "start", "action": label, "targets": ["dsh"]})
     emit({"type": "step", "target": "dsh", "action": label})
-    rc = _pump([sys.executable, SRC, "--dsh-preset", sub, "--yes"], "dsh", label)
+    rc = _pump([sys.executable, SRC, "--dsh-agents", sub, "--yes"], "dsh", label)
     emit({"type": "done", "target": "dsh", "code": rc})
     emit({"type": "exit", "code": rc})
     return rc
@@ -4101,8 +4086,8 @@ def cmd_run(action, targets, flags=None):
     # console.py 的动作词是 apply / revert / dry（dry 在内部映射成 dry-run）
     argv_action = {"apply": "apply", "revert": "revert", "dry": "dry",
                    "dry-run": "dry", "预演": "dry"}.get(action, action)
-    if action in PRESET_ACTION:
-        return _run_preset(PRESET_ACTION[action])
+    if action in AGENTS_ACTION:
+        return _run_agents(AGENTS_ACTION[action])
     label = {"apply": "apply", "revert": "revert", "dry": "dry-run"}.get(argv_action, argv_action)
     # 伪目标过滤：pojia 只做展示，透传给 console.py 会变成"未知目标"
     targets = [k for k in targets if k not in PSEUDO]
@@ -4111,13 +4096,13 @@ def cmd_run(action, targets, flags=None):
     targets = _fold_targets(targets)
     if picked != targets:
         emit({"type": "log", "level": "info", "scope": "sys",
-              "text": "DSH 桌面版与 Web/CLI 版共用同一套命令（preset 一次写两份 profile），"
+              "text": "DSH 桌面版与 Web/CLI 版共用同一个 ~/.dsh，"
                       "已按 dsh 合并执行"})
-    # 两个互斥的连通开关（都由 DSH 卡片里那个下拉决定）：
-    #   no-preset    —— 只注入提示词，别连带动破甲模式目录
-    #   preset-only  —— 只动破甲模式，DSH 本体的提示词一个字节都不碰
-    extra = ["--no-dsh-preset"] if "no-preset" in flags else []
-    preset_only = "preset-only" in flags
+    # DSH 的两条窄通道：
+    #   no-agents = 只投放 skills（不动 AGENTS.md）
+    #   no-skills = 只写 AGENTS.md（不碰 skills）
+    extra = ["--no-dsh-agents"] if "no-agents" in flags else []
+    prompt_only = "no-skills" in flags
     emit({"type": "start", "action": label, "targets": targets})
     buf = []
     for k in targets:
@@ -4167,11 +4152,10 @@ def cmd_run(action, targets, flags=None):
                 cmd.append({"revert": "restore", "dry": "deploy"}[argv_action])
             if argv_action == "dry":
                 cmd.append("--dry")
-        elif preset_only and k == "dsh":
-            # 只有 DSH 有破甲模式这个附加产物；走主脚本的 --dsh-preset 通道，
-            # 不带 --target 就等于完全不碰本体文件。
+        elif prompt_only and k == "dsh":
+            # 只动 AGENTS.md：直接走主脚本的窄通道，完全不碰 skills
             sub = "remove" if argv_action == "revert" else "deploy"
-            cmd = [sys.executable, SRC, "--dsh-preset", sub]
+            cmd = [sys.executable, SRC, "--dsh-agents", sub]
             if argv_action == "dry":
                 cmd.append("--dry-run")
             cmd.append("--yes")
@@ -4184,8 +4168,6 @@ def cmd_run(action, targets, flags=None):
         # 刚动过 DSH，旧的安装基点探测结论一律作废 —— 否则状态卡会拿着几分钟前
         # 的答案（验证：装完 DSH 后卡片仍显示「未检测到安装」）。
         cache_drop("dsh_bases")
-        # 文件扫描也一样：刚打完补丁，命中数必须重算，不能拿旧结论糊弄
-        cache_drop("dsh_scan")
     emit({"type": "exit", "code": code})
     return code
 
@@ -4392,7 +4374,7 @@ def main(argv):
         emit(cmd_route(" ".join(argv[1:])))
     elif cmd == "run":
         if len(argv) < 2:
-            emit({"error": "run 需要动作：apply|revert|dry|preset-deploy|preset-remove|preset-status"})
+            emit({"error": "run 需要动作：apply|revert|dry|agents-deploy|agents-remove|agents-status"})
             return 2
         flags = [f for f in re.split(r"[,，\s]+", argv[3]) if f] if len(argv) > 3 else []
         cmd_run(argv[1], norm_targets(argv[2] if len(argv) > 2 else ""), flags)
