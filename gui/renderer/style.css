@@ -1108,17 +1108,25 @@ table { border-collapse: collapse; }
 .setnote { margin-top: 8px; color: var(--subtle); font-size: 11.5px; line-height: 1.7; }
 
 .aboutbox {
-  padding: 22px;
+  padding: 26px 28px;
   border: 1px solid var(--line);
   border-radius: 16px;
   background: var(--surface);
   box-shadow: var(--shadow-card);
 }
-.about-big { color: var(--text-strong); font-size: 22px; font-weight: 730; display: flex; align-items: center; gap: 12px; }
+.about-big {
+  color: var(--text-strong); font-size: 22px; font-weight: 730;
+  display: flex; align-items: center; gap: 12px;
+  padding-bottom: 18px; margin-bottom: 18px;
+  border-bottom: 1px solid var(--line-soft);
+}
 .about-logo { width: 44px; height: 44px; border-radius: 11px; object-fit: cover; box-shadow: 0 5px 14px rgba(37, 99, 235, 0.22); }
-.about-sub { margin: 10px 0 18px; color: var(--muted); font-size: 12px; line-height: 1.7; }
-.about-actions { display: flex; gap: 10px; margin-bottom: 18px; }
-.about-note { color: var(--subtle); font-size: 11.5px; line-height: 1.8; }
+.about-big .mono { margin-left: 2px; }
+.about-actions { display: flex; gap: 10px; margin-bottom: 22px; }
+.about-note {
+  color: var(--subtle); font-size: 11.5px; line-height: 1.9;
+  padding-top: 18px; border-top: 1px solid var(--line-soft);
+}
 
 /* ── 日志 ── */
 .logpanel {
