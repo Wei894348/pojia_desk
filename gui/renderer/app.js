@@ -907,21 +907,6 @@ function pickAgent(id) {
 function paintPmCats() {
   const box = $('pmCats');
   box.innerHTML = '';
-  // 首个按钮固定为「全部」：按类别分组展示，避免所有条目堆成一整块
-  const total = (PM_CATS || []).reduce((n, c) => n + (c.count || 0), 0);
-  const allEl = document.createElement('button');
-  allEl.type = 'button';
-  allEl.className = 'pmcat' + (!PM_CAT || PM_CAT === 'all' ? ' on' : '');
-  allEl.dataset.cat = 'all';
-  const allNm = document.createElement('span');
-  allNm.textContent = '全部';
-  const allCt = document.createElement('small');
-  allCt.textContent = String(total);
-  allEl.appendChild(allNm);
-  allEl.appendChild(allCt);
-  allEl.addEventListener('click', () => { PM_CAT = 'all'; paintPmCats(); paintPmGrid(); });
-  box.appendChild(allEl);
-
   PM_CATS.forEach((cat) => {
     const el = document.createElement('button');
     el.type = 'button';
@@ -965,16 +950,13 @@ if (typeof window !== 'undefined') {
 function paintPmGrid() {
   const box = $('pmGrid');
   box.innerHTML = '';
-  // 默认「全部」时按类别分组显示，不再把所有条目堆成一整块
-  const all = PM_CAT === 'all' || !PM_CAT;
-  const list = all ? PM_DOCS.slice()
-                   : PM_DOCS.filter((it) => it.cat === PM_CAT);
+  const list = PM_DOCS.filter((it) => it.cat === PM_CAT);
   const offN = list.filter((x) => !x.enabled).length;
   const bar = document.createElement('div');
   bar.className = 'pmbulk';
   const barTxt = document.createElement('span');
-  barTxt.textContent = (all ? '全部' : (pmCatName(PM_CAT) || '当前分类')) + ' · '
-    + list.length + ' 份' + (offN ? ' · 已停用 ' + offN : '');
+  barTxt.textContent = (pmCatName(PM_CAT) || '当前分类') + ' · ' + list.length + ' 份'
+    + (offN ? ' · 已停用 ' + offN : '');
   const onBtn = document.createElement('button');
   onBtn.className = 'minibtn';
   onBtn.textContent = '本类启用';
@@ -1013,35 +995,7 @@ function paintPmGrid() {
     box.appendChild(e);
     return;
   }
-  if (!all) {
-    list.forEach((it) => box.appendChild(buildDocRow(it)));
-    return;
-  }
-  // 「全部」视图：按分类分组，每组带标题与计数
-  const order = (PM_CATS || []).map((c) => c.id);
-  const groups = new Map();
-  list.forEach((it) => {
-    if (!groups.has(it.cat)) groups.set(it.cat, []);
-    groups.get(it.cat).push(it);
-  });
-  const keys = [...groups.keys()].sort((a, b) => {
-    const ia = order.indexOf(a), ib = order.indexOf(b);
-    return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib);
-  });
-  keys.forEach((cat) => {
-    const items = groups.get(cat);
-    const h = document.createElement('div');
-    h.className = 'pmgroup-head';
-    const hn = document.createElement('span');
-    hn.className = 'pmgroup-name';
-    hn.textContent = pmCatName(cat);
-    const hc = document.createElement('small');
-    hc.textContent = String(items.length);
-    h.appendChild(hn);
-    h.appendChild(hc);
-    box.appendChild(h);
-    items.forEach((it) => box.appendChild(buildDocRow(it)));
-  });
+  list.forEach((it) => box.appendChild(buildDocRow(it)));
 }
 
 // 一张卡 = 一份文档，
@@ -1065,10 +1019,17 @@ function buildDocRow(it) {
   icon.textContent = 'MD';
   const title = document.createElement('div');
   title.className = 'pmcname';
-  // 标题与文件名相同时只显示一次（别出现「自定义指令 · 自定义指令 · x.md」这类叠字）
-  const tTxt = it.title ? it.title + ' · ' + it.name : it.name;
-  const dupName = it.title && (it.title === it.name || it.title.endsWith('· ' + it.name));
-  title.textContent = dupName ? it.title : tTxt;
+  // 标题与文件名相同时只显示一次，避免出现
+  // 「AGENTS.md（标记块） · AGENTS.md」这类叠字。
+  const same = (a, b) => {
+    if (!a || !b) return false;
+    const norm = (s) => String(s).replace(/（[^）]*）/g, '').replace(/\([^)]*\)/g, '')
+      .replace(/[·\s]/g, '').toLowerCase();
+    return a === b || a.endsWith('· ' + b) || norm(a) === norm(b);
+  };
+  title.textContent = it.title && !same(it.title, it.name) && !same(it.name, it.title)
+    ? it.title + ' · ' + it.name
+    : (it.title || it.name);
   title.title = it.path;
   heading.appendChild(icon);
   heading.appendChild(title);
@@ -1655,7 +1616,7 @@ async function refreshDocs() {
     ? '全部文档已关闭：部署等于回官方原版（拨右全部启用）'
     : '总开关：拨左停用全部可停用的文档，拨右全部启用（' + on + ' 启用 / ' + off + ' 停用）';
   $('pmDot').classList.toggle('on', on > 0);
-  if (!PM_CATS.some((c) => c.id === PM_CAT)) PM_CAT = 'all';
+  if (!PM_CATS.some((c) => c.id === PM_CAT)) PM_CAT = PM_CATS.length ? PM_CATS[0].id : '';
   paintPmCats();
   paintPmGrid();
 }
@@ -1819,7 +1780,13 @@ let PATCH_OPEN_IDX = -1;
 const origRef = new Map();
 
 async function openPatch(target) {
-  PATCH_TARGET = target || (targets()[0] || '');
+  // 优先用传进来的目标；否则用勾选的；再否则用卡片区当前高亮/第一张卡。
+  // 之前直接取 targets()[0]，勾选为空时会落到第一个目标（ChatGPT），
+  // 看起来像「DSH 卡片不显示」。
+  const sel = targets();
+  const cards = (state.cards || []).map((c) => c.key).filter((k) => ORDER.includes(k));
+  PATCH_TARGET = target || sel[0] || (state.cards && state.cards[0] && state.cards[0].key)
+    || cards[0] || '';
   if (!PATCH_TARGET) { toast('先在卡片上勾选目标', 'warn'); return; }
   $('patchModal').classList.add('on');
   await loadPatch();
@@ -1861,8 +1828,47 @@ async function loadPatch() {
   const mets = document.createElement('div');
   mets.className = 'pmetrics';
 
-  // codex：先把「部署了什么」写成四行人话（注入了哪份、改了哪两个、投放了多少技能）
-  if (dep.instruction || dep.agents || dep.config || dep.skills) {
+  // DSH：只渲染 DSH 自己的四块，不套用 codex 的指令/AGENTS/config 模板
+  const isDsh = !!(dep.layers || dep.shield || dep.purge);
+  if (isDsh) {
+    const short = (p) => (p || '').split(/[\\/]/).filter(Boolean).pop() || '—';
+    const kb = (n) => (n ? (n / 1024).toFixed(n > 10240 ? 0 : 1) + ' KB' : '—');
+    const line = (title, path, note) =>
+      '<div class="pmetric"><b style="font-size:13px">' + esc(title) +
+      ' <span class="mono">' + esc(short(path)) + '</span></b>' +
+      '<span>' + esc(note) + '</span>' +
+      '<span class="mono" style="font-size:11px;opacity:.6;word-break:break-all">' +
+      esc(path) + '</span></div>';
+
+    let html = '<div class="pmetric p-ok"><b>' + (dep.layers || []).length +
+      ' 层</b><span>分层指令 · DSH 按宽→窄拼装，超预算只丢最宽那层</span></div>';
+    (dep.layers || []).forEach((L) => {
+      html += line('　' + L.name, L.path, kb(L.bytes));
+    });
+    if (dep.shield) {
+      html += '<div class="pmetric p-ok"><b>' + (dep.shield.files || []).length +
+        ' 文件</b><span>每轮重锁 · 已挂载 ' + (dep.shield.profiles || 0) + ' 个 profile</span></div>';
+      html += line('　插件目录', dep.shield.dir, (dep.shield.files || []).join('、'));
+    }
+    const pl = dep.purge || [];
+    if (pl.length) {
+      const okN = pl.filter((x) => x.applied).length;
+      html += '<div class="pmetric ' + (okN === pl.length ? 'p-ok' : 'p-warn') + '"><b>' +
+        okN + ' / ' + pl.length + '</b><span>源码补丁 · 运行时文件</span></div>';
+      pl.forEach((x) => {
+        html += '<div class="pmetric p-note"><b style="font-size:12px">#' + x.id + ' ' +
+          esc(x.desc) + '</b><span>' + esc(x.layer) + ' · ' +
+          (x.applied ? '已清除' : '待清除') + ' · ' + esc(short(x.path)) + '</span>' +
+          '<span class="mono" style="font-size:11px;opacity:.6;word-break:break-all">' +
+          esc(x.path) + '</span></div>';
+      });
+    }
+    const sk = dep.skills || {};
+    if (sk.ok) {
+      html += line('路由技能', sk.dir, '已投放 ' + sk.ok + ' 份');
+    }
+    mets.innerHTML = html;
+  } else if (dep.instruction || dep.agents || dep.config || dep.skills) {
     const ins = dep.instruction || {};
     const ag = dep.agents || {};
     const cfg = dep.config || {};
@@ -1910,40 +1916,6 @@ async function loadPatch() {
   bar.className = 'pbar';
   bar.innerHTML = '<i style="width:' + pct + '%"></i>';
   body.appendChild(bar);
-
-  // DSH：分层 / 每轮重锁 / 源码补丁 三块明细
-  if (dep.layers || dep.shield || dep.purge) {
-    const short = (p) => (p || '').split(/[\\/]/).filter(Boolean).pop() || '—';
-    const kb = (n) => (n ? (n / 1024).toFixed(n > 10240 ? 0 : 1) + ' KB' : '—');
-    const line = (title, path, note) =>
-      '<div class="pmetric"><b style="font-size:13px">' + esc(title) +
-      ' <span class="mono">' + esc(short(path)) + '</span></b>' +
-      '<span>' + esc(note) + '</span>' +
-      '<span class="mono" style="font-size:11px;opacity:.6;word-break:break-all">' +
-      esc(path) + '</span></div>';
-
-    let html = '';
-    (dep.layers || []).forEach((L) => {
-      html += line('分层 · ' + L.name, L.path, kb(L.bytes) + ' · DSH 按宽→窄拼装');
-    });
-    if (dep.shield) {
-      html += line('每轮重锁', dep.shield.dir,
-        dep.shield.files.join('、') + ' · 已挂载 ' + dep.shield.profiles + ' 个 profile');
-    }
-    if (dep.purge && dep.purge.length) {
-      const okN = dep.purge.filter((x) => x.applied).length;
-      html += '<div class="pmetric p-ok"><b>' + okN + ' / ' + dep.purge.length +
-        '</b><span>源码补丁 · 已清除</span></div>';
-      dep.purge.forEach((x) => {
-        html += '<div class="pmetric p-note"><b style="font-size:12px">#' + x.id + ' ' +
-          esc(x.desc) + '</b><span>' + esc(x.layer) + ' · ' +
-          (x.applied ? '已清除' : '待清除') + '</span>' +
-          '<span class="mono" style="font-size:11px;opacity:.6;word-break:break-all">' +
-          esc(x.path) + '</span></div>';
-      });
-    }
-    if (html) mets.insertAdjacentHTML('beforeend', html);
-  }
 
   const GROUP_NOTE = {
     inject: '注入到客户端读取的指令 / 角色文件',

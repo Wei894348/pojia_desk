@@ -1421,6 +1421,50 @@ def cmd_patches(target):
                 "state": card.get("state"), "deploy": dep0, "groups": groups,
                 "files": sum(len(g["rows"]) for g in groups)}
 
+    # DSH 的结构化摘要：分层 / 每轮重锁 / 源码补丁 / 技能。
+    if dep0 and target in ("dsh", "dsh-desktop") and (
+            dep0.get("layers") or dep0.get("shield") or dep0.get("purge")):
+        for L in (dep0.get("layers") or []):
+            seen["inject"].append({
+                "path": L.get("path") or "", "role": "分层指令 · %s" % L.get("name"),
+                "size": L.get("bytes"), "isdir": False, "sha": "",
+                "hit": ["已写入"], "miss": [], "state": "current",
+            })
+        sh = dep0.get("shield") or {}
+        if sh.get("on"):
+            seen["inject"].append({
+                "path": sh.get("dir") or "", "role": "每轮重锁插件",
+                "size": None, "isdir": True, "sha": "",
+                "hit": ["%d 个文件 · 挂载 %d 个 profile"
+                        % (len(sh.get("files") or []), sh.get("profiles") or 0)],
+                "miss": [], "state": "current",
+            })
+        for x in (dep0.get("purge") or []):
+            seen["patch"].append({
+                "path": x.get("path") or "",
+                "role": "#%d %s（%s）" % (x.get("id"), x.get("desc"), x.get("layer")),
+                "size": None, "isdir": False, "sha": "",
+                "hit": ["已清除"] if x.get("applied") else [],
+                "miss": [] if x.get("applied") else ["待清除"],
+                "state": "current" if x.get("applied") else "missing",
+            })
+        sk = dep0.get("skills") or {}
+        if sk.get("ok"):
+            seen["skill"].append({
+                "path": sk.get("dir") or "", "role": "路由技能",
+                "size": None, "isdir": True, "sha": "",
+                "hit": ["已投放 %d 份" % (sk.get("ok") or 0)],
+                "miss": [], "state": "current",
+            })
+        for gid, gname, _roles in _PATCH_GROUPS:
+            rows = seen.pop(gid)
+            if rows:
+                rows.sort(key=lambda r: r["path"])
+                groups.append({"id": gid, "name": gname, "rows": rows})
+        return {"ok": True, "target": target, "label": card.get("label") or target,
+                "state": card.get("state"), "deploy": dep0, "groups": groups,
+                "files": sum(len(g["rows"]) for g in groups)}
+
     for f in card.get("files", []):
         role = f.get("role") or ""
         grp = "other"
