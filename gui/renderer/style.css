@@ -154,6 +154,11 @@ table { border-collapse: collapse; }
 
 .side-foot { padding: 13px 8px 2px; border-top: 1px solid var(--line-soft); }
 .ver { color: var(--blue); font-size: 12px; font-weight: 700; }
+.ver.has-new { position: relative; }
+.ver.has-new::after {
+  content: ''; position: absolute; top: -2px; right: -8px;
+  width: 6px; height: 6px; border-radius: 50%; background: #e11d48;
+}
 .tb-sub { margin-top: 3px; color: var(--subtle); font-size: 10.5px; }
 
 /* ── 主区 ── */

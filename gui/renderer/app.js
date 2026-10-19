@@ -634,6 +634,8 @@ async function boot() {
     const info = await api.boot();
     $('tbVersion').textContent = 'v' + ((info.meta && info.meta.version) || '?');
     $('aboutVer').textContent = 'v' + ((info.meta && info.meta.version) || '?');
+    // 启动后静默查一次：版本号旁边标出新版本，不需要等人点开才知道
+    checkUpdate(false).catch(() => {});
     const CN = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
     const nTargets = ORDER.filter((k) => k !== 'dsh-desktop').length;
     $('tbSub').textContent = (CN[nTargets] || nTargets) + '目标统一控制台';
@@ -2353,12 +2355,21 @@ async function checkUpdate(manual) {
   try { UP_CACHE = await api.checkUpdate(); }
   catch (e) { UP_CACHE = { ok: false, error: String(e.message || e) }; }
   paintUpdate(UP_CACHE);
+  // 版本号上的小红点：有新版本时提示，否则不打扰
+  const v = $('tbVersion');
+  if (v) {
+    v.classList.toggle('has-new', !!(UP_CACHE && UP_CACHE.ok && UP_CACHE.hasUpdate));
+    v.title = (UP_CACHE && UP_CACHE.ok)
+      ? ('最新 v' + UP_CACHE.latest + ' · 本地 v' + UP_CACHE.local + '（点击查看更新日志）')
+      : '点击查看更新日志 / 检查新版本（暂时连不上 GitHub）';
+  }
   return UP_CACHE;
 }
 
 async function openUpdate() {
   $('upModal').classList.add('on');
-  if (UP_CACHE) { paintUpdate(UP_CACHE); return; }
+  // 每次打开都重新拉一次：GitHub 上刚发的版本要能立刻看到，
+  // 不能因为启动时查过一次就永远显示旧结果。
   await checkUpdate(true);
 }
 function closeUpdate() { $('upModal').classList.remove('on'); }
