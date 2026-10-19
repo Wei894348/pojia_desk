@@ -131,7 +131,7 @@ def _read_version():
             return v
     except Exception:
         pass
-    return "6.10.0"
+    return "6.11.0"
 
 
 VERSION = _read_version()
@@ -1709,6 +1709,19 @@ class DshTarget:
     SHIELD_SRC = os.path.join(BASE, "targets", "dsh", "shield")
     SHIELD_INSERT_ID = "pojia-shield"
 
+    # ---- 原生多层指令文件（2026-10-19 起，不依赖插件）----------------------
+    #  DSH 的 dsh-agent-instructions 在一个请求里按「由宽到窄」拼四层：
+    #    1. <DSH_HOME>/AGENTS.md             用户全局
+    #    2. <AGENTS_HOME>/AGENTS.md          共享 agent 根（默认 ~/.agents）
+    #    3. <项目根>/AGENTS.md  →  cwd 逐级   项目链
+    #    4. <同目录>/AGENTS.local.md         本地覆盖
+    #  同一个 candidate group 里内容去重后只渲染一次。
+    #  每层各写一段，比把全部塞进一份更抗截断：某层超预算只丢那一层，
+    #  不会把后面的层一起挤掉。
+    AGENTS_HOME_ENV = "DSH_AGENTS_HOME"
+    AGENTS_HOME_DIR = ".agents"
+    LOCAL_SUFFIX = ".local.md"
+
     # ---------------- 安装定位 ----------------
     def pick_title(self):
         return "选择 DSH 的安装目录（DSH Desktop 根目录，或者 node_modules\\@deepseek-ai）"
@@ -2527,6 +2540,159 @@ class DshTarget:
                 pass
         return ("dry" if mode == "dry-run" else "removed"), "处理 %d 个 profile" % n
 
+    def agents_home(self):
+        """共享 agent 根（DSH 的第二个 user-global 落点）。"""
+        return os.path.normpath(
+            os.environ.get(self.AGENTS_HOME_ENV)
+            or os.path.join(os.path.expanduser("~"), self.AGENTS_HOME_DIR))
+
+    def local_agents_path(self):
+        """<DSH_HOME>/AGENTS.local.md —— 本地覆盖层，渲染时排在 AGENTS.md 之后。"""
+        return os.path.join(self.dsh_home(), "AGENTS" + self.LOCAL_SUFFIX)
+
+    def _layer_block(self, persona, want, layer):
+        """生成某一层的标记块。每层独立成块，互不影响。"""
+        head = ("<!-- %s%s:%s -->\n"
+                "<!-- 本块由 破甲一键通 维护；删除即回退。 -->\n"
+                % (HASH_MARK, want, layer))
+        return (self.AGENTS_MARK_BEGIN + "\n"
+                + head + persona.strip("\r\n") + "\n"
+                + self.AGENTS_MARK_END)
+
+    def deploy_layer(self, path, persona, want, layer, mode="apply"):
+        """把某一段写进指定文件的标记块（幂等，块外内容原样保留）。"""
+        b, e = self.AGENTS_MARK_BEGIN, self.AGENTS_MARK_END
+        old = read_text_safe(path) or ""
+        block = self._layer_block(persona, want, layer)
+        # 先剥掉同层的旧块（按 layer 标识判定）
+        tag = "%s:%s -->" % (want, layer)
+        out, i = [], 0
+        while True:
+            j = old.find(b, i)
+            if j < 0:
+                out.append(old[i:])
+                break
+            k = old.find(e, j)
+            if k < 0:
+                out.append(old[i:])
+                break
+            chunk = old[j:k + len(e)]
+            if tag in chunk:
+                out.append(old[i:j])
+                i = k + len(e)
+            else:
+                out.append(old[i:k + len(e)])
+                i = k + len(e)
+        rest = "".join(out).strip("\r\n")
+        new = (rest + "\n\n" + block + "\n") if rest else (block + "\n")
+        if new == old:
+            return "current"
+        if mode == "dry-run":
+            return "dry"
+        if os.path.isfile(path):
+            bak = self.backup_path_for(path)
+            if not os.path.exists(bak):
+                try:
+                    shutil.copy2(path, bak)
+                except Exception:
+                    pass
+        write_text(path, new)
+        return "deployed"
+
+    def remove_layer(self, path, layer, mode="apply"):
+        """只摘掉某一层的块，其它层与用户内容保持不动。"""
+        if not os.path.isfile(path):
+            return "absent"
+        b, e = self.AGENTS_MARK_BEGIN, self.AGENTS_MARK_END
+        old = read_text_safe(path) or ""
+        out, i, hit = [], 0, False
+        while True:
+            j = old.find(b, i)
+            if j < 0:
+                out.append(old[i:])
+                break
+            k = old.find(e, j)
+            if k < 0:
+                out.append(old[i:])
+                break
+            chunk = old[j:k + len(e)]
+            if (":%s -->" % layer) in chunk:
+                out.append(old[i:j])
+                i = k + len(e)
+                hit = True
+            else:
+                out.append(old[i:k + len(e)])
+                i = k + len(e)
+        if not hit:
+            return "absent"
+        if mode == "dry-run":
+            return "dry"
+        rest = "".join(out).strip("\r\n")
+        if rest:
+            write_text(path, rest + "\n")
+        else:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        return "removed"
+
+    def _layer_persona(self, persona, layer):
+        """按层裁剪人格正文。
+
+        DSH 的预算策略是「先丢最宽的整份文件，再截断最具体的那份」。
+        三层各塞全文 = 前面两层必被丢弃，纯属浪费。所以按层分工：
+
+          global      完整人格（主层，最宽，预算不够时优先被丢）
+          agents-home 精简版：只留身份 / 硬约束 / 自检口令
+          local       极短版：只留身份一句话与收口格式
+
+        这样即便 global 被丢，后面两层仍能维持基本人设。
+        """
+        body = persona.strip("\r\n")
+        if layer == "global":
+            return body
+        # 按二级标题切段
+        parts = re.split(r"(?m)^(?=## )", body)
+        if layer == "agents-home":
+            # 只留身份与硬约束；口令响应/路由表那些长段留在 global 层
+            keep = ("身份", "表演规则", "交付格式")
+            out = [p for p in parts if any(p.startswith("## " + k) for k in keep)]
+            return "".join(out).strip("\r\n") or body
+        if layer == "local":
+            keep = ("身份", "交付格式")
+            out = [p for p in parts if any(p.startswith("## " + k) for k in keep)]
+            return "".join(out).strip("\r\n") or body[:1200]
+        return body
+
+    def deploy_agents_layers(self, persona, want, mode="apply"):
+        """补上 DSH 原生链里另外两层。
+
+        global 层（<DSH_HOME>/AGENTS.md）由 deploy_agents 负责，这里不能重复写
+        —— 同一个文件塞两份人格会把预算撑爆，也会让模型读到重复内容。
+        """
+        layers = [
+            ("agents-home", os.path.join(self.agents_home(), self.AGENTS_FILE)),
+            ("local", self.local_agents_path()),
+        ]
+        done = []
+        for layer, path in layers:
+            body = self._layer_persona(persona, layer)
+            st = self.deploy_layer(path, body, want, layer, mode)
+            done.append("%s=%s(%d字节)" % (layer, st, len(body.encode("utf-8"))))
+        return done
+
+    def remove_agents_layers(self, mode="apply"):
+        layers = [
+            ("agents-home", os.path.join(self.agents_home(), self.AGENTS_FILE)),
+            ("local", self.local_agents_path()),
+        ]
+        done = []
+        for layer, path in layers:
+            st = self.remove_layer(path, layer, mode)
+            done.append("%s=%s" % (layer, st))
+        return done
+
     def remove_agents(self, mode="apply"):
         """摘掉标记块；块外内容原样保留，摘完为空就删文件。"""
         p = self.agents_path()
@@ -2592,6 +2758,9 @@ class DshTarget:
                     log("提示词注入已移除 | %s" % rnote, "g", "dsh")
                 else:
                     log("提示词注入 %s | %s" % (rst, rnote), "dg", "dsh")
+                # 分层同样要撤，否则残留的分层块会继续生效
+                for item in self.remove_agents_layers("dry-run" if mode == "dry-run" else "apply"):
+                    log("  分层撤回 %s" % item, "dg", "dsh")
             else:
                 dst, dnote = self.deploy_agents(
                     persona, want, "dry-run" if mode == "dry-run" else "apply")
@@ -2599,6 +2768,11 @@ class DshTarget:
                     log("提示词注入 [预演] %s" % dnote, "y", "dsh")
                 else:
                     log("提示词注入 %s | %s" % (dst, dnote), "g", "dsh")
+                # 原生多层：全局 / 共享 agent 根 / 本地覆盖
+                if not getattr(args, "no_dsh_layers", False):
+                    for item in self.deploy_agents_layers(
+                            persona, want, "dry-run" if mode == "dry-run" else "apply"):
+                        log("  分层注入 %s" % item, "dg", "dsh")
 
         # ---- 路由 skills 通道：<DSH_HOME>/skills ----
         #  DSH 的 `skill-filesystem` 插件**内置就会扫** `<DSH_HOME>/skills`
@@ -7195,6 +7369,8 @@ def build_parser():
                         "remove 移除，status 看状态")
     p.add_argument("--no-dsh-shield", action="store_true", dest="no_dsh_shield",
                    help="DSH：不装每轮重锁插件（默认会装并挂到每个 profile）")
+    p.add_argument("--no-dsh-layers", action="store_true", dest="no_dsh_layers",
+                   help="DSH：只写 ~/.dsh/AGENTS.md，不写分层指令文件")
     p.add_argument("--persona", help="人格文件（默认脚本目录 persona.md）")
     p.add_argument("--pick", metavar="TARGET",
                    help="弹系统目录选择窗口，手动指定 dsh/codex/wb 的安装位置并记住")

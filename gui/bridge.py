@@ -591,6 +591,27 @@ def _dsh_rows(t, astate, anote, apath, abytes, sstate, sn):
     rows.append({"level": _LEVEL.get(shstate, "dim"),
                  "path": os.path.join(t.dsh_home(), "plugins", "dsh-shield"),
                  "note": "每轮重锁 · %s" % shnote})
+    # 原生分层指令：DSH 会按「宽 → 窄」拼多层，某层超预算只丢那一层
+    try:
+        lay = []
+        for name, p in (
+                ("全局", t.agents_path()),
+                ("共享根", os.path.join(t.agents_home(), t.AGENTS_FILE)),
+                ("本地覆盖", t.local_agents_path())):
+            if not os.path.isfile(p):
+                continue
+            try:
+                with open(p, encoding="utf-8", errors="replace") as f:
+                    if t.AGENTS_MARK_BEGIN in f.read():
+                        lay.append("%s %dKB" % (name, os.path.getsize(p) // 1024))
+            except OSError:
+                continue
+        rows.append({"level": "ok" if lay else "dim",
+                     "path": t.local_agents_path(),
+                     "note": "分层指令 · %s" % ("、".join(lay) if lay else "未部署")})
+    except Exception as e:
+        rows.append({"level": "warn", "path": t.local_agents_path(),
+                     "note": "分层指令 · 检测出错：%s" % e})
     rows.append({"level": "dim", "path": "(生效方式)",
                  "note": "agent-instructions 在新会话首轮读取 AGENTS.md；"
                          "已开着的会话不会重读"})
