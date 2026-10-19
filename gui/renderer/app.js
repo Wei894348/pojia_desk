@@ -1552,10 +1552,21 @@ async function selectDoc(id) {
   });
   $('pmListWrap').classList.add('off');
   $('pmFormWrap').classList.remove('off');
-  // 中文名和文件名相同时不要重复（config.toml · config.toml）
-  const headLabel = it.title && it.title !== it.name
-    ? it.title + '（' + it.name + '）' : it.name;
-  $('pmFormTitle').textContent = '编辑 · ' + headLabel;
+  // 中文名与文件名指向同一个东西时不要叠字（如「AGENTS.md（标记块）」+「AGENTS.md」）。
+  // 先剥掉括号内容再比，规则与列表卡片一致。
+  const sameName = (a, b) => {
+    if (!a || !b) return false;
+    const norm = (s) => String(s).replace(/（[^）]*）/g, '').replace(/\([^)]*\)/g, '')
+      .replace(/[·\s]/g, '').toLowerCase();
+    return a === b || a.endsWith('· ' + b) || norm(a) === norm(b);
+  };
+  const headLabel = it.title && !sameName(it.title, it.name) && !sameName(it.name, it.title)
+    ? it.title + '（' + it.name + '）' : (it.title || it.name);
+  // 标题里已经带了这个名字就不再前置，避免「编辑 · AGENTS.md（标记块）」
+  const headShowsName = sameName(headLabel, it.name) || headLabel.includes(it.name);
+  $('pmFormTitle').textContent = headShowsName
+    ? headLabel
+    : (it.live ? '查看 / 编辑 · ' : '编辑 · ') + headLabel;
   $('pmFormTitle').title = it.path || '';
   $('pmPath').textContent = it.path || '';
   // 面板头：只在能补充信息时显示；与页头标题/文件名相同的就退成通用文案，

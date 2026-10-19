@@ -2684,9 +2684,13 @@ def _doc_scan_dsh(label):
                     if r["state"] == "missing_file":
                         continue
                     applied = r["state"] == "applied"
+                    # 同名的 lib/index.js 有多份，标题里带上包名才分得清
+                    _parts = str(r["path"]).replace("\\", "/").split("/")
+                    _pi = next((i for i, s in enumerate(_parts) if s.startswith("dsh-")), -1)
+                    _short = "/".join(_parts[_pi:]) if _pi >= 0 else "/".join(_parts[-2:])
                     out.append({
                         "id": "dsh:purge/%d/%d" % (bi, r["id"]),
-                        "path": r["path"], "name": os.path.basename(r["path"]),
+                        "path": r["path"], "name": _short,
                         "cat": "purge", "category": "源码补丁",
                         "title": "#%d %s" % (r["id"], r["desc"]),
                         "size": os.path.getsize(r["path"]) if os.path.isfile(r["path"]) else 0,
