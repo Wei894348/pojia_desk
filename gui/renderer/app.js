@@ -636,9 +636,6 @@ async function boot() {
     $('aboutVer').textContent = 'v' + ((info.meta && info.meta.version) || '?');
     // 启动后静默查一次：版本号旁边标出新版本，不需要等人点开才知道
     checkUpdate(false).catch(() => {});
-    const CN = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
-    const nTargets = ORDER.filter((k) => k !== 'dsh-desktop').length;
-    $('tbSub').textContent = (CN[nTargets] || nTargets) + '目标统一控制台';
     $('setPy').textContent = info.python ? (info.python.split('\\').pop() + ' · ' + info.pythonVersion) : 'python 未找到';
     $('setPy').title = info.python || '未找到';
     $('setRoot').textContent = info.root || '';

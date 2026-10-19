@@ -131,7 +131,7 @@ def _read_version():
             return v
     except Exception:
         pass
-    return "6.9.2"
+    return "6.9.3"
 
 
 VERSION = _read_version()

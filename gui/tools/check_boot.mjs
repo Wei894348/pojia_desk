@@ -173,7 +173,6 @@ const setOpts = (p, q) => { X.state.opts.prompt = p; X.state.opts.skills = q; };
 console.log('【1】bind() + boot() 真跑');
 // 先把标题写脏 —— 否则 index.html 里的初值恰好也是当前版本，就验不出"到底有没有被 meta 覆盖"
 $('tbVersion').textContent = 'v0.0-占位';
-$('tbSub').textContent = '占位';
 $('setPy').textContent = 'python —';
 $('setRoot').textContent = '—';
 let bootErr = null;
@@ -181,8 +180,8 @@ await (async () => { try { X.loadOpts(); X.bind(); await X.boot(); } catch (e) {
 check('bind() + boot() 不抛异常', !bootErr, bootErr && (bootErr.message + '\n' + bootErr.stack));
 check('版本号被 meta 覆盖（页面里那个只是占位）',
   $('tbVersion').textContent === 'v' + SRC_VERSION, $('tbVersion').textContent);
-check('副标题按 ORDER 算（七张卡 → 六目标）',
-  $('tbSub').textContent === '六目标统一控制台', $('tbSub').textContent);
+check('副标题已从侧栏移除（不再显示「N 目标统一控制台」）',
+  !document.getElementById('tbSub'), 'tbSub 仍存在');
 check('设置页回显解释器与项目根',
   $('setPy').textContent.includes('python.exe') && $('setRoot').textContent.includes('pojia_desk'),
   $('setPy').textContent + ' | ' + $('setRoot').textContent);
