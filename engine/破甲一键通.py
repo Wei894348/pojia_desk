@@ -137,7 +137,7 @@ def _read_version():
 VERSION = _read_version()
 
 STATE_DIR = os.path.join(BASE, "状态")
-HIST_DIR = os.path.join(BASE, "历史备份")
+# 历史备份目录已移除：事务快照走 状态/tx，撤回原版走各靶点的 .unlockbak / pojia-backups。
 LOG_PATH = os.path.join(STATE_DIR, "破甲日志.txt")   # 运行日志归 状态/（根只留入口与数据）
 CONTENT_DIR = os.path.join(BASE, "content")
 TARGETS_DIR = os.path.join(BASE, "targets")

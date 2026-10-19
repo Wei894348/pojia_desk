@@ -2270,30 +2270,77 @@ function mdToHtml(md) {
 
 function paintUpdate(d) {
   const meta = $('upMeta'), hint = $('upHint'), body = $('upBody'), foot = $('upFoot');
-  const badge = $('tbVersion');
   if (!d || !d.ok) {
     meta.textContent = '—';
     hint.textContent = '检查失败（网络不通或 GitHub 限流），稍后再试。';
-    body.innerHTML = '<div class="pempty">拿不到最新版本信息。</div>';
-    foot.innerHTML = '';
+    body.innerHTML = '<div class="pempty">拿不到版本信息。' +
+      '<br><a href="#" class="uplink" data-url="' + (d && d.releasesUrl ? d.releasesUrl : 'https://github.com/Wei894348/pojia_desk/releases') + '">去 GitHub 查看全部历史版本 →</a></div>';
+    foot.innerHTML = '<button class="btn ghost" id="btnUpReleases">历史版本</button>';
+    bindUpFoot(d);
     return;
   }
   const when = d.published ? d.published.slice(0, 10) : '';
   meta.textContent = '最新 v' + d.latest + (when ? ' · ' + when : '') + ' · 本地 v' + d.local;
-  body.innerHTML = '<div>' + (mdToHtml(d.body) || '<p>（无描述）</p>') + '</div>';
-  if (d.hasUpdate) {
-    hint.textContent = '有新版本 v' + d.latest + '（本地 v' + d.local + '）。';
-    foot.innerHTML = '<button class="btn primary" id="btnUpGo">去更新</button>';
-    const go = $('btnUpGo');
-    if (go) go.addEventListener('click', () => { if (d.url) window.open(d.url, '_blank'); });
-  } else {
-    hint.textContent = '已是最新版本 v' + d.local + '。';
-    foot.innerHTML = '';
-  }
-  body.querySelectorAll('.uplink').forEach((a) => a.addEventListener('click', (e) => {
-    e.preventDefault();
-    if (a.dataset.url) window.open(a.dataset.url, '_blank');
+  hint.textContent = d.hasUpdate
+    ? '有新版本 v' + d.latest + '（本地 v' + d.local + '）。'
+    : '已是最新版本 v' + d.local + '。';
+
+  // 版本列表：当前版本高亮，点一行展开该版本的更新说明
+  const list = (d.releases || []).map((r) => {
+    const cur = r.tag === d.local;
+    const dt = r.published ? r.published.slice(0, 10) : '';
+    return '<div class="uprow' + (cur ? ' cur' : '') + '" data-tag="' + esc(r.tag) + '">' +
+      '<span class="tag">v' + esc(r.tag) + '</span>' +
+      (cur ? '<span class="pill">当前</span>' : '') +
+      (r.prerelease ? '<span class="pill pre">预览</span>' : '') +
+      '<span class="when">' + esc(dt) + '</span>' +
+      (r.tag === d.latest && !cur ? '<span class="pill new">最新</span>' : '') +
+      '</div>';
+  }).join('');
+  const rail = list
+    ? '<div class="uprail"><div class="uprail-h">历史版本</div>' + list + '</div>'
+    : '';
+  const notes = '<div class="upnotes">' +
+    '<div class="upnotes-h">v' + esc(d.latest) + ' 更新说明</div>' +
+    (mdToHtml(d.body) || '<p>（无描述）</p>') + '</div>';
+  body.innerHTML = '<div class="upgrid">' + rail + notes + '</div>';
+
+  foot.innerHTML = (d.hasUpdate ? '<button class="btn primary" id="btnUpGo">去更新</button>' : '') +
+    '<button class="btn ghost" id="btnUpReleases">历史版本</button>';
+  bindUpFoot(d);
+
+  body.querySelectorAll('.uprow').forEach((row) => row.addEventListener('click', () => {
+    const r = (d.releases || []).find((x) => x.tag === row.dataset.tag);
+    if (!r) return;
+    body.querySelectorAll('.uprow').forEach((x) => x.classList.toggle('on', x === row));
+    const nh = body.querySelector('.upnotes-h'), nb = body.querySelector('.upnotes');
+    if (nh) nh.textContent = 'v' + r.tag + (r.published ? ' · ' + r.published.slice(0, 10) : '') + ' 更新说明';
+    if (nb) nb.innerHTML = '<div class="upnotes-h">v' + esc(r.tag) +
+      (r.published ? ' · ' + esc(r.published.slice(0, 10)) : '') + ' 更新说明</div>' +
+      (mdToHtml(r.body) || '<p>（无描述）</p>');
+    bindUpLinks();
   }));
+  bindUpLinks();
+}
+
+function bindUpLinks() {
+  document.querySelectorAll('#upBody .uplink').forEach((a) => {
+    if (a.dataset.bound) return;
+    a.dataset.bound = '1';
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (a.dataset.url) window.open(a.dataset.url, '_blank');
+    });
+  });
+}
+
+function bindUpFoot(d) {
+  const go = $('btnUpGo');
+  if (go) go.addEventListener('click', () => { if (d && d.url) window.open(d.url, '_blank'); });
+  const rel = $('btnUpReleases');
+  if (rel) rel.addEventListener('click', () => {
+    window.open((d && d.releasesUrl) || 'https://github.com/Wei894348/pojia_desk/releases', '_blank');
+  });
 }
 
 async function checkUpdate(manual) {
@@ -2429,7 +2476,7 @@ function bind() {
   // 关于视图
   $('btnAboutUp').addEventListener('click', openUpdate);
   $('btnAboutRepo').addEventListener('click', () => {
-    window.open('https://github.com/', '_blank');
+    window.open('https://github.com/Wei894348/pojia_desk', '_blank');
   });
 
   // 模态

@@ -1562,6 +1562,25 @@ table { border-collapse: collapse; }
 }
 .pempty.err { color: var(--red); }
 
+/* ── 更新日志：左侧历史版本 + 右侧说明 ── */
+.upgrid { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 14px; align-items: start; }
+.uprail { border: 1px solid var(--line-soft); border-radius: 9px; overflow: hidden; background: #fbfaff; }
+.uprail-h { padding: 8px 11px; font-size: 11px; font-weight: 700; color: var(--subtle);
+  border-bottom: 1px solid var(--line-soft); letter-spacing: .04em; }
+.uprow { display: flex; align-items: center; gap: 6px; padding: 7px 11px; cursor: pointer;
+  border-bottom: 1px solid var(--line-soft); font-size: 12px; }
+.uprow:last-child { border-bottom: 0; }
+.uprow:hover { background: #f2f4ff; }
+.uprow.on { background: #e8edff; }
+.uprow.cur .tag { color: var(--blue); font-weight: 700; }
+.uprow .tag { font-family: Consolas, monospace; font-size: 12px; }
+.uprow .when { margin-left: auto; color: var(--subtle); font-size: 11px; }
+.uprow .pill { font-size: 10px; padding: 1px 5px; border-radius: 8px; background: #e6f0ff; color: var(--blue); }
+.uprow .pill.new { background: #e7f7ee; color: #0d8a4f; }
+.uprow .pill.pre { background: #fff4e5; color: #b26a00; }
+.upnotes { border: 1px solid var(--line-soft); border-radius: 9px; padding: 12px 15px; min-height: 120px; }
+.upnotes-h { font-size: 12px; font-weight: 700; margin-bottom: 8px; color: #333; }
+
 /* ── 部署历史 ── */
 .txrow {
   display: flex;

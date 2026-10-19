@@ -652,6 +652,28 @@ function createWindow() {
           "document.getElementById('btnPmClose').click(); document.querySelector('.snav[data-view=skills]').click()");
         await sleep(2000);
         await save('_shot_skills.png');
+
+        // 更新日志弹窗：点底部版本号 → 拉 GitHub releases → 截图
+        try {
+          await mainWin.webContents.executeJavaScript(
+            "(document.getElementById('tbVersion')||{click(){}}).click(); 'ok'");
+          await sleep(2600);
+          const diag = await mainWin.webContents.executeJavaScript(`(() => {
+            const m = document.getElementById('upModal');
+            const st = m ? getComputedStyle(m) : null;
+            return JSON.stringify({
+              hasModal: !!m, cls: m && m.className,
+              display: st && st.display, z: st && st.zIndex, op: st && st.opacity,
+              bodyLen: (document.getElementById('upBody')||{}).innerHTML?.length || 0,
+              meta: (document.getElementById('upMeta')||{}).textContent || '',
+              hint: (document.getElementById('upHint')||{}).textContent || ''
+            });
+          })()`);
+          shots.push('update:' + diag);
+        } catch (e) {
+          shots.push('update-error:' + String(e).slice(0, 200));
+        }
+        await save('_shot_update.png');
       } catch (e) {
         shots.push('error:' + String(e).slice(0, 200));
       }
@@ -2106,24 +2128,43 @@ ipcMain.handle('pojia:openConsole', async () => {
 });
 
 // ── GitHub 更新检查（公开仓，无 token 也能读） ──────────────────────────────
-// 渲染层点版本号 → 这里去 api.github.com 拉 latest release → 比对本地 VERSION。
+// 渲染层点版本号 → 这里去 api.github.com 拉 releases 列表（含历史版本）→
+// 逐条比对本地 VERSION，标记当前版本与是否有更新。
 // 网络不通 / 限流 / 不是本仓部署时不弹错，静默返回 { ok: false }。
+const REPO_SLUG = 'Wei894348/pojia_desk';
+const REPO_URL = 'https://github.com/' + REPO_SLUG;
+const RELEASES_URL = REPO_URL + '/releases';
+
 ipcMain.handle('pojia:checkUpdate', async () => {
   const local = (fs.readFileSync(path.join(ROOT, 'VERSION'), 'utf8').trim()) || '';
-  const out = { ok: false, local, latest: '', url: '', body: '', published: '' };
+  const out = {
+    ok: false, local, latest: '', url: REPO_URL, releasesUrl: RELEASES_URL,
+    body: '', published: '', releases: [],
+  };
   try {
-    const res = await fetch('https://api.github.com/repos/Wei894348/pojia_desk/releases/latest',
+    const res = await fetch(
+      'https://api.github.com/repos/' + REPO_SLUG + '/releases?per_page=30',
       { headers: { 'User-Agent': 'pojia-workbench', 'Accept': 'application/vnd.github+json' },
         signal: AbortSignal.timeout(15000) });
     if (!res.ok) return out;
-    const j = await res.json();
-    const tag = String(j.tag_name || '').replace(/^v/i, '').trim();
-    out.latest = tag;
-    out.url = j.html_url || '';
-    out.body = j.body || '';
-    out.published = j.published_at || '';
+    const arr = await res.json();
+    if (!Array.isArray(arr)) return out;
+    out.releases = arr.map((r) => ({
+      tag: String(r.tag_name || '').replace(/^v/i, '').trim(),
+      name: r.name || '',
+      url: r.html_url || '',
+      body: r.body || '',
+      published: r.published_at || '',
+      prerelease: !!r.prerelease,
+    })).filter((r) => r.tag);
+    const latest = out.releases.find((r) => !r.prerelease) || out.releases[0];
+    if (!latest) return out;
+    out.latest = latest.tag;
+    out.url = latest.url || REPO_URL;
+    out.body = latest.body;
+    out.published = latest.published;
     out.ok = true;
-    out.hasUpdate = !!tag && tag !== local;
+    out.hasUpdate = !!latest.tag && latest.tag !== local;
   } catch (_) { /* 网络不通：静默 */ }
   return out;
 });

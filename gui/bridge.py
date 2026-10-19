@@ -2047,14 +2047,35 @@ def _doc_set_enabled(rel, on, agent=""):
     return ok
 
 
-# 注入动作的元信息：哪个席位最近一次换指令 / 关闭注入是什么时候。
+# 注入动作的元信息：某个席位最近一次换指令 / 关闭注入是什么时候。
 # 只用于界面显示与排错，不参与注入判定。
-DOC_META_FILE = os.path.join(ROOT, "状态", "_doc_meta.json")
+# 按 Agent 各存一份 —— 一个席位换指令不会覆盖另一个席位的记录。
+DOC_META_FILE = os.path.join(ROOT, "状态", "_doc_meta.json")   # 旧版共享表，仅作迁移来源
 
 
-def _doc_meta():
+def _doc_meta_path(agent=""):
+    a = _agent_key(agent)
+    if not a:
+        return DOC_META_FILE
+    return os.path.join(ROOT, "状态", "_doc_meta_%s.json" % a)
+
+
+def _doc_meta(agent=""):
+    """读这个 Agent 的注入元信息；旧共享表只做首次迁移。"""
+    path = _doc_meta_path(agent)
+    if path != DOC_META_FILE and not os.path.exists(path) and os.path.isfile(DOC_META_FILE):
+        try:
+            with open(DOC_META_FILE, "r", encoding="utf-8") as f:
+                legacy = json.load(f)
+            rec = legacy.get(_agent_key(agent)) if isinstance(legacy, dict) else None
+            if isinstance(rec, dict):
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(rec, f, ensure_ascii=False, indent=1, sort_keys=True)
+        except (OSError, ValueError):
+            pass
     try:
-        with open(DOC_META_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             d = json.load(f)
         return d if isinstance(d, dict) else {}
     except (OSError, ValueError):
@@ -2062,16 +2083,18 @@ def _doc_meta():
 
 
 def _inject_meta_update(seat, last=""):
-    """记一笔：某席位的注入动作做过什么、什么时候。失败不影响主流程。"""
-    d = _doc_meta()
-    d[seat] = {"last": last or "", "at": time.strftime("%Y-%m-%d %H:%M:%S")}
+    """记一笔：这个席位的注入动作做过什么、什么时候。失败不影响主流程。"""
+    rec = {"last": last or "", "at": time.strftime("%Y-%m-%d %H:%M:%S")}
+    path = _doc_meta_path(seat)
     try:
-        os.makedirs(os.path.dirname(DOC_META_FILE), exist_ok=True)
-        with open(DOC_META_FILE, "w", encoding="utf-8") as f:
-            json.dump(d, f, ensure_ascii=False, indent=1, sort_keys=True)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(rec, f, ensure_ascii=False, indent=1, sort_keys=True)
+        os.replace(tmp, path)
     except OSError:
         pass
-    return d.get(seat, {})
+    return rec
 
 
 def _read_text(p):
@@ -3301,7 +3324,7 @@ def _docs_cache_key(agent):
     key = [agent]
     home = os.path.expanduser("~")
     for p in (_doc_state_path(agent), _doc_notes_path(agent),
-              DOC_STATE_FILE, DOC_NOTES_FILE, DOC_META_FILE, DOCS_DIRTY_FILE,
+              DOC_STATE_FILE, DOC_NOTES_FILE, _doc_meta_path(agent), DOCS_DIRTY_FILE,
               os.path.join(ROOT, "状态", "_wb_deploy.json"),
               os.path.join(ROOT, "状态", "_codex_deploy.json"),
               os.path.join(ROOT, "状态", "_%s_deploy.json" % _agent_key(agent)),
