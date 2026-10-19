@@ -198,6 +198,7 @@ def _ours(seat, path):
     for mark in (POLICY_MARK, SKILL_MARK,
                  (MARK_BEGIN % seat), "workspace-profile:h=",
                  "pojia:claude-output-style",     # 旧版 output style 的归属头
+                 "pojia-style h=",                # 新版 output style 的归属头
                  "cfg-v7:h=", "unlock-v6:h=", "最高优先级覆盖 版本"):
         if mark in text:
             return True
@@ -497,6 +498,43 @@ def _skill_items(seat, all_items=False):
 
 # ───────────────────────────── plan / deploy ─────────────────────────────
 
+def style_text(seat):
+    """输出风格正文：读 content/seats/<seat>_output_style.md（只管语气）。
+
+    没有这份文件就返回空，style 这一路直接跳过 —— 不再拿人格正文顶替。
+    """
+    p = os.path.join(SEAT_DIR, "%s_output_style.md" % seat)
+    if not os.path.isfile(p):
+        return ""
+    t = _read(p)
+    return t.strip("\r\n") if t.strip() else ""
+
+
+def _style_parts(seat):
+    """output style 的 (frontmatter, 正文, 归属头)。plan 与 verify 共用一套口径。"""
+    spec = SEATS[seat]
+    raw = style_text(seat)
+    if not raw:
+        return "", "", ""
+    fm, body_text = "", raw
+    if spec.get("style_fm"):
+        fm = spec["style_fm"]
+        if body_text.lstrip().startswith("---"):
+            parts = body_text.split("---", 2)
+            if len(parts) == 3:
+                fm = "---" + parts[1] + "---\n\n"
+                body_text = parts[2].lstrip("\n")
+    h = _sha(body_text + "|" + seat)
+    return fm, body_text, "<!-- pojia-style h=%s -->" % h
+
+
+def _style_hash(seat):
+    if not style_text(seat):
+        return ""
+    mark = _style_parts(seat)[2]               # <!-- pojia-style h=xxxx -->
+    return mark.split("h=", 1)[1].rstrip(" -->")
+
+
 def settings_path(seat):
     spec = SEATS[seat]
     return os.path.join(home_of(seat), spec["settings"]) if spec.get("settings") else ""
@@ -528,13 +566,20 @@ def plan(seat, opts_override=None, full=False):
     if body and spec.get("rules") and o.get("rules"):
         writes.append({"kind": "file", "path": os.path.join(home, spec["rules"]),
                        "role": "规则文件", "text": body, "hash": h})
-    # output style 槽位：可选（默认关），开了才有 frontmatter 要求
-    if body and spec.get("style") and o.get("style"):
-        stext = body
-        if spec.get("style_fm") and not stext.startswith("---"):
-            stext = spec["style_fm"] + stext
-        writes.append({"kind": "file", "path": os.path.join(home, spec["style"]),
-                       "role": "output style", "text": stext, "hash": h})
+    # output style 槽位：只管「怎么说」。正文来自席位源里单独的一份语气文件，
+    # 不再复制人格正文 —— 同一份 20 KB 人格塞进 style 就等于第三遍重复。
+    if spec.get("style") and o.get("style"):
+        stext = style_text(seat)
+        if stext:
+            fm, body_text, mark = _style_parts(seat)
+            sh = _style_hash(seat)
+            # 归属头放在 frontmatter 之后：frontmatter 必须仍是文件第一段，
+            # 否则 Claude Code 读不到 name 会直接报错。
+            stext = fm + mark + "\n" + body_text
+            writes.append({"kind": "file", "path": os.path.join(home, spec["style"]),
+                           "role": "output style",
+                           "text": stext if stext.endswith("\n") else stext + "\n",
+                           "hash": sh})
     if body and spec.get("memory") and o.get("memory"):
         writes.append({"kind": "marked", "path": os.path.join(home, spec["memory"]),
                        "role": "记忆文件标记块", "text": body})
@@ -834,18 +879,22 @@ def verify(seat):
     on = o.get("primary") and bool(o.get("pack"))
     add(p, "指令文件", hit if on else not hit, os.path.isfile(p),
         len(txt.encode("utf-8")))
-    # 规则层 / output style：整份文件，按哈希头判定
-    for key, role, rel in (("rules", "规则文件", sp.get("rules")),
-                           ("style", "output style", sp.get("style"))):
-        if not rel:
-            continue
-        pr = os.path.join(home, rel)
+    # 规则层：整份文件，按正文哈希头判定
+    if sp.get("rules"):
+        pr = os.path.join(home, sp["rules"])
         tr = _read(pr)
         hr = (POLICY_MARK + h + " -->") in tr
-        if key == "style" and sp.get("style_fm"):
-            hr = hr and tr.lstrip().startswith("---")
-        onr = o.get(key) and bool(o.get("pack"))
-        add(pr, role, hr if onr else not hr, os.path.isfile(pr),
+        onr = o.get("rules") and bool(o.get("pack"))
+        add(pr, "规则文件", hr if onr else not hr, os.path.isfile(pr),
+            len(tr.encode("utf-8")))
+    # output style：内容与人格正文不同（只管语气），按自己的哈希头判定
+    if sp.get("style"):
+        pr = os.path.join(home, sp["style"])
+        tr = _read(pr)
+        sh = _style_hash(seat)
+        hr = bool(sh) and ("<!-- pojia-style h=" + sh + " -->") in tr
+        onr = o.get("style") and bool(sh)
+        add(pr, "output style", hr if onr else not hr, os.path.isfile(pr),
             len(tr.encode("utf-8")))
     if sp.get("memory"):
         p2 = os.path.join(home, sp["memory"])
