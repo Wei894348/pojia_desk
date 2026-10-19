@@ -2130,26 +2130,70 @@ ipcMain.handle('pojia:openConsole', async () => {
 // ── GitHub 更新检查（公开仓，无 token 也能读） ──────────────────────────────
 // 渲染层点版本号 → 这里去 api.github.com 拉 releases 列表（含历史版本）→
 // 逐条比对本地 VERSION，标记当前版本与是否有更新。
-// 网络不通 / 限流 / 不是本仓部署时不弹错，静默返回 { ok: false }。
+//
+// 不用 Electron 的 fetch：Chromium 网络栈会读系统代理（本机是 Clash 的
+// 127.0.0.1:7897），代理挂掉/半死时 fetch 直接失败，而系统 curl 走同一代理却正常。
+// 用 curl.exe 起子进程，失败再退回 node 的 https 直连，两条路都不依赖渲染会话。
 const REPO_SLUG = 'Wei894348/pojia_desk';
 const REPO_URL = 'https://github.com/' + REPO_SLUG;
 const RELEASES_URL = REPO_URL + '/releases';
+
+function ghJsonByCurl(url) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('curl.exe', [
+      '-sS', '-L', '--max-time', '20',
+      '-H', 'User-Agent: pojia-workbench',
+      '-H', 'Accept: application/vnd.github+json',
+      url,
+    ], { windowsHide: true, env: cleanEnv() });
+    let out = '', err = '';
+    child.stdout.on('data', (d) => { out += d.toString('utf8'); });
+    child.stderr.on('data', (d) => { err += d.toString('utf8'); });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code !== 0) return reject(new Error(err || ('curl exit ' + code)));
+      try { resolve(JSON.parse(out)); } catch (e) { reject(e); }
+    });
+  });
+}
+
+function ghJsonByHttps(url) {
+  return new Promise((resolve, reject) => {
+    const https = require('https');
+    const req = https.get(url, {
+      headers: { 'User-Agent': 'pojia-workbench', 'Accept': 'application/vnd.github+json' },
+      timeout: 20000,
+    }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (d) => { body += d; });
+      res.on('end', () => {
+        if (res.statusCode !== 200) return reject(new Error('HTTP ' + res.statusCode));
+        try { resolve(JSON.parse(body)); } catch (e) { reject(e); }
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', reject);
+  });
+}
 
 ipcMain.handle('pojia:checkUpdate', async () => {
   const local = (fs.readFileSync(path.join(ROOT, 'VERSION'), 'utf8').trim()) || '';
   const out = {
     ok: false, local, latest: '', url: REPO_URL, releasesUrl: RELEASES_URL,
-    body: '', published: '', releases: [],
+    body: '', published: '', releases: [], source: '',
   };
-  try {
-    const res = await fetch(
-      'https://api.github.com/repos/' + REPO_SLUG + '/releases?per_page=30',
-      { headers: { 'User-Agent': 'pojia-workbench', 'Accept': 'application/vnd.github+json' },
-        signal: AbortSignal.timeout(15000) });
-    if (!res.ok) return out;
-    const arr = await res.json();
-    if (!Array.isArray(arr)) return out;
-    out.releases = arr.map((r) => ({
+  const api = 'https://api.github.com/repos/' + REPO_SLUG + '/releases?per_page=30';
+  let arr = null, errs = [];
+  for (const [name, fn] of [['curl', ghJsonByCurl], ['https', ghJsonByHttps]]) {
+    try {
+      const j = await fn(api);
+      if (Array.isArray(j)) { arr = j; out.source = name; break; }
+      errs.push(name + ': 返回不是数组');
+    } catch (e) { errs.push(name + ': ' + String(e.message || e)); }
+  }
+  if (!arr) { out.error = errs.join(' | '); return out; }
+  out.releases = arr.map((r) => ({
       tag: String(r.tag_name || '').replace(/^v/i, '').trim(),
       name: r.name || '',
       url: r.html_url || '',
@@ -2157,15 +2201,14 @@ ipcMain.handle('pojia:checkUpdate', async () => {
       published: r.published_at || '',
       prerelease: !!r.prerelease,
     })).filter((r) => r.tag);
-    const latest = out.releases.find((r) => !r.prerelease) || out.releases[0];
-    if (!latest) return out;
-    out.latest = latest.tag;
-    out.url = latest.url || REPO_URL;
-    out.body = latest.body;
-    out.published = latest.published;
-    out.ok = true;
-    out.hasUpdate = !!latest.tag && latest.tag !== local;
-  } catch (_) { /* 网络不通：静默 */ }
+  const latest = out.releases.find((r) => !r.prerelease) || out.releases[0];
+  if (!latest) return out;
+  out.latest = latest.tag;
+  out.url = latest.url || REPO_URL;
+  out.body = latest.body;
+  out.published = latest.published;
+  out.ok = true;
+  out.hasUpdate = !!latest.tag && latest.tag !== local;
   return out;
 });
 
